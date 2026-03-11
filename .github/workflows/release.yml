@@ -1,0 +1,394 @@
+name: release
+
+on:
+  push:
+    branches:
+      - release-ci
+    tags:
+      - v*.*.*
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  require-tests:
+    name: Require macOS tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 125
+    permissions:
+      actions: write
+      contents: read
+
+    env:
+      TEST_WORKFLOW_FILE: test.yml
+      TEST_TIMEOUT_SECONDS: 7200
+      TEST_DISPATCH_GRACE_SECONDS: 120
+      TEST_POLL_SECONDS: 30
+
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve test target
+        id: test-target
+        run: |
+          set -euo pipefail
+
+          test_sha="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          test_ref="$GITHUB_REF_NAME"
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            git fetch origin main
+            git merge-base --is-ancestor "$test_sha" origin/main
+          fi
+
+          echo "sha=$test_sha" >> "$GITHUB_OUTPUT"
+          echo "ref=$test_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for or start test workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TEST_REF: ${{ steps.test-target.outputs.ref }}
+          TEST_SHA: ${{ steps.test-target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+          repo = os.environ["REPO"]
+          workflow_file = os.environ["TEST_WORKFLOW_FILE"]
+          test_ref = os.environ["TEST_REF"]
+          test_sha = os.environ["TEST_SHA"]
+          token = os.environ["GH_TOKEN"]
+          timeout_seconds = int(os.environ["TEST_TIMEOUT_SECONDS"])
+          dispatch_grace_seconds = int(os.environ["TEST_DISPATCH_GRACE_SECONDS"])
+          poll_seconds = int(os.environ["TEST_POLL_SECONDS"])
+
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+
+          def github_request(method: str, url: str, payload: dict[str, str] | None = None) -> bytes:
+              data = None if payload is None else json.dumps(payload).encode("utf-8")
+              request = urllib.request.Request(url, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request) as response:
+                      return response.read()
+              except urllib.error.HTTPError as error:
+                  details = error.read().decode("utf-8", errors="replace")
+                  print(details, file=sys.stderr)
+                  raise
+
+
+          def workflow_runs() -> list[dict[str, object]]:
+              params = urllib.parse.urlencode({"head_sha": test_sha, "per_page": "50"})
+              url = f"{api_url}/repos/{repo}/actions/workflows/{workflow_file}/runs?{params}"
+              data = json.loads(github_request("GET", url).decode("utf-8"))
+              return [
+                  run
+                  for run in data.get("workflow_runs", [])
+                  if run.get("head_sha") == test_sha
+              ]
+
+
+          def dispatch_workflow() -> None:
+              quoted_workflow = urllib.parse.quote(workflow_file, safe="")
+              url = f"{api_url}/repos/{repo}/actions/workflows/{quoted_workflow}/dispatches"
+              github_request("POST", url, {"ref": test_ref})
+
+
+          def describe(run: dict[str, object]) -> str:
+              return (
+                  f"{run.get('id')}: status={run.get('status')}, "
+                  f"conclusion={run.get('conclusion') or 'pending'}, "
+                  f"url={run.get('html_url')}"
+              )
+
+
+          start = time.monotonic()
+          deadline = start + timeout_seconds
+          dispatch_after = start + dispatch_grace_seconds
+          dispatched = False
+
+          print(f"Waiting for {workflow_file} at {test_sha}.")
+          while time.monotonic() < deadline:
+              runs = workflow_runs()
+              successful_runs = [
+                  run
+                  for run in runs
+                  if run.get("status") == "completed" and run.get("conclusion") == "success"
+              ]
+              active_runs = [
+                  run
+                  for run in runs
+                  if run.get("status") != "completed"
+              ]
+              failed_runs = [
+                  run
+                  for run in runs
+                  if run.get("status") == "completed" and run.get("conclusion") != "success"
+              ]
+
+              if successful_runs:
+                  print(f"Required test workflow passed: {describe(successful_runs[0])}")
+                  raise SystemExit(0)
+
+              if active_runs:
+                  print(f"Waiting for test workflow run {describe(active_runs[0])}")
+                  time.sleep(poll_seconds)
+                  continue
+
+              if failed_runs:
+                  print(f"Required test workflow did not pass: {describe(failed_runs[0])}", file=sys.stderr)
+                  raise SystemExit(1)
+
+              if not dispatched and time.monotonic() >= dispatch_after:
+                  print(f"No existing test workflow run found for {test_sha}; dispatching {workflow_file} on {test_ref}.")
+                  dispatch_workflow()
+                  dispatched = True
+              else:
+                  print("No matching test workflow run found yet.")
+
+              time.sleep(poll_seconds)
+
+          print(f"Timed out waiting for {workflow_file} on {test_sha}.", file=sys.stderr)
+          raise SystemExit(1)
+          PY
+
+  build:
+    name: Build notarized package
+    needs: require-tests
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      contents: write
+
+    env:
+      PROJECT: macvm.xcodeproj
+      SCHEME: MacVM Manager
+      BUNDLE_IDENTIFIER: dev.macvm.macvm
+      XCODE_SOURCE_PACKAGES_PATH: .build/ci/xcode-source-packages
+      XCODE_DERIVED_DATA_PATH: .build/ci/xcode-derived-data
+      BUILD_DIR: .build/release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify release commit is on main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          release_sha="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          git merge-base --is-ancestor "$release_sha" origin/main
+
+      - name: Resolve release version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            latest_tag="$(git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --abbrev=0 2>/dev/null || true)"
+            if [[ -n "$latest_tag" ]]; then
+              version="${latest_tag#v}"
+            else
+              version="$(awk -F ' = |;' '/MARKETING_VERSION = [0-9]+[.][0-9]+[.][0-9]+;/ { print $2; exit }' "$PROJECT/project.pbxproj")"
+            fi
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid macOS release version: $version" >&2
+            exit 2
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Require Xcode 26
+        run: |
+          set -euo pipefail
+          version="$(xcodebuild -version | awk '/^Xcode / { print $2 }')"
+          echo "Xcode ${version}"
+          case "$version" in
+            26|26.*) ;;
+            *)
+              echo "Xcode 26 is required; found ${version:-unknown}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Cache Xcode SwiftPM packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.XCODE_SOURCE_PACKAGES_PATH }}
+          key: xcode-spm-${{ runner.os }}-${{ hashFiles('macvm.xcodeproj/project.pbxproj', 'macvm.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            xcode-spm-${{ runner.os }}-
+
+      - name: Cache Xcode DerivedData
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.XCODE_DERIVED_DATA_PATH }}
+          key: xcode-deriveddata-release-${{ runner.os }}-${{ hashFiles('macvm.xcodeproj/project.pbxproj', 'macvm.xcodeproj/xcshareddata/xcschemes/*.xcscheme', 'Sources/**/*.swift', 'Sources/**/*.m', 'Sources/**/*.h', 'Support/**/*.plist', 'Support/**/*.entitlements', 'scripts/package-release.sh') }}
+          restore-keys: |
+            xcode-deriveddata-release-${{ runner.os }}-
+
+      - name: Install App Store Connect API key
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          api_key_path="$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          mkdir -p "$(dirname "$api_key_path")"
+          printf '%s\n' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$api_key_path"
+          chmod 600 "$api_key_path"
+          echo "APP_STORE_CONNECT_KEY_PATH=$api_key_path" >> "$GITHUB_ENV"
+
+      - name: Import Developer ID certificates
+        env:
+          DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64 }}
+          DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD }}
+          DEVELOPER_ID_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_INSTALLER_CERTIFICATE_BASE64 }}
+          DEVELOPER_ID_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_INSTALLER_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          decode_base64() {
+            if base64 --decode </dev/null >/dev/null 2>&1; then
+              base64 --decode
+            else
+              base64 -D
+            fi
+          }
+
+          keychain_path="$RUNNER_TEMP/macvm-release.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          existing_keychains=()
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+
+          printf '%s' "$DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64" | decode_base64 > "$RUNNER_TEMP/developer-id-application.p12"
+          security import "$RUNNER_TEMP/developer-id-application.p12" \
+            -P "$DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain_path"
+
+          printf '%s' "$DEVELOPER_ID_INSTALLER_CERTIFICATE_BASE64" | decode_base64 > "$RUNNER_TEMP/developer-id-installer.p12"
+          security import "$RUNNER_TEMP/developer-id-installer.p12" \
+            -P "$DEVELOPER_ID_INSTALLER_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain_path"
+
+          while IFS= read -r keychain; do
+            [[ -n "$keychain" ]] && existing_keychains+=("$keychain")
+          done < <(security list-keychains -d user | tr -d '"' | sed 's/^[[:space:]]*//')
+          security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
+          security default-keychain -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+
+          find_identity() {
+            local kind="$1"
+            security find-identity -v -p basic "$keychain_path" |
+              awk -v kind="$kind" 'index($0, kind) { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }'
+          }
+
+          developer_id_application="$(find_identity "Developer ID Application")"
+          developer_id_installer="$(find_identity "Developer ID Installer")"
+          if [[ -z "$developer_id_application" || -z "$developer_id_installer" ]]; then
+            echo "Developer ID Application and Installer identities are required." >&2
+            security find-identity -v "$keychain_path" || true
+            exit 1
+          fi
+
+          rm -f "$RUNNER_TEMP/developer-id-application.p12" "$RUNNER_TEMP/developer-id-installer.p12"
+          echo "KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+          echo "MACVM_DEVELOPER_ID_APPLICATION=$developer_id_application" >> "$GITHUB_ENV"
+          echo "MACVM_DEVELOPER_ID_INSTALLER=$developer_id_installer" >> "$GITHUB_ENV"
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          mkdir -p "$XCODE_SOURCE_PACKAGES_PATH" "$XCODE_DERIVED_DATA_PATH"
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -clonedSourcePackagesDirPath "$PWD/$XCODE_SOURCE_PACKAGES_PATH" \
+            -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
+            -skipPackagePluginValidation
+
+      - name: Build signed notarized package
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          MACVM_RELEASE_VERSION="${{ steps.version.outputs.version }}" \
+          MACVM_BUILD_NUMBER="$GITHUB_RUN_NUMBER" \
+          MACVM_SIGN_RELEASE=1 \
+          MACVM_NOTARIZE=1 \
+          XCODE_SOURCE_PACKAGES="$XCODE_SOURCE_PACKAGES_PATH" \
+          XCODE_DERIVED_DATA="$XCODE_DERIVED_DATA_PATH" \
+          ./scripts/package-release.sh
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: MacVM-${{ steps.version.outputs.version }}.pkg
+          path: dist/MacVM-${{ steps.version.outputs.version }}.pkg
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          package_path="dist/MacVM-${VERSION}.pkg"
+          notes_path="$BUILD_DIR/release-notes.md"
+          mkdir -p "$(dirname "$notes_path")"
+          cat > "$notes_path" << EOF
+          MacVM ${VERSION}
+
+          Download and open the signed, notarized installer package below.
+          EOF
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$package_path" --clobber
+          else
+            gh release create "$tag" "$package_path" \
+              --title "MacVM ${VERSION}" \
+              --notes-file "$notes_path" \
+              --verify-tag
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -n "${KEYCHAIN_PATH:-}" && -f "$KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          rm -rf "$HOME/.appstoreconnect"

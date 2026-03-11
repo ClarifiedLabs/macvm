@@ -1,0 +1,328 @@
+import Foundation
+
+public enum RestoreImageSelectionMode: String, CaseIterable, Codable, Sendable {
+    case latestSupported
+    case localFile
+}
+
+public struct VMCreationDraft: Equatable, Sendable {
+    public var name: String
+    public var cpuCount: Int
+    public var memoryGiB: Int
+    public var diskGiB: Int
+    /// Effective guest workspace size in points. The VM uses a 2x Retina
+    /// backing framebuffer derived from this value at boot.
+    public var displayWidth: Int
+    public var displayHeight: Int
+    public var restoreMode: RestoreImageSelectionMode
+    public var localRestoreImageURL: URL?
+    public var createBootstrapShare: Bool
+
+    public init(
+        name: String,
+        cpuCount: Int,
+        memoryGiB: Int,
+        diskGiB: Int,
+        displayWidth: Int,
+        displayHeight: Int,
+        restoreMode: RestoreImageSelectionMode,
+        localRestoreImageURL: URL? = nil,
+        createBootstrapShare: Bool = true
+    ) {
+        self.name = name
+        self.cpuCount = cpuCount
+        self.memoryGiB = memoryGiB
+        self.diskGiB = diskGiB
+        self.displayWidth = displayWidth
+        self.displayHeight = displayHeight
+        self.restoreMode = restoreMode
+        self.localRestoreImageURL = localRestoreImageURL
+        self.createBootstrapShare = createBootstrapShare
+    }
+
+    public var displayDescription: String {
+        "\(displayWidth)x\(displayHeight)"
+    }
+
+    public var displayPixelWidth: Int {
+        VMDisplayMetrics.pixelWidth(forEffectiveWidth: displayWidth)
+    }
+
+    public var displayPixelHeight: Int {
+        VMDisplayMetrics.pixelHeight(forEffectiveHeight: displayHeight)
+    }
+
+    public var displayPixelDescription: String {
+        "\(displayPixelWidth)x\(displayPixelHeight)"
+    }
+}
+
+public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var createdAt: Date
+    public var cpuCount: Int
+    public var memorySizeBytes: UInt64
+    public var diskSizeBytes: UInt64
+    /// Effective guest workspace size in points. The VM uses a 2x Retina
+    /// backing framebuffer derived from this value at boot.
+    public var displayWidth: Int
+    public var displayHeight: Int
+    public var bootstrapShareEnabled: Bool
+    public var installedRestoreImageName: String?
+    /// Stable MAC assigned at creation so host-side DHCP/ARP lookups can find
+    /// the guest reliably. Optional so bundles created before this field decode
+    /// cleanly; `VMBundle.ensureNetworkIdentity` backfills a value on demand.
+    public var macAddress: String?
+    /// Account created by `macvm setup`; used as the default SSH/Ansible user.
+    public var setupUsername: String?
+    public var setupFullName: String?
+    public var setupCompletedAt: Date?
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        createdAt: Date = Date(),
+        cpuCount: Int,
+        memorySizeBytes: UInt64,
+        diskSizeBytes: UInt64,
+        displayWidth: Int,
+        displayHeight: Int,
+        bootstrapShareEnabled: Bool,
+        installedRestoreImageName: String? = nil,
+        macAddress: String? = nil,
+        setupUsername: String? = nil,
+        setupFullName: String? = nil,
+        setupCompletedAt: Date? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.cpuCount = cpuCount
+        self.memorySizeBytes = memorySizeBytes
+        self.diskSizeBytes = diskSizeBytes
+        self.displayWidth = displayWidth
+        self.displayHeight = displayHeight
+        self.bootstrapShareEnabled = bootstrapShareEnabled
+        self.installedRestoreImageName = installedRestoreImageName
+        self.macAddress = macAddress
+        self.setupUsername = setupUsername
+        self.setupFullName = setupFullName
+        self.setupCompletedAt = setupCompletedAt
+    }
+
+    public var memoryDescription: String {
+        VMText.gibLabel(for: memorySizeBytes)
+    }
+
+    public var diskDescription: String {
+        VMText.gibLabel(for: diskSizeBytes)
+    }
+
+    public var displayDescription: String {
+        "\(displayWidth)x\(displayHeight)"
+    }
+
+    public var displayPixelWidth: Int {
+        VMDisplayMetrics.pixelWidth(forEffectiveWidth: displayWidth)
+    }
+
+    public var displayPixelHeight: Int {
+        VMDisplayMetrics.pixelHeight(forEffectiveHeight: displayHeight)
+    }
+
+    public var displayPixelDescription: String {
+        "\(displayPixelWidth)x\(displayPixelHeight)"
+    }
+}
+
+public enum VMDisplayMetrics {
+    public static let retinaScale = 2
+    public static let retinaPixelsPerInch = 226
+
+    public static func pixelWidth(forEffectiveWidth width: Int) -> Int {
+        width * retinaScale
+    }
+
+    public static func pixelHeight(forEffectiveHeight height: Int) -> Int {
+        height * retinaScale
+    }
+
+    public static func effectiveSize(fromPixelWidth width: Int, height: Int) throws -> (width: Int, height: Int) {
+        guard width > 0,
+              height > 0,
+              width.isMultiple(of: retinaScale),
+              height.isMultiple(of: retinaScale) else {
+            throw MacVMError.invalidDisplaySize("\(width)x\(height)")
+        }
+        return (width / retinaScale, height / retinaScale)
+    }
+}
+
+public struct SetupOptions: Sendable {
+    public var username: String
+    public var password: String
+    public var fullName: String
+    /// An additional host public key to authorize (beyond the per-VM key).
+    public var authorizedKeyPath: URL?
+    public var autoLogin: Bool
+    public var perPaneTimeout: TimeInterval
+    public var requestedVNCPort: UInt
+    /// Power the VM off after provisioning instead of leaving it running.
+    public var shutdownAfter: Bool
+    /// Optional path to a custom setup step-list (JSON) overriding the built-in flow.
+    public var scriptOverride: URL?
+    /// Optional host-side Xcode .xip to stage and install during setup.
+    public var xcodeXIPURL: URL?
+
+    public init(
+        username: String = "admin",
+        password: String = "admin",
+        fullName: String = "Administrator",
+        authorizedKeyPath: URL? = nil,
+        autoLogin: Bool = true,
+        perPaneTimeout: TimeInterval = 120,
+        requestedVNCPort: UInt = 0,
+        shutdownAfter: Bool = false,
+        scriptOverride: URL? = nil,
+        xcodeXIPURL: URL? = nil
+    ) {
+        self.username = username
+        self.password = password
+        self.fullName = fullName
+        self.authorizedKeyPath = authorizedKeyPath
+        self.autoLogin = autoLogin
+        self.perPaneTimeout = perPaneTimeout
+        self.requestedVNCPort = requestedVNCPort
+        self.shutdownAfter = shutdownAfter
+        self.scriptOverride = scriptOverride
+        self.xcodeXIPURL = xcodeXIPURL
+    }
+}
+
+public struct SetupResult: Sendable {
+    public let username: String
+    public let ipAddress: String?
+    public let sshReady: Bool
+    public let inventoryLine: String?
+
+    public init(username: String, ipAddress: String?, sshReady: Bool, inventoryLine: String?) {
+        self.username = username
+        self.ipAddress = ipAddress
+        self.sshReady = sshReady
+        self.inventoryLine = inventoryLine
+    }
+}
+
+public struct ManagedVM: Identifiable, Equatable, Sendable {
+    public let bundleURL: URL
+    public let metadata: VMMetadata
+
+    public init(bundleURL: URL, metadata: VMMetadata) {
+        self.bundleURL = bundleURL
+        self.metadata = metadata
+    }
+
+    public var id: UUID {
+        metadata.id
+    }
+}
+
+public struct VMRemovalTarget: Equatable, Sendable {
+    public let bundleURL: URL
+    public let metadata: VMMetadata?
+
+    public init(bundleURL: URL, metadata: VMMetadata? = nil) {
+        self.bundleURL = bundleURL
+        self.metadata = metadata
+    }
+
+    public var name: String {
+        metadata?.name ?? bundleURL.deletingPathExtension().lastPathComponent
+    }
+}
+
+/// Structured notification that the setup pipeline entered a new phase, so UIs
+/// can render a step list instead of parsing status strings.
+public struct SetupStepProgress: Equatable, Sendable {
+    public let phaseIndex: Int
+    public let phaseCount: Int
+    public let title: String
+    public let anchor: String
+
+    public init(phaseIndex: Int, phaseCount: Int, title: String, anchor: String) {
+        self.phaseIndex = phaseIndex
+        self.phaseCount = phaseCount
+        self.title = title
+        self.anchor = anchor
+    }
+}
+
+public enum VMOperationEvent: Sendable {
+    case status(String)
+    case progress(label: String, fractionComplete: Double)
+    case setupStep(SetupStepProgress)
+}
+
+public typealias VMOperationHandler = @Sendable (VMOperationEvent) -> Void
+
+public enum VMText {
+    public static func gibLabel(for bytes: UInt64) -> String {
+        let gib = Double(bytes) / Double(oneGiB)
+        if gib.rounded() == gib {
+            return "\(Int(gib)) GiB"
+        }
+        return String(format: "%.1f GiB", gib)
+    }
+
+    public static func formatDate(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+}
+
+let oneGiB: UInt64 = 1024 * 1024 * 1024
+
+func sanitizedBundleName(_ rawName: String) -> String {
+    let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let pieces = trimmed.unicodeScalars.map { scalar -> String in
+        if CharacterSet.alphanumerics.contains(scalar) || scalar == "-" || scalar == "_" || scalar == "." {
+            return String(scalar)
+        }
+
+        if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+            return "-"
+        }
+
+        return ""
+    }
+
+    let collapsed = pieces.joined()
+        .replacingOccurrences(of: "--", with: "-")
+        .trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+
+    return collapsed.isEmpty ? "vm" : collapsed
+}
+
+public func parseDisplaySize(_ rawValue: String) throws -> (width: Int, height: Int) {
+    let parts = rawValue.lowercased().split(separator: "x", omittingEmptySubsequences: true)
+    guard parts.count == 2,
+          let width = Int(parts[0]),
+          let height = Int(parts[1]),
+          width > 0,
+          height > 0 else {
+        throw MacVMError.invalidDisplaySize(rawValue)
+    }
+
+    return (width, height)
+}
+
+public func parseDisplayPixelSizeAsEffectiveSize(_ rawValue: String) throws -> (width: Int, height: Int) {
+    let pixels = try parseDisplaySize(rawValue)
+    do {
+        return try VMDisplayMetrics.effectiveSize(fromPixelWidth: pixels.width, height: pixels.height)
+    } catch {
+        throw MacVMError.invalidDisplaySize(rawValue)
+    }
+}

@@ -1,0 +1,9 @@
+.build
+.swiftpm
+dist
+.DS_Store
+*.profraw
+DerivedData
+xcuserdata
+*.xcuserstate
+__pycache__/

@@ -1,0 +1,4 @@
+module MacVMPrivateVZ {
+    header "MacVMPrivateVZ.h"
+    export *
+}

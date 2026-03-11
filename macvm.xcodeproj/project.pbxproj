@@ -1,0 +1,1082 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXAggregateTarget section */
+		A00000000000000000000032 /* MacVMHostKitResources */ = {
+			isa = PBXAggregateTarget;
+			buildConfigurationList = A00000000000000000000132 /* Build configuration list for PBXAggregateTarget "MacVMHostKitResources" */;
+			buildPhases = (
+				A0000000000000000000004D /* Build MacVMHostKit Resource Bundle */,
+			);
+			dependencies = (
+			);
+			name = MacVMHostKitResources;
+			productName = MacVMHostKitResources;
+		};
+/* End PBXAggregateTarget section */
+
+/* Begin PBXBuildFile section */
+		A000000000000000000000B0 /* libMacVMHostKit.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000021 /* libMacVMHostKit.a */; };
+		A000000000000000000000B1 /* libMacVMPrivateVZ.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000020 /* libMacVMPrivateVZ.a */; };
+		A000000000000000000000B2 /* libMacVMHostKit.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000021 /* libMacVMHostKit.a */; };
+		A000000000000000000000B3 /* libMacVMPrivateVZ.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000020 /* libMacVMPrivateVZ.a */; };
+		A000000000000000000000B4 /* libMacVMHostKit.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000021 /* libMacVMHostKit.a */; };
+		A000000000000000000000B5 /* libMacVMPrivateVZ.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000020 /* libMacVMPrivateVZ.a */; };
+		A000000000000000000000B6 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = A000000000000000000000C1 /* ArgumentParser */; };
+		A000000000000000000000B7 /* Support/AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000087 /* Support/AppIcon.icon */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A00000000000000000000061 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000030;
+			remoteInfo = MacVMPrivateVZ;
+		};
+		A00000000000000000000063 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000032;
+			remoteInfo = MacVMHostKitResources;
+		};
+		A00000000000000000000065 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000031;
+			remoteInfo = MacVMHostKit;
+		};
+		A00000000000000000000067 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000030;
+			remoteInfo = MacVMPrivateVZ;
+		};
+		A00000000000000000000069 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000032;
+			remoteInfo = MacVMHostKitResources;
+		};
+		A0000000000000000000006B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000031;
+			remoteInfo = MacVMHostKit;
+		};
+		A0000000000000000000006D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000030;
+			remoteInfo = MacVMPrivateVZ;
+		};
+		A0000000000000000000006F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000032;
+			remoteInfo = MacVMHostKitResources;
+		};
+		A00000000000000000000071 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000031;
+			remoteInfo = MacVMHostKit;
+		};
+		A00000000000000000000073 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000030;
+			remoteInfo = MacVMPrivateVZ;
+		};
+		A00000000000000000000075 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000032;
+			remoteInfo = MacVMHostKitResources;
+		};
+		A00000000000000000000077 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000034;
+			remoteInfo = "MacVM Manager";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A00000000000000000000020 /* libMacVMPrivateVZ.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libMacVMPrivateVZ.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000021 /* libMacVMHostKit.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libMacVMHostKit.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000022 /* macvm */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = macvm; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000023 /* MacVM Manager.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MacVM Manager.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000025 /* MacVMHostKitTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacVMHostKitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000026 /* MacVMManagerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacVMManagerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000082 /* Makefile */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.make; path = Makefile; sourceTree = "<group>"; };
+		A00000000000000000000083 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		A00000000000000000000084 /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
+		A00000000000000000000085 /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
+		A00000000000000000000086 /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
+		A00000000000000000000087 /* Support/AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = Support/AppIcon.icon; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		A00000000000000000000010 /* Sources/MacVMPrivateVZ */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/MacVMPrivateVZ;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000011 /* Sources/MacVMHostKit */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/MacVMHostKit;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000013 /* Sources/macvm */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/macvm;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000014 /* Sources/MacVMManager */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/MacVMManager;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000015 /* Tests/MacVMHostKitTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Tests/MacVMHostKitTests;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000016 /* Tests/MacVMManagerTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Tests/MacVMManagerTests;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000017 /* Support */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Support;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000018 /* scripts */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = scripts;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A00000000000000000000041 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000044 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000047 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A000000000000000000000B0 /* libMacVMHostKit.a in Frameworks */,
+				A000000000000000000000B1 /* libMacVMPrivateVZ.a in Frameworks */,
+				A000000000000000000000B6 /* ArgumentParser in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A0000000000000000000004B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A000000000000000000000B2 /* libMacVMHostKit.a in Frameworks */,
+				A000000000000000000000B3 /* libMacVMPrivateVZ.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A0000000000000000000004F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A000000000000000000000B4 /* libMacVMHostKit.a in Frameworks */,
+				A000000000000000000000B5 /* libMacVMPrivateVZ.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000052 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000090 /* Sources */,
+				A00000000000000000000091 /* Tests */,
+				A00000000000000000000017 /* Support */,
+				A00000000000000000000087 /* Support/AppIcon.icon */,
+				A00000000000000000000018 /* scripts */,
+				A00000000000000000000003 /* Products */,
+				A00000000000000000000082 /* Makefile */,
+				A00000000000000000000083 /* README.md */,
+				A00000000000000000000084 /* AGENTS.md */,
+				A00000000000000000000085 /* CLAUDE.md */,
+				A00000000000000000000086 /* LICENSE */,
+			);
+			sourceTree = "<group>";
+		};
+		A00000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000020 /* libMacVMPrivateVZ.a */,
+				A00000000000000000000021 /* libMacVMHostKit.a */,
+				A00000000000000000000022 /* macvm */,
+				A00000000000000000000023 /* MacVM Manager.app */,
+				A00000000000000000000025 /* MacVMHostKitTests.xctest */,
+				A00000000000000000000026 /* MacVMManagerTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000090 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000010 /* Sources/MacVMPrivateVZ */,
+				A00000000000000000000011 /* Sources/MacVMHostKit */,
+				A00000000000000000000013 /* Sources/macvm */,
+				A00000000000000000000014 /* Sources/MacVMManager */,
+			);
+			name = Sources;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000091 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000015 /* Tests/MacVMHostKitTests */,
+				A00000000000000000000016 /* Tests/MacVMManagerTests */,
+			);
+			name = Tests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00000000000000000000030 /* MacVMPrivateVZ */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000130 /* Build configuration list for PBXNativeTarget "MacVMPrivateVZ" */;
+			buildPhases = (
+				A00000000000000000000040 /* Sources */,
+				A00000000000000000000041 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A00000000000000000000010 /* Sources/MacVMPrivateVZ */,
+			);
+			name = MacVMPrivateVZ;
+			productName = MacVMPrivateVZ;
+			productReference = A00000000000000000000020 /* libMacVMPrivateVZ.a */;
+			productType = "com.apple.product-type.library.static";
+		};
+		A00000000000000000000031 /* MacVMHostKit */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000131 /* Build configuration list for PBXNativeTarget "MacVMHostKit" */;
+			buildPhases = (
+				A00000000000000000000043 /* Sources */,
+				A00000000000000000000044 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A00000000000000000000062 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A00000000000000000000011 /* Sources/MacVMHostKit */,
+			);
+			name = MacVMHostKit;
+			productName = MacVMHostKit;
+			productReference = A00000000000000000000021 /* libMacVMHostKit.a */;
+			productType = "com.apple.product-type.library.static";
+		};
+		A00000000000000000000033 /* macvm */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000133 /* Build configuration list for PBXNativeTarget "macvm" */;
+			buildPhases = (
+				A00000000000000000000046 /* Sources */,
+				A00000000000000000000047 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A00000000000000000000064 /* PBXTargetDependency */,
+				A00000000000000000000066 /* PBXTargetDependency */,
+				A00000000000000000000068 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A00000000000000000000013 /* Sources/macvm */,
+			);
+			name = macvm;
+			packageProductDependencies = (
+				A000000000000000000000C1 /* ArgumentParser */,
+			);
+			productName = macvm;
+			productReference = A00000000000000000000022 /* macvm */;
+			productType = "com.apple.product-type.tool";
+		};
+		A00000000000000000000034 /* MacVM Manager */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000134 /* Build configuration list for PBXNativeTarget "MacVM Manager" */;
+			buildPhases = (
+				A0000000000000000000004A /* Sources */,
+				A0000000000000000000004B /* Frameworks */,
+				A0000000000000000000004C /* Resources */,
+				A0000000000000000000004E /* Copy MacVMHostKit Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A0000000000000000000006A /* PBXTargetDependency */,
+				A0000000000000000000006C /* PBXTargetDependency */,
+				A0000000000000000000006E /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A00000000000000000000014 /* Sources/MacVMManager */,
+			);
+			name = "MacVM Manager";
+			productName = "MacVM Manager";
+			productReference = A00000000000000000000023 /* MacVM Manager.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A00000000000000000000035 /* MacVMHostKitTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000135 /* Build configuration list for PBXNativeTarget "MacVMHostKitTests" */;
+			buildPhases = (
+				A00000000000000000000048 /* Sources */,
+				A0000000000000000000004F /* Frameworks */,
+				A00000000000000000000057 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A00000000000000000000070 /* PBXTargetDependency */,
+				A00000000000000000000072 /* PBXTargetDependency */,
+				A00000000000000000000074 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A00000000000000000000015 /* Tests/MacVMHostKitTests */,
+			);
+			name = MacVMHostKitTests;
+			productName = MacVMHostKitTests;
+			productReference = A00000000000000000000025 /* MacVMHostKitTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		A00000000000000000000036 /* MacVMManagerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000136 /* Build configuration list for PBXNativeTarget "MacVMManagerTests" */;
+			buildPhases = (
+				A00000000000000000000051 /* Sources */,
+				A00000000000000000000052 /* Frameworks */,
+				A00000000000000000000058 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A00000000000000000000076 /* PBXTargetDependency */,
+				A00000000000000000000078 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A00000000000000000000016 /* Tests/MacVMManagerTests */,
+			);
+			name = MacVMManagerTests;
+			productName = MacVMManagerTests;
+			productReference = A00000000000000000000026 /* MacVMManagerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					A00000000000000000000030 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A00000000000000000000031 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A00000000000000000000032 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A00000000000000000000033 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A00000000000000000000034 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A00000000000000000000035 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A00000000000000000000036 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+				};
+			};
+			buildConfigurationList = A00000000000000000000101 /* Build configuration list for PBXProject "macvm" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A00000000000000000000002;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A000000000000000000000C0 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A00000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A00000000000000000000030 /* MacVMPrivateVZ */,
+				A00000000000000000000031 /* MacVMHostKit */,
+				A00000000000000000000032 /* MacVMHostKitResources */,
+				A00000000000000000000033 /* macvm */,
+				A00000000000000000000034 /* MacVM Manager */,
+				A00000000000000000000035 /* MacVMHostKitTests */,
+				A00000000000000000000036 /* MacVMManagerTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A0000000000000000000004C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A000000000000000000000B7 /* Support/AppIcon.icon in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000057 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000058 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A0000000000000000000004D /* Build MacVMHostKit Resource Bundle */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/Sources/MacVMHostKit/Resources",
+			);
+			name = "Build MacVMHostKit Resource Bundle";
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/macvm_MacVMHostKit.bundle",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "set -euo pipefail\n\nBUNDLE_DIR=\"$BUILT_PRODUCTS_DIR/macvm_MacVMHostKit.bundle\"\nrm -rf \"$BUNDLE_DIR\"\nmkdir -p \"$BUNDLE_DIR/Resources\"\nrsync -a --delete \"$PROJECT_DIR/Sources/MacVMHostKit/Resources/\" \"$BUNDLE_DIR/Resources/\"\n";
+			showEnvVarsInLog = 0;
+		};
+		A0000000000000000000004E /* Copy MacVMHostKit Resources */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/macvm_MacVMHostKit.bundle",
+			);
+			name = "Copy MacVMHostKit Resources";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/macvm_MacVMHostKit.bundle",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "set -euo pipefail\n\nRESOURCE_DEST=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nmkdir -p \"$RESOURCE_DEST\"\nrm -rf \"$RESOURCE_DEST/macvm_MacVMHostKit.bundle\"\ncp -R \"$BUILT_PRODUCTS_DIR/macvm_MacVMHostKit.bundle\" \"$RESOURCE_DEST/\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000040 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000043 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000046 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000048 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A0000000000000000000004A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000051 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A00000000000000000000062 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMPrivateVZ;
+			target = A00000000000000000000030 /* MacVMPrivateVZ */;
+			targetProxy = A00000000000000000000061 /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000064 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMHostKitResources;
+			target = A00000000000000000000032 /* MacVMHostKitResources */;
+			targetProxy = A00000000000000000000063 /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000066 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMHostKit;
+			target = A00000000000000000000031 /* MacVMHostKit */;
+			targetProxy = A00000000000000000000065 /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000068 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMPrivateVZ;
+			target = A00000000000000000000030 /* MacVMPrivateVZ */;
+			targetProxy = A00000000000000000000067 /* PBXContainerItemProxy */;
+		};
+		A0000000000000000000006A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMHostKitResources;
+			target = A00000000000000000000032 /* MacVMHostKitResources */;
+			targetProxy = A00000000000000000000069 /* PBXContainerItemProxy */;
+		};
+		A0000000000000000000006C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMHostKit;
+			target = A00000000000000000000031 /* MacVMHostKit */;
+			targetProxy = A0000000000000000000006B /* PBXContainerItemProxy */;
+		};
+		A0000000000000000000006E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMPrivateVZ;
+			target = A00000000000000000000030 /* MacVMPrivateVZ */;
+			targetProxy = A0000000000000000000006D /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000070 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMHostKitResources;
+			target = A00000000000000000000032 /* MacVMHostKitResources */;
+			targetProxy = A0000000000000000000006F /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000072 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMHostKit;
+			target = A00000000000000000000031 /* MacVMHostKit */;
+			targetProxy = A00000000000000000000071 /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000074 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMPrivateVZ;
+			target = A00000000000000000000030 /* MacVMPrivateVZ */;
+			targetProxy = A00000000000000000000073 /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000076 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMHostKitResources;
+			target = A00000000000000000000032 /* MacVMHostKitResources */;
+			targetProxy = A00000000000000000000075 /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000078 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = "MacVM Manager";
+			target = A00000000000000000000034 /* MacVM Manager */;
+			targetProxy = A00000000000000000000077 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A00000000000000000000200 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A00000000000000000000201 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A00000000000000000000210 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_MODULE_NAME = MacVMPrivateVZ;
+				PRODUCT_NAME = MacVMPrivateVZ;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		A00000000000000000000211 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_MODULE_NAME = MacVMPrivateVZ;
+				PRODUCT_NAME = MacVMPrivateVZ;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		A00000000000000000000212 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEFINES_MODULE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_MODULE_NAME = MacVMHostKit;
+				PRODUCT_NAME = MacVMHostKit;
+				SKIP_INSTALL = YES;
+				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include $(BUILT_PRODUCTS_DIR)";
+			};
+			name = Debug;
+		};
+		A00000000000000000000213 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEFINES_MODULE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_MODULE_NAME = MacVMHostKit;
+				PRODUCT_NAME = MacVMHostKit;
+				SKIP_INSTALL = YES;
+				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include $(BUILT_PRODUCTS_DIR)";
+			};
+			name = Release;
+		};
+		A00000000000000000000214 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = MacVMHostKitResources;
+			};
+			name = Debug;
+		};
+		A00000000000000000000215 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = MacVMHostKitResources;
+			};
+			name = Release;
+		};
+		A00000000000000000000216 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = Support/macvm.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				INFOPLIST_KEY_CFBundleName = macvm;
+				INFOPLIST_KEY_CFBundleShortVersionString = "$(MARKETING_VERSION)";
+				INFOPLIST_KEY_CFBundleVersion = "$(CURRENT_PROJECT_VERSION)";
+				MARKETING_VERSION = 0.0.1;
+				OTHER_SWIFT_FLAGS = "$(inherited) -parse-as-library";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm.cli;
+				PRODUCT_MODULE_NAME = macvm;
+				PRODUCT_NAME = macvm;
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+			};
+			name = Debug;
+		};
+		A00000000000000000000217 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = Support/macvm.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				INFOPLIST_KEY_CFBundleName = macvm;
+				INFOPLIST_KEY_CFBundleShortVersionString = "$(MARKETING_VERSION)";
+				INFOPLIST_KEY_CFBundleVersion = "$(CURRENT_PROJECT_VERSION)";
+				MARKETING_VERSION = 0.0.1;
+				OTHER_SWIFT_FLAGS = "$(inherited) -parse-as-library";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm.cli;
+				PRODUCT_MODULE_NAME = macvm;
+				PRODUCT_NAME = macvm;
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+			};
+			name = Release;
+		};
+		A00000000000000000000218 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Support/macvm.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				INFOPLIST_FILE = "Support/MacVMManager-Info.plist";
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm;
+				PRODUCT_MODULE_NAME = MacVMManager;
+				PRODUCT_NAME = "MacVM Manager";
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+			};
+			name = Debug;
+		};
+		A00000000000000000000219 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Support/macvm.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				INFOPLIST_FILE = "Support/MacVMManager-Info.plist";
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm;
+				PRODUCT_MODULE_NAME = MacVMManager;
+				PRODUCT_NAME = "MacVM Manager";
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+			};
+			name = Release;
+		};
+		A0000000000000000000021A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.macvm.macvm.hostkit-tests";
+				PRODUCT_MODULE_NAME = MacVMHostKitTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+			};
+			name = Debug;
+		};
+		A0000000000000000000021B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.macvm.macvm.hostkit-tests";
+				PRODUCT_MODULE_NAME = MacVMHostKitTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+			};
+			name = Release;
+		};
+		A0000000000000000000021C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.macvm.macvm.manager-tests";
+				PRODUCT_MODULE_NAME = MacVMManagerTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacVM Manager.app/Contents/MacOS/MacVM Manager";
+				TEST_TARGET_NAME = "MacVM Manager";
+			};
+			name = Debug;
+		};
+		A0000000000000000000021D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.macvm.macvm.manager-tests";
+				PRODUCT_MODULE_NAME = MacVMManagerTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacVM Manager.app/Contents/MacOS/MacVM Manager";
+				TEST_TARGET_NAME = "MacVM Manager";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A00000000000000000000101 /* Build configuration list for PBXProject "macvm" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000200 /* Debug */,
+				A00000000000000000000201 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000130 /* Build configuration list for PBXNativeTarget "MacVMPrivateVZ" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000210 /* Debug */,
+				A00000000000000000000211 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000131 /* Build configuration list for PBXNativeTarget "MacVMHostKit" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000212 /* Debug */,
+				A00000000000000000000213 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000132 /* Build configuration list for PBXAggregateTarget "MacVMHostKitResources" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000214 /* Debug */,
+				A00000000000000000000215 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000133 /* Build configuration list for PBXNativeTarget "macvm" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000216 /* Debug */,
+				A00000000000000000000217 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000134 /* Build configuration list for PBXNativeTarget "MacVM Manager" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000218 /* Debug */,
+				A00000000000000000000219 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000135 /* Build configuration list for PBXNativeTarget "MacVMHostKitTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0000000000000000000021A /* Debug */,
+				A0000000000000000000021B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000136 /* Build configuration list for PBXNativeTarget "MacVMManagerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0000000000000000000021C /* Debug */,
+				A0000000000000000000021D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A000000000000000000000C0 /* XCRemoteSwiftPackageReference "swift-argument-parser" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-argument-parser";
+			requirement = {
+				kind = exactVersion;
+				version = 1.7.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A000000000000000000000C1 /* ArgumentParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A000000000000000000000C0 /* XCRemoteSwiftPackageReference "swift-argument-parser" */;
+			productName = ArgumentParser;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A00000000000000000000001 /* Project object */;
+}

@@ -1,0 +1,741 @@
+import AppKit
+import Foundation
+import MacVMHostKit
+import Observation
+import Virtualization
+
+/// Sidebar selection: a VM (by its unique name, stable across install → setup →
+/// run) or the restore-image library.
+enum SidebarItem: Hashable {
+    case vm(String)
+    case images
+    case xcode
+}
+
+/// Live install progress for a VM this app is creating.
+struct InstallProgress {
+    var status: String
+    var fraction: Double?
+    var command: String
+}
+
+/// Live setup progress for a VM this app is driving through Setup Assistant.
+struct SetupProgress {
+    var phases: [SetupPhase]
+    var currentPhaseID: Int?
+    var vncURL: String
+    var username: String
+    var thumbnail: NSImage?
+    var failureMessage: String?
+}
+
+enum VMPowerActionKind: Equatable {
+    case stop
+    case shutDown
+}
+
+struct PendingPowerAction: Equatable {
+    var kind: VMPowerActionKind
+    var name: String
+}
+
+/// Single source of truth for the manager window: the VM list, per-VM liveness,
+/// in-app operations (install / setup / viewer windows), the create-sheet draft,
+/// and the CLI-equivalent bar.
+@MainActor
+@Observable
+final class AppStore {
+    let service: MacVMService
+
+    private(set) var vms: [ManagedVM] = []
+    var selection: SidebarItem?
+    var sheetPresented = false
+    var draft: VMCreationDraft
+    var setupAfterInstall = false
+    var selectedXcodeXIPURL: URL?
+    private(set) var lastCommand = CLIEquivalent.list()
+    private(set) var copiedKey: String?
+    var alertMessage: String?
+    var pendingPowerAction: PendingPowerAction?
+
+    private(set) var installs: [String: InstallProgress] = [:]
+    private(set) var setups: [String: SetupProgress] = [:]
+    private(set) var liveProcesses: [String: VMProcessRuntimeState] = [:]
+    private(set) var liveSessions: [String: VNCSession] = [:]
+    private(set) var liveDisplays: [String: VMDisplayRuntimeState] = [:]
+    private(set) var liveSetupStates: [String: VMSetupRuntimeState] = [:]
+    private(set) var guestIPs: [String: String] = [:]
+
+    private(set) var restoreImages: [RestoreImageEntry] = []
+    private(set) var restoreImageLabels: [String: String] = [:]
+    private(set) var latestCheckStatus: String?
+    private(set) var restoreImageImportInProgress = false
+    private(set) var xcodeArchives: [XcodeArchiveEntry] = []
+    private(set) var xcodeImportStatus: String?
+    private(set) var xcodeImportInProgress = false
+
+    private var viewers: [String: VMViewerController] = [:]
+    private var headlessRunners: [String: HeadlessRunner] = [:]
+    private var refreshTimer: Timer?
+    private var copyResetTask: Task<Void, Never>?
+
+    init(service: MacVMService = MacVMService()) {
+        self.service = service
+        self.draft = service.defaultDraft()
+        refresh()
+        selection = vms.first.map { .vm($0.metadata.name) } ?? .images
+        updateCommandForSelection()
+        startRefreshTimer()
+    }
+
+    // MARK: - Derived state
+
+    func vm(named name: String) -> ManagedVM? {
+        vms.first { $0.metadata.name == name }
+    }
+
+    func status(forName name: String) -> VMStatus {
+        VMStatus.derive(
+            installing: installs[name] != nil,
+            settingUp: setups[name] != nil,
+            viewerActive: viewers[name] != nil,
+            liveProcess: liveProcesses[name],
+            liveDisplay: liveDisplays[name],
+            liveSession: liveSessions[name]
+        )
+    }
+
+    /// Names shown in the sidebar: every bundle on disk plus in-flight installs
+    /// whose bundle metadata hasn't been written yet.
+    var sidebarVMNames: [String] {
+        var names = vms.map(\.metadata.name)
+        for name in installs.keys.sorted() where !names.contains(name) {
+            names.append(name)
+        }
+        return names
+    }
+
+    func sidebarSubtitle(forName name: String) -> String {
+        let status = status(forName: name)
+        guard let vm = vm(named: name) else {
+            return status.sidebarLabel
+        }
+        let metadata = vm.metadata
+        let memory = metadata.memorySizeBytes / (1024 * 1024 * 1024)
+        let disk = metadata.diskSizeBytes / (1024 * 1024 * 1024)
+        return "\(metadata.cpuCount) CPU · \(memory) GiB · \(disk) GiB · \(status.sidebarLabel)"
+    }
+
+    /// The viewer controller whose window is key, for the VM menu commands.
+    var activeViewer: VMViewerController? {
+        viewers.values.first { $0.window?.isKeyWindow == true }
+            ?? (viewers.count == 1 ? viewers.values.first : nil)
+    }
+
+    func hasViewer(forName name: String) -> Bool {
+        viewers[name] != nil
+    }
+
+    // MARK: - Refresh loop
+
+    private func startRefreshTimer() {
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refresh()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
+    }
+
+    func refresh() {
+        vms = (try? service.listVMs()) ?? []
+
+        var processes: [String: VMProcessRuntimeState] = [:]
+        var sessions: [String: VNCSession] = [:]
+        var displays: [String: VMDisplayRuntimeState] = [:]
+        var setupStates: [String: VMSetupRuntimeState] = [:]
+        for vm in vms {
+            let name = vm.metadata.name
+            if let process = service.liveVMProcessRuntimeState(for: vm) {
+                processes[name] = process
+            }
+            if let session = service.liveVNCSession(for: vm) {
+                sessions[name] = session
+            }
+            if let display = service.liveDisplayRuntimeState(for: vm) {
+                displays[name] = display
+            }
+            if let setupState = service.liveSetupRuntimeState(for: vm) {
+                setupStates[name] = setupState
+            }
+        }
+        liveProcesses = processes
+        liveSessions = sessions
+        liveDisplays = displays
+        liveSetupStates = setupStates
+        reconcileSetupProgress(from: setupStates, sessions: sessions)
+
+        for vm in vms {
+            let name = vm.metadata.name
+            if status(forName: name) == .running {
+                if guestIPs[name] == nil, let ip = try? service.resolveGuestIP(vm) {
+                    guestIPs[name] = ip
+                }
+            } else if status(forName: name) == .stopped {
+                guestIPs[name] = nil
+            }
+        }
+
+        restoreImages = RestoreImageCatalog.list(root: service.rootDirectory)
+        xcodeArchives = XcodeArchiveCatalog.list(root: service.rootDirectory)
+    }
+
+    private func reconcileSetupProgress(from setupStates: [String: VMSetupRuntimeState], sessions: [String: VNCSession]) {
+        let hostMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+
+        for (name, state) in setupStates {
+            guard let vm = vm(named: name) else { continue }
+            let existing = setups[name]
+            let plan = SetupFlows.plan(
+                forMacOSMajor: hostMajor,
+                options: SetupOptions(username: state.username, fullName: state.fullName)
+            )
+            let vncURL: String
+            if let session = sessions[name] {
+                vncURL = session.vncURLString
+            } else {
+                vncURL = existing?.vncURL ?? ""
+            }
+
+            setups[name] = SetupProgress(
+                phases: plan.phases,
+                currentPhaseID: state.phaseIndex,
+                vncURL: vncURL,
+                username: state.username,
+                thumbnail: existing?.thumbnail,
+                failureMessage: state.failureMessage
+            )
+
+            if existing == nil {
+                startThumbnailLoop(vm: vm)
+            }
+        }
+
+        for name in Array(setups.keys) where setupStates[name] == nil && headlessRunners[name] == nil {
+            setups[name] = nil
+        }
+    }
+
+    // MARK: - Selection & CLI bar
+
+    func updateCommandForSelection() {
+        switch selection {
+        case .vm(let name):
+            lastCommand = CLIEquivalent.show(name)
+        case .images:
+            lastCommand = CLIEquivalent.listRestoreImages(rootPath: service.rootDirectory.path)
+        case .xcode:
+            lastCommand = CLIEquivalent.listXcodeArchives(rootPath: service.rootDirectory.path)
+        case nil:
+            lastCommand = CLIEquivalent.list()
+        }
+    }
+
+    // MARK: - Clipboard
+
+    func copy(_ text: String, key: String, command: String? = nil) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        copiedKey = key
+        if let command {
+            lastCommand = command
+        }
+        copyResetTask?.cancel()
+        copyResetTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            guard !Task.isCancelled else { return }
+            self?.copiedKey = nil
+        }
+    }
+
+    func openVNCURL(_ vncURL: String, name: String) {
+        guard let url = URL(string: vncURL) else {
+            alertMessage = "Invalid VNC URL for \(name): \(vncURL)"
+            return
+        }
+
+        guard NSWorkspace.shared.open(url) else {
+            alertMessage = "Unable to open \(vncURL) with the system default handler."
+            return
+        }
+
+        lastCommand = CLIEquivalent.vnc(name, open: true)
+    }
+
+    // MARK: - Run / viewer / power
+
+    func runViewer(_ vm: ManagedVM, recovery: Bool = false) {
+        let name = vm.metadata.name
+        guard viewers[name] == nil else {
+            openViewer(vm)
+            return
+        }
+        do {
+            let controller = VMViewerController(managedVM: vm)
+            controller.hidesWindowOnClose = true
+            controller.onStop = { [weak self] in
+                guard let self else { return }
+                self.viewers[name]?.window?.orderOut(nil)
+                self.viewers[name] = nil
+                self.refresh()
+            }
+            let window = try controller.makeWindowAndStart(startInRecovery: recovery)
+            viewers[name] = controller
+            window.makeKeyAndOrderFront(nil)
+            lastCommand = CLIEquivalent.run(name, recovery: recovery)
+        } catch {
+            alertMessage = "Failed to start \(name): \(error.localizedDescription)"
+        }
+    }
+
+    func openViewer(_ vm: ManagedVM) {
+        let name = vm.metadata.name
+        viewers[name]?.showWindow()
+        lastCommand = CLIEquivalent.run(name)
+    }
+
+    func requestStop(_ vm: ManagedVM) {
+        pendingPowerAction = PendingPowerAction(kind: .stop, name: vm.metadata.name)
+    }
+
+    func requestShutDown(_ vm: ManagedVM) {
+        pendingPowerAction = PendingPowerAction(kind: .shutDown, name: vm.metadata.name)
+    }
+
+    func confirmPowerAction() {
+        guard let pendingPowerAction else { return }
+        self.pendingPowerAction = nil
+        guard let vm = vm(named: pendingPowerAction.name) else { return }
+
+        switch pendingPowerAction.kind {
+        case .stop:
+            stop(vm)
+        case .shutDown:
+            shutDown(vm)
+        }
+    }
+
+    private func stop(_ vm: ManagedVM) {
+        let name = vm.metadata.name
+        lastCommand = CLIEquivalent.stop(name)
+
+        if let controller = viewers[name] {
+            Task { @MainActor in
+                await controller.stop()
+                viewers[name] = nil
+                setups[name] = nil
+                refresh()
+            }
+            return
+        }
+
+        if let runner = headlessRunners[name] {
+            Task { @MainActor in
+                await runner.stop()
+                headlessRunners[name] = nil
+                // Stopping mid-setup abandons the setup; drop its progress card
+                // so the VM returns to the stopped state with Run/Recovery.
+                setups[name] = nil
+                refresh()
+            }
+            return
+        }
+
+        if setups[name] != nil,
+           liveProcesses[name] == nil,
+           liveSessions[name] == nil,
+           liveDisplays[name] == nil,
+           liveSetupStates[name] == nil {
+            setups[name] = nil
+            refresh()
+            return
+        }
+
+        let service = self.service
+        Task { @MainActor in
+            let errorMessage = await Task.detached {
+                do {
+                    try service.stopVM(vm)
+                    return nil as String?
+                } catch {
+                    return error.localizedDescription
+                }
+            }.value
+
+            if let errorMessage {
+                alertMessage = "Failed to stop \(name): \(errorMessage)"
+            } else {
+                refresh()
+            }
+        }
+    }
+
+    private func shutDown(_ vm: ManagedVM) {
+        let name = vm.metadata.name
+        lastCommand = CLIEquivalent.shutDown(name)
+
+        let service = self.service
+        Task { @MainActor in
+            let result = await Task.detached {
+                do {
+                    return (status: try service.shutdownGuest(vm) as Int32?, errorMessage: nil as String?)
+                } catch {
+                    return (status: nil as Int32?, errorMessage: error.localizedDescription)
+                }
+            }.value
+
+            if let errorMessage = result.errorMessage {
+                alertMessage = "Failed to shut down \(name): \(errorMessage)"
+            } else if let status = result.status {
+                if status != 0 {
+                    alertMessage = "Shutdown command failed for \(name) with exit code \(status)."
+                }
+                refresh()
+            }
+        }
+    }
+
+    // MARK: - Remove
+
+    /// VM name awaiting removal confirmation (drives the confirmation dialog).
+    var pendingRemoval: String?
+
+    func requestRemove(_ name: String) {
+        guard status(forName: name) == .stopped else {
+            alertMessage = "Shut down \(name) before removing it."
+            return
+        }
+        pendingRemoval = name
+    }
+
+    func confirmRemove() {
+        guard let name = pendingRemoval else { return }
+        pendingRemoval = nil
+        do {
+            try service.removeVM(identifier: name)
+            guestIPs[name] = nil
+            setups[name] = nil
+            installs[name] = nil
+            lastCommand = CLIEquivalent.rm(name)
+            refresh()
+            if selection == .vm(name) {
+                selection = vms.first.map { .vm($0.metadata.name) } ?? .images
+            }
+        } catch {
+            alertMessage = "Failed to remove \(name): \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Create
+
+    func openCreateSheet(prefillIPSW url: URL? = nil, prefillXcode xcodeURL: URL? = nil) {
+        draft = service.defaultDraft()
+        setupAfterInstall = false
+        selectedXcodeXIPURL = nil
+        if let url {
+            draft.restoreMode = .localFile
+            draft.localRestoreImageURL = url
+        }
+        if let xcodeURL {
+            setupAfterInstall = true
+            selectedXcodeXIPURL = xcodeURL
+        }
+        sheetPresented = true
+    }
+
+    var createCommandPreview: String {
+        CLIEquivalent.create(
+            draft,
+            defaults: service.defaultDraft(),
+            setupAfter: setupAfterInstall,
+            xcodeXIPURL: setupAfterInstall ? selectedXcodeXIPURL : nil
+        )
+    }
+
+    func submitCreate() {
+        let draft = self.draft
+        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        if setupAfterInstall, let selectedXcodeXIPURL {
+            var isDirectory: ObjCBool = false
+            guard selectedXcodeXIPURL.pathExtension.lowercased() == "xip",
+                  FileManager.default.fileExists(atPath: selectedXcodeXIPURL.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue
+            else {
+                alertMessage = "Selected Xcode archive is no longer available."
+                return
+            }
+        }
+        let installCommand = CLIEquivalent.create(
+            draft,
+            defaults: service.defaultDraft(),
+            setupAfter: setupAfterInstall,
+            xcodeXIPURL: setupAfterInstall ? selectedXcodeXIPURL : nil
+        )
+
+        sheetPresented = false
+        installs[name] = InstallProgress(status: "Preparing…", fraction: nil, command: installCommand)
+        selection = .vm(name)
+        lastCommand = installCommand
+
+        let runSetupAfter = setupAfterInstall
+        let setupXcodeXIPURL = setupAfterInstall ? selectedXcodeXIPURL : nil
+        Task { @MainActor in
+            do {
+                let vm = try await service.createVM(from: draft) { [weak self] event in
+                    DispatchQueue.main.async {
+                        self?.applyInstallEvent(event, name: name)
+                    }
+                }
+                installs[name] = nil
+                refresh()
+                if runSetupAfter {
+                    // Let the installer's VM release its lock on the auxiliary
+                    // storage before the setup runner boots the same bundle.
+                    installs[name] = InstallProgress(
+                        status: "Waiting for the installer to release the bundle…",
+                        fraction: nil,
+                        command: installCommand
+                    )
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    installs[name] = nil
+                    let withIdentity = try service.ensureNetworkIdentity(vm)
+                    startSetup(for: withIdentity, options: SetupOptions(xcodeXIPURL: setupXcodeXIPURL))
+                }
+            } catch {
+                installs[name] = nil
+                refresh()
+                alertMessage = "Failed to create \(name): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func applyInstallEvent(_ event: VMOperationEvent, name: String) {
+        switch event {
+        case .status(let message):
+            installs[name]?.status = message
+        case .progress(_, let fractionComplete):
+            installs[name]?.fraction = fractionComplete
+        case .setupStep:
+            break
+        }
+    }
+
+    // MARK: - Setup
+
+    func startSetup(for vm: ManagedVM, options: SetupOptions = SetupOptions()) {
+        let name = vm.metadata.name
+        guard setups[name] == nil else { return }
+        guard setups.isEmpty else {
+            alertMessage = "Another VM is already being set up. One setup runs at a time."
+            return
+        }
+
+        let runner = HeadlessRunner(
+            managedVM: vm,
+            requestedPort: options.requestedVNCPort,
+            forceSharedDirectory: true,
+            nativeProvisioning: options,
+            installSignalHandlers: false
+        )
+
+        do {
+            let session = try runner.start()
+            headlessRunners[name] = runner
+
+            let hostMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+            let plan = SetupFlows.plan(forMacOSMajor: hostMajor, options: options)
+            setups[name] = SetupProgress(
+                phases: plan.phases,
+                currentPhaseID: nil,
+                vncURL: session.vncURLString,
+                username: options.username
+            )
+            startThumbnailLoop(vm: vm)
+
+            let native = runner.usedNativeProvisioning
+            Task { @MainActor in
+                do {
+                    _ = try await service.provisionSetup(
+                        vm,
+                        session: session,
+                        options: options,
+                        nativeProvisioning: native
+                    ) { [weak self] event in
+                        DispatchQueue.main.async {
+                            self?.applySetupEvent(event, name: name)
+                        }
+                    }
+                    // Setup done; the VM stays running headless like the CLI.
+                    setups[name] = nil
+                    refresh()
+                } catch {
+                    setups[name]?.failureMessage = error.localizedDescription
+                }
+            }
+        } catch {
+            headlessRunners[name] = nil
+            alertMessage = "Failed to boot \(name) for setup: \(error.localizedDescription)"
+        }
+    }
+
+    private func applySetupEvent(_ event: VMOperationEvent, name: String) {
+        switch event {
+        case .setupStep(let step):
+            setups[name]?.currentPhaseID = step.phaseIndex
+        case .status, .progress:
+            break
+        }
+    }
+
+    private func startThumbnailLoop(vm: ManagedVM) {
+        let name = vm.metadata.name
+        Task { @MainActor [weak self] in
+            while true {
+                guard let store = self, store.setups[name] != nil else { return }
+                if let data = try? await store.service.captureScreenshot(vm),
+                   let image = NSImage(data: data) {
+                    store.setups[name]?.thumbnail = image
+                }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+    }
+
+    // MARK: - Restore images
+
+    func importRestoreImage(from sourceURL: URL) {
+        guard !restoreImageImportInProgress else { return }
+
+        let root = service.rootDirectory
+        restoreImageImportInProgress = true
+        latestCheckStatus = "Importing \(sourceURL.lastPathComponent)…"
+
+        Task { @MainActor in
+            let result = await Task.detached {
+                do {
+                    let entry = try RestoreImageCatalog.importImage(from: sourceURL, root: root)
+                    return (entry: entry as RestoreImageEntry?, errorMessage: nil as String?)
+                } catch {
+                    return (entry: nil as RestoreImageEntry?, errorMessage: error.localizedDescription)
+                }
+            }.value
+
+            restoreImageImportInProgress = false
+            refresh()
+
+            if let entry = result.entry {
+                restoreImageLabels[entry.name] = nil
+                latestCheckStatus = "Imported \(entry.name)"
+            } else if let errorMessage = result.errorMessage {
+                latestCheckStatus = nil
+                alertMessage = "Failed to import restore image: \(errorMessage)"
+            }
+        }
+    }
+
+    func loadRestoreImageLabel(for entry: RestoreImageEntry) async {
+        guard restoreImageLabels[entry.name] == nil else { return }
+        guard let info = await Self.loadRestoreImageInfo(at: entry.url) else { return }
+        restoreImageLabels[entry.name] =
+            "macOS \(info.version.majorVersion).\(info.version.minorVersion).\(info.version.patchVersion) (\(info.build))"
+    }
+
+    func deleteRestoreImage(_ entry: RestoreImageEntry) {
+        do {
+            try RestoreImageCatalog.delete(entry, root: service.rootDirectory)
+            restoreImageLabels[entry.name] = nil
+            latestCheckStatus = "Deleted \(entry.name)"
+            refresh()
+        } catch {
+            alertMessage = "Failed to delete \(entry.name): \(error.localizedDescription)"
+        }
+    }
+
+    private static func loadRestoreImageInfo(at url: URL) async -> (version: OperatingSystemVersion, build: String)? {
+        await withCheckedContinuation { continuation in
+            VZMacOSRestoreImage.load(from: url) { result in
+                switch result {
+                case .success(let image):
+                    continuation.resume(returning: (image.operatingSystemVersion, image.buildVersion))
+                case .failure:
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    // MARK: - Xcode archives
+
+    func importXcodeArchive(from sourceURL: URL, selectForCreate: Bool = false) {
+        guard !xcodeImportInProgress else { return }
+
+        let root = service.rootDirectory
+        xcodeImportInProgress = true
+        xcodeImportStatus = "Importing \(sourceURL.lastPathComponent)…"
+
+        Task { @MainActor in
+            let result = await Task.detached {
+                do {
+                    let entry = try XcodeArchiveCatalog.importArchive(from: sourceURL, root: root)
+                    return (entry: entry as XcodeArchiveEntry?, errorMessage: nil as String?)
+                } catch {
+                    return (entry: nil as XcodeArchiveEntry?, errorMessage: error.localizedDescription)
+                }
+            }.value
+
+            xcodeImportInProgress = false
+            refresh()
+
+            if let entry = result.entry {
+                xcodeImportStatus = "Imported \(entry.name)"
+                if selectForCreate {
+                    selectedXcodeXIPURL = entry.url
+                }
+            } else if let errorMessage = result.errorMessage {
+                xcodeImportStatus = nil
+                alertMessage = "Failed to import Xcode archive: \(errorMessage)"
+            }
+        }
+    }
+
+    func deleteXcodeArchive(_ entry: XcodeArchiveEntry) {
+        do {
+            try XcodeArchiveCatalog.delete(entry, root: service.rootDirectory)
+            if selectedXcodeXIPURL?.standardizedFileURL == entry.url.standardizedFileURL {
+                selectedXcodeXIPURL = nil
+            }
+            xcodeImportStatus = "Deleted \(entry.name)"
+            refresh()
+        } catch {
+            alertMessage = "Failed to delete \(entry.name): \(error.localizedDescription)"
+        }
+    }
+
+    func checkForLatest() {
+        latestCheckStatus = "Checking…"
+        Task { @MainActor in
+            do {
+                let image = try await VZMacOSRestoreImage.latestSupported
+                let version = image.operatingSystemVersion
+                let name = image.url.lastPathComponent
+                let cached = restoreImages.contains { $0.name == name }
+                latestCheckStatus = "Latest supported: macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion) (\(image.buildVersion)) — \(cached ? "already cached" : "downloads on first use")"
+            } catch {
+                latestCheckStatus = "Check failed: \(error.localizedDescription)"
+            }
+        }
+    }
+}
