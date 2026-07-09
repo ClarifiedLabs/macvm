@@ -23,6 +23,7 @@ struct VMDetailView: View {
                 if let vm {
                     SpecCardsView(vm: vm, status: status)
                     AccessSectionView(vm: vm, status: status)
+                    AutomationSectionView(vm: vm)
                     BundleSectionView(vm: vm)
                 }
             }
@@ -121,6 +122,34 @@ struct VMDetailView: View {
             }
         }
         .controlSize(.regular)
+    }
+}
+
+struct AutomationSectionView: View {
+    @Environment(AppStore.self) private var store
+    let vm: ManagedVM
+
+    var body: some View {
+        let name = vm.metadata.name
+        let enabled = store.launchOnBootStatuses[name]?.enabled ?? false
+
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(title: "Automation")
+            Card {
+                InfoRow(label: "Launch on boot", value: enabled ? "Enabled" : "Disabled") {
+                    Toggle(
+                        "",
+                        isOn: Binding(
+                            get: { store.launchOnBootStatuses[name]?.enabled ?? false },
+                            set: { store.setLaunchOnBoot($0, for: vm) }
+                        )
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                }
+            }
+        }
     }
 }
 

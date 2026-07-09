@@ -69,6 +69,7 @@ final class AppStore {
     private(set) var liveSessions: [String: VNCSession] = [:]
     private(set) var liveDisplays: [String: VMDisplayRuntimeState] = [:]
     private(set) var liveSetupStates: [String: VMSetupRuntimeState] = [:]
+    private(set) var launchOnBootStatuses: [String: VMLaunchOnBootStatus] = [:]
     private(set) var guestIPs: [String: String] = [:]
 
     private(set) var restoreImages: [RestoreImageEntry] = []
@@ -160,6 +161,7 @@ final class AppStore {
         var sessions: [String: VNCSession] = [:]
         var displays: [String: VMDisplayRuntimeState] = [:]
         var setupStates: [String: VMSetupRuntimeState] = [:]
+        var launchOnBoot: [String: VMLaunchOnBootStatus] = [:]
         for vm in vms {
             let name = vm.metadata.name
             if let process = service.liveVMProcessRuntimeState(for: vm) {
@@ -174,11 +176,13 @@ final class AppStore {
             if let setupState = service.liveSetupRuntimeState(for: vm) {
                 setupStates[name] = setupState
             }
+            launchOnBoot[name] = service.launchOnBootStatus(for: vm)
         }
         liveProcesses = processes
         liveSessions = sessions
         liveDisplays = displays
         liveSetupStates = setupStates
+        launchOnBootStatuses = launchOnBoot
         reconcileSetupProgress(from: setupStates, sessions: sessions)
 
         for vm in vms {
@@ -315,6 +319,18 @@ final class AppStore {
         let name = vm.metadata.name
         viewers[name]?.showWindow()
         lastCommand = CLIEquivalent.run(name)
+    }
+
+    func setLaunchOnBoot(_ enabled: Bool, for vm: ManagedVM) {
+        let name = vm.metadata.name
+        do {
+            try service.setLaunchOnBoot(enabled, for: vm)
+            launchOnBootStatuses[name] = service.launchOnBootStatus(for: vm)
+            lastCommand = enabled ? CLIEquivalent.autostartEnable(name) : CLIEquivalent.autostartDisable(name)
+        } catch {
+            launchOnBootStatuses[name] = service.launchOnBootStatus(for: vm)
+            alertMessage = "Failed to \(enabled ? "enable" : "disable") launch on boot for \(name): \(error.localizedDescription)"
+        }
     }
 
     func requestStop(_ vm: ManagedVM) {
@@ -527,6 +543,14 @@ final class AppStore {
                 let vm = try await service.createVM(from: draft) { [weak self] event in
                     DispatchQueue.main.async {
                         self?.applyInstallEvent(event, name: name)
+                    }
+                }
+                if draft.launchOnBoot {
+                    do {
+                        try service.setLaunchOnBoot(true, for: vm)
+                        launchOnBootStatuses[name] = service.launchOnBootStatus(for: vm)
+                    } catch {
+                        alertMessage = "Created \(name), but failed to enable launch on boot: \(error.localizedDescription)"
                     }
                 }
                 installs[name] = nil

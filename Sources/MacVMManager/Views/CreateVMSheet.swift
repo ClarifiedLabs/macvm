@@ -101,6 +101,7 @@ struct CreateVMSheet: View {
                         .gridColumnAlignment(.trailing)
                     VStack(alignment: .leading, spacing: 6) {
                         Toggle("Create shared folder with bootstrap script", isOn: $store.draft.createBootstrapShare)
+                        Toggle("Launch on boot", isOn: $store.draft.launchOnBoot)
                         Toggle(isOn: $store.setupAfterInstall) {
                             HStack(spacing: 4) {
                                 Text("Run setup after install")

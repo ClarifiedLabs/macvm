@@ -17,6 +17,7 @@ public struct VMCreationDraft: Equatable, Sendable {
     public var restoreMode: RestoreImageSelectionMode
     public var localRestoreImageURL: URL?
     public var createBootstrapShare: Bool
+    public var launchOnBoot: Bool
 
     public init(
         name: String,
@@ -27,7 +28,8 @@ public struct VMCreationDraft: Equatable, Sendable {
         displayHeight: Int,
         restoreMode: RestoreImageSelectionMode,
         localRestoreImageURL: URL? = nil,
-        createBootstrapShare: Bool = true
+        createBootstrapShare: Bool = true,
+        launchOnBoot: Bool = false
     ) {
         self.name = name
         self.cpuCount = cpuCount
@@ -38,6 +40,7 @@ public struct VMCreationDraft: Equatable, Sendable {
         self.restoreMode = restoreMode
         self.localRestoreImageURL = localRestoreImageURL
         self.createBootstrapShare = createBootstrapShare
+        self.launchOnBoot = launchOnBoot
     }
 
     public var displayDescription: String {

@@ -143,6 +143,73 @@ func defaultDraftUsesExpectedSizingDefaults() {
     #expect(draft.displayHeight == 720)
     #expect(draft.displayPixelWidth == 2560)
     #expect(draft.displayPixelHeight == 1440)
+    #expect(draft.launchOnBoot == false)
+}
+
+@Test
+func launchOnBootWritesExpectedLaunchAgentAndCanDisable() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let launchAgentsURL = rootURL.appendingPathComponent("LaunchAgents", isDirectory: true)
+    let executableURL = rootURL.appendingPathComponent("bin/macvm", isDirectory: false)
+    let bundleURL = rootURL
+        .appendingPathComponent("dev-01", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+        name: "dev-01",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    let service = MacVMService(
+        rootDirectory: rootURL,
+        launchAgentsDirectory: launchAgentsURL,
+        executableURL: executableURL
+    )
+
+    #expect(service.launchOnBootStatus(for: vm).enabled == false)
+
+    try service.setLaunchOnBoot(true, for: vm)
+    let enabled = service.launchOnBootStatus(for: vm)
+    #expect(enabled.enabled == true)
+    #expect(enabled.label == "dev.macvm.macvm.launch-on-boot.11111111-2222-3333-4444-555555555555")
+    #expect(FileManager.default.fileExists(atPath: enabled.plistURL.path))
+
+    let plist = try readPropertyListDictionary(at: enabled.plistURL)
+    #expect(plist["Label"] as? String == enabled.label)
+    #expect(plist["RunAtLoad"] as? Bool == true)
+    #expect(plist["ProgramArguments"] as? [String] == [
+        executableURL.path,
+        "run",
+        bundleURL.standardizedFileURL.path,
+        "--headless",
+    ])
+    #expect(plist["StandardOutPath"] as? String == bundleURL
+        .appendingPathComponent("Runtime", isDirectory: true)
+        .appendingPathComponent("launch-on-boot.stdout.log", isDirectory: false)
+        .path)
+    #expect(plist["StandardErrorPath"] as? String == bundleURL
+        .appendingPathComponent("Runtime", isDirectory: true)
+        .appendingPathComponent("launch-on-boot.stderr.log", isDirectory: false)
+        .path)
+
+    try service.setLaunchOnBoot(false, for: vm)
+    #expect(FileManager.default.fileExists(atPath: enabled.plistURL.path) == false)
+    #expect(service.launchOnBootStatus(for: vm).enabled == false)
+}
+
+private func readPropertyListDictionary(at url: URL) throws -> [String: Any] {
+    let data = try Data(contentsOf: url)
+    let plist = try PropertyListSerialization.propertyList(from: data, format: nil)
+    return try #require(plist as? [String: Any])
 }
 
 @Test
@@ -208,6 +275,46 @@ func removeVMDeletesResolvedBundle() throws {
 
     #expect(removed.name == "remove-me")
     #expect(!FileManager.default.fileExists(atPath: bundleURL.path))
+}
+
+@Test
+func removeVMCleansUpLaunchOnBootAgent() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let launchAgentsURL = rootURL.appendingPathComponent("LaunchAgents", isDirectory: true)
+    let executableURL = rootURL.appendingPathComponent("bin/macvm", isDirectory: false)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let bundleURL = rootURL
+        .appendingPathComponent("remove-autostart", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+
+    let metadata = VMMetadata(
+        name: "remove-autostart",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    try VMBundle(url: bundleURL).writeMetadata(metadata)
+
+    let service = MacVMService(
+        rootDirectory: rootURL,
+        launchAgentsDirectory: launchAgentsURL,
+        executableURL: executableURL
+    )
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    try service.setLaunchOnBoot(true, for: vm)
+    let plistURL = service.launchOnBootStatus(for: vm).plistURL
+    #expect(FileManager.default.fileExists(atPath: plistURL.path))
+
+    _ = try service.removeVM(identifier: "remove-autostart")
+
+    #expect(FileManager.default.fileExists(atPath: plistURL.path) == false)
+    #expect(FileManager.default.fileExists(atPath: bundleURL.path) == false)
 }
 
 @Test

@@ -58,6 +58,9 @@ Manage VMs:
 macvm --version
 macvm list
 macvm show dev-01
+macvm autostart enable dev-01
+macvm autostart status dev-01
+macvm autostart disable dev-01
 macvm shutdown dev-01
 macvm stop dev-01
 macvm rm dev-01
@@ -107,6 +110,17 @@ macvm keys dev-02 return tab
 ```
 
 Headless VNC uses a random password printed in the `vnc://` URL. Treat it as reachable from your local network while the VM is running.
+
+## Launch On Boot
+
+Launch a VM headless when your macOS user logs in:
+
+```bash
+macvm create --name dev-03 --launch-on-boot
+macvm autostart enable dev-02
+```
+
+Launch-on-boot is per user and starts at login, not before login. It uses the same headless/VNC access path as `macvm run --headless`.
 
 ## Shared Files
 

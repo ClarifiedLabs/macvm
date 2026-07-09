@@ -20,6 +20,9 @@ func cliEquivalentRendersFixedActionCommands() {
     #expect(CLIEquivalent.vnc("dev") == "macvm vnc dev")
     #expect(CLIEquivalent.vnc("dev", open: true) == "macvm vnc dev --open")
     #expect(CLIEquivalent.rm("dev") == "macvm rm dev")
+    #expect(CLIEquivalent.autostartStatus("dev") == "macvm autostart status dev")
+    #expect(CLIEquivalent.autostartEnable("dev") == "macvm autostart enable dev")
+    #expect(CLIEquivalent.autostartDisable("dev") == "macvm autostart disable dev")
 }
 
 @Test
@@ -87,6 +90,18 @@ func createCommandRendersLocalIPSWPath() {
     #expect(
         CLIEquivalent.create(draft, defaults: defaults, setupAfter: false)
             == "macvm create --name local --ipsw /tmp/UniversalMac.ipsw"
+    )
+}
+
+@Test
+func createCommandRendersLaunchOnBootFlag() {
+    let defaults = makeDraft(name: "")
+    var draft = makeDraft(name: "autostart")
+    draft.launchOnBoot = true
+
+    #expect(
+        CLIEquivalent.create(draft, defaults: defaults, setupAfter: false)
+            == "macvm create --name autostart --launch-on-boot"
     )
 }
 

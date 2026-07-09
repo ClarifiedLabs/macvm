@@ -45,6 +45,18 @@ enum CLIEquivalent {
         "macvm rm \(name)"
     }
 
+    static func autostartStatus(_ name: String) -> String {
+        "macvm autostart status \(name)"
+    }
+
+    static func autostartEnable(_ name: String) -> String {
+        "macvm autostart enable \(name)"
+    }
+
+    static func autostartDisable(_ name: String) -> String {
+        "macvm autostart disable \(name)"
+    }
+
     static func listRestoreImages(rootPath: String) -> String {
         "ls \(abbreviatePath(rootPath))/.restore-images"
     }
@@ -79,6 +91,9 @@ enum CLIEquivalent {
         }
         if !draft.createBootstrapShare {
             command += " --no-bootstrap"
+        }
+        if draft.launchOnBoot {
+            command += " --launch-on-boot"
         }
         if setupAfter {
             command += " --setup"

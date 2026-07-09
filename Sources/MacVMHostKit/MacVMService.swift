@@ -90,9 +90,18 @@ private extension NSLock {
 
 public final class MacVMService: Sendable {
     private let storage: VMStorage
+    private let launchOnBoot: VMLaunchOnBootController
 
-    public init(rootDirectory: URL? = nil) {
+    public init(
+        rootDirectory: URL? = nil,
+        launchAgentsDirectory: URL? = nil,
+        executableURL: URL? = nil
+    ) {
         self.storage = VMStorage(rootDirectory: rootDirectory)
+        self.launchOnBoot = VMLaunchOnBootController(
+            launchAgentsDirectory: launchAgentsDirectory,
+            executableURL: executableURL
+        )
     }
 
     public var rootDirectory: URL {
@@ -149,11 +158,21 @@ public final class MacVMService: Sendable {
     }
 
     public func removeVM(_ vm: ManagedVM) throws {
+        launchOnBoot.removeLaunchAgent(for: VMRemovalTarget(bundleURL: vm.bundleURL, metadata: vm.metadata))
         try VMBundle(url: vm.bundleURL).removeFromDisk()
     }
 
     public func removeVM(_ target: VMRemovalTarget) throws {
+        launchOnBoot.removeLaunchAgent(for: target)
         try VMBundle(url: target.bundleURL).removeFromDisk()
+    }
+
+    public func launchOnBootStatus(for vm: ManagedVM) -> VMLaunchOnBootStatus {
+        launchOnBoot.status(for: vm)
+    }
+
+    public func setLaunchOnBoot(_ enabled: Bool, for vm: ManagedVM) throws {
+        try launchOnBoot.setEnabled(enabled, for: vm)
     }
 
     /// Ensure the VM has a persisted MAC, backfilling one if it predates the

@@ -355,6 +355,7 @@ struct MacVMCommand: AsyncParsableCommand {
             Create.self,
             Run.self,
             Stop.self,
+            Autostart.self,
             Shutdown.self,
             IP.self,
             SSH.self,
@@ -479,6 +480,7 @@ extension MacVMCommand {
                 print("Current Display: not running")
             }
             print("Bootstrap Share: \(metadata.bootstrapShareEnabled ? "enabled" : "disabled")")
+            print("Launch On Boot: \(service.launchOnBootStatus(for: virtualMachine).enabled ? "enabled" : "disabled")")
             if let restoreImageName = metadata.installedRestoreImageName {
                 print("Restore Image: \(restoreImageName)")
             }
@@ -576,6 +578,9 @@ extension MacVMCommand {
         @Flag(name: .long, help: "After install, drive Setup Assistant to an SSH/Ansible-ready state.")
         var setup = false
 
+        @Flag(name: .long, help: "Launch this VM headless at macOS user login.")
+        var launchOnBoot = false
+
         @Option(name: .long, help: "Path to an Xcode .xip to install during --setup.")
         var xcode: String?
 
@@ -633,6 +638,7 @@ extension MacVMCommand {
             }
 
             draft.createBootstrapShare = bootstrap
+            draft.launchOnBoot = launchOnBoot
 
             if let ipsw {
                 let expandedPath = NSString(string: ipsw).expandingTildeInPath
@@ -648,6 +654,16 @@ extension MacVMCommand {
             }
 
             print("Created VM bundle at \(virtualMachine.bundleURL.path)")
+
+            if launchOnBoot {
+                do {
+                    try service.setLaunchOnBoot(true, for: virtualMachine)
+                    let status = service.launchOnBootStatus(for: virtualMachine)
+                    print("Launch on boot enabled: \(status.plistURL.path)")
+                } catch {
+                    fputs("Warning: created \(virtualMachine.metadata.name), but failed to enable launch on boot: \(error.localizedDescription)\n", stderr)
+                }
+            }
 
             if setup {
                 // Let the installer's VM release its lock on the auxiliary storage
@@ -801,6 +817,71 @@ extension MacVMCommand {
             let virtualMachine = try service.resolveVM(identifier: identifier)
             let process = try service.stopVM(virtualMachine)
             print("Stopped \(virtualMachine.metadata.name) (pid \(process.pid)).")
+        }
+    }
+
+    struct Autostart: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Manage launch-on-boot for a VM.",
+            subcommands: [
+                Status.self,
+                Enable.self,
+                Disable.self,
+            ],
+            defaultSubcommand: Status.self
+        )
+
+        struct Status: ParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Show whether a VM launches at macOS user login.")
+
+            @OptionGroup var storage: StorageOptions
+
+            @Argument(help: "VM name, bundle basename, or full bundle path.")
+            var identifier: String
+
+            func run() throws {
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let virtualMachine = try service.resolveVM(identifier: identifier)
+                let status = service.launchOnBootStatus(for: virtualMachine)
+                print("\(virtualMachine.metadata.name): \(status.enabled ? "enabled" : "disabled")")
+                print("LaunchAgent: \(status.plistURL.path)")
+            }
+        }
+
+        struct Enable: ParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Launch a VM headless at macOS user login.")
+
+            @OptionGroup var storage: StorageOptions
+
+            @Argument(help: "VM name, bundle basename, or full bundle path.")
+            var identifier: String
+
+            func run() throws {
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let virtualMachine = try service.resolveVM(identifier: identifier)
+                try service.setLaunchOnBoot(true, for: virtualMachine)
+                let status = service.launchOnBootStatus(for: virtualMachine)
+                print("Launch on boot enabled for \(virtualMachine.metadata.name).")
+                print("LaunchAgent: \(status.plistURL.path)")
+            }
+        }
+
+        struct Disable: ParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Disable launch-on-boot for a VM.")
+
+            @OptionGroup var storage: StorageOptions
+
+            @Argument(help: "VM name, bundle basename, or full bundle path.")
+            var identifier: String
+
+            func run() throws {
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let virtualMachine = try service.resolveVM(identifier: identifier)
+                try service.setLaunchOnBoot(false, for: virtualMachine)
+                let status = service.launchOnBootStatus(for: virtualMachine)
+                print("Launch on boot disabled for \(virtualMachine.metadata.name).")
+                print("LaunchAgent: \(status.plistURL.path)")
+            }
         }
     }
 
