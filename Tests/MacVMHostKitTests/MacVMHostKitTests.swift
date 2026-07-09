@@ -1186,6 +1186,27 @@ func rfbCaptureOnceUsesANewConnectionForEachCapture() async throws {
 }
 
 @Test
+func setupRFBConnectionRetriesDroppedInitialFramebufferRequest() async throws {
+    let server = try MinimalRFBServer(maxConnections: 2, mode: .dropFirstFramebufferRequestThenCapture)
+    server.start()
+    defer { server.stop() }
+
+    let size = try await MacVMService.withSetupRFBConnection(
+        port: server.port,
+        password: nil,
+        retryTimeout: 2,
+        retryDelayNanoseconds: 25_000_000
+    ) { client in
+        await client.framebufferSize
+    }
+
+    #expect(size?.width == 1)
+    #expect(size?.height == 1)
+    #expect(server.connectionCount == 2)
+    #expect(server.waitUntilStopped(timeout: 2))
+}
+
+@Test
 func rfbClientSendsClipboardText() async throws {
     let server = try MinimalRFBServer(maxConnections: 1, mode: .captureClientCutText)
     server.start()
@@ -1234,6 +1255,7 @@ func rfbClientClipboardWaitTimesOut() async throws {
 
 private enum MinimalRFBServerMode {
     case framebufferCaptures
+    case dropFirstFramebufferRequestThenCapture
     case captureClientCutText
     case sendServerCutText(String)
     case idleAfterHandshake
@@ -1379,6 +1401,12 @@ private final class MinimalRFBServer: @unchecked Sendable {
 
         switch mode {
         case .framebufferCaptures:
+            try serveFramebufferCapture(clientFD: clientFD, connectionIndex: connectionIndex)
+        case .dropFirstFramebufferRequestThenCapture:
+            if connectionIndex == 1 {
+                _ = try readExactly(10, from: clientFD) // FramebufferUpdateRequest.
+                return
+            }
             try serveFramebufferCapture(clientFD: clientFD, connectionIndex: connectionIndex)
         case .captureClientCutText:
             try captureClientCutText(clientFD: clientFD)

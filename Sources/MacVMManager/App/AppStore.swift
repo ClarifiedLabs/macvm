@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import MacVMHostKit
 import Observation
@@ -363,6 +364,13 @@ final class AppStore {
             return
         }
 
+        if hasFailedInProcessSetupWithNoRuntime(name) {
+            service.clearSetupRuntimeState(for: vm)
+            setups[name] = nil
+            refresh()
+            return
+        }
+
         let service = self.service
         Task { @MainActor in
             let errorMessage = await Task.detached {
@@ -380,6 +388,18 @@ final class AppStore {
                 refresh()
             }
         }
+    }
+
+    private func hasFailedInProcessSetupWithNoRuntime(_ name: String) -> Bool {
+        guard let setupState = liveSetupStates[name],
+              setupState.pid == getpid(),
+              setupState.failureMessage != nil else {
+            return false
+        }
+
+        return liveProcesses[name] == nil
+            && liveSessions[name] == nil
+            && liveDisplays[name] == nil
     }
 
     private func shutDown(_ vm: ManagedVM) {

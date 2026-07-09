@@ -227,6 +227,12 @@ public final class MacVMService: Sendable {
         VMBundle(url: vm.bundleURL).liveSetupRuntimeState()
     }
 
+    /// Clear the setup marker for a VM after an in-process setup has failed and no
+    /// VM runtime remains to stop.
+    public func clearSetupRuntimeState(for vm: ManagedVM) {
+        VMBundle(url: vm.bundleURL).clearSetupRuntimeState()
+    }
+
     /// Stop the single-VM owner process recorded in the bundle runtime state.
     @discardableResult
     public func stopVM(_ vm: ManagedVM, timeout: TimeInterval = 5) throws -> VMProcessRuntimeState {
@@ -521,7 +527,7 @@ public final class MacVMService: Sendable {
 
         do {
             emitPhase(0)
-            try await RFBClient.withConnection(port: session.port, password: session.password) { client in
+            try await Self.withSetupRFBConnection(port: session.port, password: session.password, progress: setupProgress) { client in
                 if nativeProvisioning {
                     // The framework created the account, enabled SSH, and auto-logs in.
                     // Wait for the desktop, then still harden (sudo, our key, sleep).
@@ -563,6 +569,81 @@ public final class MacVMService: Sendable {
             runtimePublisher.fail(error)
             throw error
         }
+    }
+
+    static func withSetupRFBConnection<T>(
+        port: Int,
+        password: String?,
+        progress: VMOperationHandler? = nil,
+        retryTimeout: TimeInterval = 60,
+        retryDelayNanoseconds: UInt64 = 1_000_000_000,
+        _ body: (RFBClient) async throws -> T
+    ) async throws -> T {
+        let client = try await connectSetupRFBClient(
+            port: port,
+            password: password,
+            progress: progress,
+            retryTimeout: retryTimeout,
+            retryDelayNanoseconds: retryDelayNanoseconds
+        )
+        do {
+            let result = try await body(client)
+            await client.close()
+            return result
+        } catch {
+            await client.close()
+            throw error
+        }
+    }
+
+    private static func connectSetupRFBClient(
+        port: Int,
+        password: String?,
+        progress: VMOperationHandler?,
+        retryTimeout: TimeInterval,
+        retryDelayNanoseconds: UInt64
+    ) async throws -> RFBClient {
+        let deadline = Date().addingTimeInterval(retryTimeout)
+        var attempt = 0
+        var publishedWaitStatus = false
+
+        while true {
+            attempt += 1
+            let client = RFBClient(port: port)
+            do {
+                try await client.connect(password: password)
+                _ = try await client.captureFramebuffer()
+                return client
+            } catch {
+                await client.close()
+                guard shouldRetryInitialSetupRFBError(error), Date() < deadline else {
+                    if shouldRetryInitialSetupRFBError(error), retryTimeout > 0 {
+                        throw MacVMError.message("Timed out waiting for the VM's VNC setup channel: \(error.localizedDescription)")
+                    }
+                    throw error
+                }
+
+                if !publishedWaitStatus {
+                    progress?(.status("Waiting for the VM's VNC setup channel"))
+                    publishedWaitStatus = true
+                }
+                DebugLog.log("Setup RFB connection attempt \(attempt) failed: \(error.localizedDescription)")
+                try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
+            }
+        }
+    }
+
+    private static func shouldRetryInitialSetupRFBError(_ error: Error) -> Bool {
+        if let error = error as? RFBError {
+            switch error {
+            case .authenticationFailed, .passwordRequired, .noSupportedSecurityType, .unsupportedEncoding, .unexpectedMessage:
+                return false
+            case .connectionClosed, .handshakeFailed, .notConnected, .clipboardTimeout, .invalidClipboardText:
+                return true
+            }
+        }
+
+        return true
     }
 
     private func installXcodeIfRequested(

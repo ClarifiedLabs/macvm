@@ -240,6 +240,53 @@ func managerStopForExternalSetupUsesRuntimeOwnerInsteadOfClearingProgress() asyn
     #expect(store.setups["dev-01"] != nil)
 }
 
+@Test
+@MainActor
+func managerStopClearsFailedInProcessSetupWithNoRuntime() async throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("dev-01", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "dev-01",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(metadata)
+    try bundle.writeSetupRuntimeState(VMSetupRuntimeState(
+        username: "admin",
+        fullName: "Administrator",
+        phaseIndex: 1,
+        phaseCount: 11,
+        failureMessage: "The operation couldn’t be completed. (Network.NWError error 57 - Socket is not connected)",
+        pid: getpid(),
+        startedAt: Date(),
+        updatedAt: Date()
+    ))
+
+    let store = AppStore(service: MacVMService(rootDirectory: rootURL))
+    let vm = try #require(store.vm(named: "dev-01"))
+    #expect(store.status(forName: "dev-01") == .settingUp)
+    #expect(store.setups["dev-01"]?.failureMessage != nil)
+
+    store.requestStop(vm)
+    store.confirmPowerAction()
+
+    #expect(store.alertMessage == nil)
+    #expect(store.status(forName: "dev-01") == .stopped)
+    #expect(store.setups["dev-01"] == nil)
+    #expect(bundle.readSetupRuntimeState() == nil)
+}
+
 // MARK: - RestoreImageCatalog
 
 @Test
