@@ -1,0 +1,7 @@
+confidence  x,y wxh  text (framebuffer 2560x1440)
+0.97  1010,300 540x40  Migration Assistant
+0.94  930,380 700x26  How do you want to transfer your information?
+0.93  880,520 640x24  From a Mac, Time Machine backup, or startup disk
+0.93  880,590 300x24  From a Windows PC
+0.95  850,700 180x26  Set up as new
+0.96  2280,1330 120x34  Continue

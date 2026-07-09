@@ -11,7 +11,7 @@ IOS_RUNTIME_BUILD="${MACVM_IOS_RUNTIME_BUILD:-}"
 SIMULATOR_ARCH="${MACVM_SIMULATOR_ARCH:-arm64}"
 
 log() {
-  printf '[bootstrap] %s\n' "$*"
+  printf '[bootstrap] %s\n' "$*" >&2
 }
 
 fail() {
@@ -59,7 +59,10 @@ ensure_sudo_session() {
     return
   fi
 
-  log "Requesting sudo access for Xcode installation tasks..."
+  log "Verifying sudo access for Xcode installation tasks..."
+  if sudo -n true 2>/dev/null; then
+    return
+  fi
   sudo -v
 }
 
@@ -104,7 +107,7 @@ install_xcode_from_source() {
       log "Expanding $(basename "$source_path")..."
       (
         cd "$expanded_root"
-        xip --expand "$source_path"
+        xip --expand "$source_path" >&2
       )
       app_source_path="$(printf '%s\n' "$expanded_root"/Xcode*.app(N[1]))"
       [[ -n "$app_source_path" ]] || fail "Expanded archive did not contain Xcode.app"
@@ -119,7 +122,7 @@ install_xcode_from_source() {
   if [[ "$app_source_path" != "$target_path" ]]; then
     log "Installing $(basename "$app_source_path") into $target_path..."
     sudo_cmd rm -rf "$target_path"
-    sudo_cmd ditto "$app_source_path" "$target_path"
+    sudo_cmd ditto "$app_source_path" "$target_path" >&2
   else
     log "Using Xcode already installed at $target_path"
   fi
@@ -146,6 +149,9 @@ ensure_xcode_ready() {
     log "Xcode first-launch tasks are already complete."
     return
   fi
+
+  log "Accepting Xcode license..."
+  sudo_cmd xcodebuild -license accept
 
   log "Running xcodebuild -runFirstLaunch..."
   sudo_cmd xcodebuild -runFirstLaunch

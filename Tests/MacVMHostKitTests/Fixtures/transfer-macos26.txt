@@ -1,0 +1,13 @@
+confidence  x,y wxh  text (framebuffer 2560x1440)
+0.96  46,10 58x24  U.S.
+0.95  2372,10 116x24  10:37 AM
+0.98  1042,268 476x40  Transfer Your Data to This Mac
+0.93  976,330 604x26  Select a Mac, Time Machine backup, or other startup disk
+0.92  1028,360 502x26  to transfer its information to this Mac.
+0.91  1214,608 132x24  .AssetData
+0.94  1198,698 164x26  Other Server...
+0.90  898,808 762x26  Select a Mac, Time Machine backup, or startup disk to transfer data
+0.90  918,836 722x26  from, and make sure the device is on the same network as this Mac or
+0.89  1060,864 440x26  connected with a cable.
+0.97  1658,1008 118x36  Not Now
+0.97  1848,1008 122x36  Continue

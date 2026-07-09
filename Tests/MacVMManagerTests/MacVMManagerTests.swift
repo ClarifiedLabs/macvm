@@ -218,7 +218,7 @@ func managerStopForExternalSetupUsesRuntimeOwnerInsteadOfClearingProgress() asyn
     try bundle.writeSetupRuntimeState(VMSetupRuntimeState(
         username: "admin",
         fullName: "Administrator",
-        phaseCount: 11,
+        phaseCount: 14,
         pid: getpid(),
         startedAt: Date(),
         updatedAt: Date()
@@ -266,7 +266,7 @@ func managerStopClearsFailedInProcessSetupWithNoRuntime() async throws {
         username: "admin",
         fullName: "Administrator",
         phaseIndex: 1,
-        phaseCount: 11,
+        phaseCount: 14,
         failureMessage: "The operation couldn’t be completed. (Network.NWError error 57 - Socket is not connected)",
         pid: getpid(),
         startedAt: Date(),
@@ -285,6 +285,61 @@ func managerStopClearsFailedInProcessSetupWithNoRuntime() async throws {
     #expect(store.status(forName: "dev-01") == .stopped)
     #expect(store.setups["dev-01"] == nil)
     #expect(bundle.readSetupRuntimeState() == nil)
+}
+
+@Test
+@MainActor
+func managerReconstructsXcodeSetupProgressFromRuntimeState() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("dev-01", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "dev-01",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(metadata)
+    let plan = SetupFlows.plan(
+        forMacOSMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+        options: SetupOptions(
+            username: "admin",
+            fullName: "Administrator",
+            xcodeXIPURL: URL(fileURLWithPath: "Xcode.xip")
+        )
+    )
+    let xcodePhase = try #require(plan.phases.last)
+    try bundle.writeSetupRuntimeState(VMSetupRuntimeState(
+        username: "admin",
+        fullName: "Administrator",
+        phaseIndex: xcodePhase.id,
+        phaseCount: plan.phases.count,
+        statusMessage: "Xcode: installing Xcode.xip in the guest",
+        logMessages: ["Waiting for SSH", "Xcode: installing Xcode.xip in the guest"],
+        installsXcode: true,
+        pid: getpid(),
+        startedAt: Date(),
+        updatedAt: Date()
+    ))
+
+    let store = AppStore(service: MacVMService(rootDirectory: rootURL))
+    let setup = try #require(store.setups["dev-01"])
+
+    #expect(store.status(forName: "dev-01") == .settingUp)
+    #expect(setup.currentPhaseID == xcodePhase.id)
+    #expect(setup.statusMessage == "Xcode: installing Xcode.xip in the guest")
+    #expect(setup.logMessages == ["Waiting for SSH", "Xcode: installing Xcode.xip in the guest"])
+    #expect(setup.phases.map(\.title).last == "Install Xcode")
+    #expect(setup.phases.count == plan.phases.count)
 }
 
 // MARK: - RestoreImageCatalog

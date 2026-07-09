@@ -100,6 +100,40 @@ enum OCRService {
         return nil
     }
 
+    /// All matches for `query`, in tier order (exact, then substring, then
+    /// regex), deduplicated, each tier sorted top-to-bottom then left-to-right.
+    /// The first element equals `find(query, in: observations)`; later elements
+    /// do NOT follow `find`'s occurrence semantics (which index into each
+    /// tier's own list), so this exists for callers that need every candidate —
+    /// e.g. geometric disambiguation of a modal button from an identical
+    /// background label.
+    static func findAll(_ query: String, in observations: [TextObservation]) -> [TextObservation] {
+        let sorted = observations.sorted { lhs, rhs in
+            if abs(lhs.rectInPixels.minY - rhs.rectInPixels.minY) > 8 {
+                return lhs.rectInPixels.minY < rhs.rectInPixels.minY
+            }
+            return lhs.rectInPixels.minX < rhs.rectInPixels.minX
+        }
+
+        var results: [TextObservation] = []
+        func append(_ tier: [TextObservation]) {
+            for observation in tier where !results.contains(observation) {
+                results.append(observation)
+            }
+        }
+
+        let lowerQuery = query.lowercased()
+        append(sorted.filter { $0.string.lowercased() == lowerQuery })
+        append(sorted.filter { $0.string.lowercased().contains(lowerQuery) })
+        if let regex = try? NSRegularExpression(pattern: query, options: [.caseInsensitive]) {
+            append(sorted.filter { observation in
+                let range = NSRange(observation.string.startIndex..., in: observation.string)
+                return regex.firstMatch(in: observation.string, options: [], range: range) != nil
+            })
+        }
+        return results
+    }
+
     /// Whether `candidate` satisfies `query` under the same semantics as `find`:
     /// case-insensitive exact, substring, or regex.
     static func queryMatches(_ query: String, candidate: String) -> Bool {

@@ -67,10 +67,14 @@ struct GuestHardener {
         }
 
         DebugLog.log("Provisioning: Spotlight did not activate Terminal; falling back to Launchpad.")
-        try await openTerminalFromLaunchpad()
-        if !(await terminalIsActive()) {
-            throw MacVMError.message("Couldn't open Terminal in the guest.")
+        for _ in 0..<2 {
+            try await activateFinder()
+            try await openTerminalFromLaunchpad()
+            if await terminalIsActive() {
+                return
+            }
         }
+        throw MacVMError.message("Couldn't open Terminal in the guest.")
     }
 
     private func activateFinder() async throws {
@@ -96,6 +100,11 @@ struct GuestHardener {
 
         try await client.click(x: launchpad.x, y: launchpad.y)
         try await Task.sleep(nanoseconds: 1_500_000_000)
+        if await foregroundAppMayStealProvisioningTyping() {
+            DebugLog.log("Provisioning: Launchpad dock click opened another app; closing it before retry.")
+            try await closeForegroundPrompt()
+            return
+        }
         try await client.typeText("Terminal")
         try await Task.sleep(nanoseconds: 1_000_000_000)
         try await client.pressKey(Keysym.returnKey)
@@ -110,9 +119,53 @@ struct GuestHardener {
         guard let framebuffer = try? await client.captureFramebuffer() else {
             return false
         }
-        return OCRService.observations(in: framebuffer).contains { observation in
+        return Self.menuBarShows(appName, in: OCRService.observations(in: framebuffer))
+    }
+
+    private func foregroundAppMayStealProvisioningTyping() async -> Bool {
+        guard let framebuffer = try? await client.captureFramebuffer() else {
+            return false
+        }
+        return Self.foregroundAppMayStealProvisioningTyping(in: OCRService.observations(in: framebuffer))
+    }
+
+    private func closeForegroundPrompt() async throws {
+        try await client.pressKey(Keysym.escape)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try await client.pressKey(0x77, modifiers: [Keysym.command]) // Command-W
+        try await Task.sleep(nanoseconds: 500_000_000)
+        if await foregroundAppMayStealProvisioningTyping() {
+            try await client.pressKey(0x71, modifiers: [Keysym.command]) // Command-Q
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+    }
+
+    static func menuBarShows(_ appName: String, in observations: [TextObservation]) -> Bool {
+        observations.contains { observation in
             observation.string.caseInsensitiveCompare(appName) == .orderedSame &&
                 observation.rectInPixels.minY < 45
+        }
+    }
+
+    static func firstLaunchPromptIsVisible(in observations: [TextObservation]) -> Bool {
+        let promptQueries = [
+            "Sign in to iMessage",
+            "Apple Account",
+            "Sign in with your Apple Account",
+            "Sign in to FaceTime",
+        ]
+        return promptQueries.contains { query in
+            observations.contains { OCRService.queryMatches(query, candidate: $0.string) }
+        }
+    }
+
+    static func foregroundAppMayStealProvisioningTyping(in observations: [TextObservation]) -> Bool {
+        if firstLaunchPromptIsVisible(in: observations) {
+            return true
+        }
+
+        return ["Messages", "FaceTime", "Mail", "Safari"].contains { appName in
+            menuBarShows(appName, in: observations)
         }
     }
 
@@ -125,7 +178,7 @@ struct GuestHardener {
 
     static func launchpadDockPoint(width: Int, height: Int) -> (x: Int, y: Int) {
         (
-            x: max(0, min(width - 1, Int(Double(width) * 0.174))),
+            x: max(0, min(width - 1, Int(Double(width) * 0.102))),
             y: max(0, height - 48)
         )
     }

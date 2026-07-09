@@ -106,10 +106,26 @@ struct SetupProgressCard: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
+            if let status = setup.statusMessage {
+                Text(status)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
             if let failure = setup.failureMessage {
                 Text("Setup failed: \(failure)")
                     .font(.system(size: 12))
                     .foregroundStyle(Color(nsColor: .systemRed))
+            }
+            if !setup.logMessages.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(setup.logMessages.suffix(6).enumerated()), id: \.offset) { entry in
+                        Text(entry.element)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                    }
+                }
             }
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(setup.phases) { phase in

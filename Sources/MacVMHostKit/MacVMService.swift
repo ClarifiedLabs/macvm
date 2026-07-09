@@ -7,6 +7,8 @@ private final class InstallationProgressState: @unchecked Sendable {
 }
 
 private final class SetupRuntimePublisher: @unchecked Sendable {
+    private static let maxLogMessages = 10
+
     private let bundle: VMBundle
     private let progress: VMOperationHandler?
     private let lock = NSLock()
@@ -23,11 +25,24 @@ private final class SetupRuntimePublisher: @unchecked Sendable {
     }
 
     func publish(_ event: VMOperationEvent) {
-        if case .setupStep(let step) = event {
+        switch event {
+        case .setupStep(let step):
             update { state in
                 state.phaseIndex = step.phaseIndex
                 state.phaseCount = step.phaseCount
+                state.statusMessage = step.title
                 state.failureMessage = nil
+                Self.appendLog("Setup [\(step.phaseIndex + 1)/\(step.phaseCount)] \(step.title)", to: &state)
+            }
+        case .status(let message):
+            update { state in
+                state.statusMessage = message
+                Self.appendLog(message, to: &state)
+            }
+        case .progress(let label, _):
+            update { state in
+                state.statusMessage = label
+                Self.appendLog(label, to: &state)
             }
         }
         progress?(event)
@@ -36,6 +51,7 @@ private final class SetupRuntimePublisher: @unchecked Sendable {
     func fail(_ error: Error) {
         update { state in
             state.failureMessage = error.localizedDescription
+            Self.appendLog("Setup failed: \(error.localizedDescription)", to: &state)
         }
     }
 
@@ -50,6 +66,17 @@ private final class SetupRuntimePublisher: @unchecked Sendable {
             return state
         }
         try? bundle.writeSetupRuntimeState(stateToWrite)
+    }
+
+    private static func appendLog(_ message: String, to state: inout VMSetupRuntimeState) {
+        guard !message.isEmpty else { return }
+        if state.logMessages.last == message {
+            return
+        }
+        state.logMessages.append(message)
+        if state.logMessages.count > maxLogMessages {
+            state.logMessages.removeFirst(state.logMessages.count - maxLogMessages)
+        }
     }
 }
 
@@ -505,6 +532,7 @@ public final class MacVMService: Sendable {
                 username: options.username,
                 fullName: options.fullName,
                 phaseCount: plan.phases.count,
+                installsXcode: options.xcodeXIPURL != nil,
                 pid: session.pid,
                 startedAt: Date(),
                 updatedAt: Date()
@@ -523,6 +551,10 @@ public final class MacVMService: Sendable {
                 title: phase.title,
                 anchor: phase.anchor
             )))
+        }
+        let emitPhaseWithAnchor: (String) -> Void = { anchor in
+            guard let phase = plan.phases.first(where: { $0.anchor == anchor }) else { return }
+            emitPhase(phase.id)
         }
 
         do {
@@ -546,15 +578,18 @@ public final class MacVMService: Sendable {
                 }
             }
 
-            emitPhase(plan.phases.count - 2)
+            emitPhaseWithAnchor(SetupFlows.provisioningAnchor)
             try await RFBClient.withConnection(port: session.port, password: session.password) { hardenerClient in
                 let hardener = GuestHardener(client: hardenerClient, bundle: bundle, options: options, progress: setupProgress)
                 try await hardener.harden()
             }
 
-            emitPhase(plan.phases.count - 1)
+            emitPhaseWithAnchor(SetupFlows.sshReadyAnchor)
             setupProgress(.status("Waiting for the guest to obtain an IP and accept SSH"))
             let result = try await waitForSSHReady(vm, options: options, progress: setupProgress)
+            if options.xcodeXIPURL != nil && result.sshReady {
+                emitPhaseWithAnchor(SetupFlows.xcodeInstallAnchor)
+            }
             try await installXcodeIfRequested(for: vm, bundle: bundle, options: options, setupResult: result, progress: setupProgress)
 
             var metadata = vm.metadata
@@ -663,7 +698,7 @@ public final class MacVMService: Sendable {
 
         let sourceURL = try Self.normalizedXcodeXIPURL(xcodeXIPURL)
         let guestXIPPath = try stageXcodeXIP(sourceURL, in: bundle, progress: progress)
-        let bootstrapPath = "/Volumes/My Shared Files/Bootstrap/bootstrap-tools.sh"
+        let bootstrapPath = try stageBootstrapScriptForXcode(in: bundle, progress: progress)
         let command = [
             GuestProvisioningScript.shellQuote(bootstrapPath),
             "--install-xcode",
@@ -674,11 +709,43 @@ public final class MacVMService: Sendable {
 
         progress?(.status("Xcode: installing \(sourceURL.lastPathComponent) in the guest"))
         let ssh = GuestSSH(host: ipAddress, user: options.username, identityFile: guestIdentityFile(for: vm))
-        let status = try ssh.runQuiet(remoteCommand: [command])
+        let logURL = bundle.setupDirectoryURL.appendingPathComponent("xcode-install.log")
+        let status = try ssh.runLogged(remoteCommand: [command], logFile: logURL)
         guard status == 0 else {
-            throw MacVMError.message("Xcode installation failed with exit code \(status).")
+            let tail = Self.logTail(from: logURL)
+            let detail = tail.map { "\nLast log output:\n\($0)" } ?? ""
+            throw MacVMError.message(
+                "Xcode installation failed with exit code \(status). Log: \(logURL.path)\(detail)"
+            )
         }
         progress?(.status("Xcode installation complete."))
+    }
+
+    static func logTail(from url: URL, maxBytes: Int = 2_000, maxLines: Int = 12) -> String? {
+        guard maxBytes > 0, maxLines > 0, let handle = try? FileHandle(forReadingFrom: url) else {
+            return nil
+        }
+        defer { handle.closeFile() }
+
+        let size = handle.seekToEndOfFile()
+        let offset = size > UInt64(maxBytes) ? size - UInt64(maxBytes) : 0
+        handle.seek(toFileOffset: offset)
+        let data = handle.readDataToEndOfFile()
+        guard var text = String(data: data, encoding: .utf8), !text.isEmpty else {
+            return nil
+        }
+
+        if offset > 0, let firstNewline = text.firstIndex(of: "\n") {
+            text = String(text[text.index(after: firstNewline)...])
+        }
+
+        let lines = text
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .suffix(maxLines)
+        let tail = lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return tail.isEmpty ? nil : tail
     }
 
     private func stageXcodeXIP(_ sourceURL: URL, in bundle: VMBundle, progress: VMOperationHandler?) throws -> String {
@@ -687,6 +754,16 @@ public final class MacVMService: Sendable {
         let destinationURL = bundle.transfersDirectoryURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: false)
         try MacVMFileStager.copyCloneFirst(from: sourceURL, to: destinationURL)
         return "\(GuestHardener.guestTransfersPath)/\(sourceURL.lastPathComponent)"
+    }
+
+    private func stageBootstrapScriptForXcode(in bundle: VMBundle, progress: VMOperationHandler?) throws -> String {
+        progress?(.status("Xcode: staging bootstrap installer in Transfers"))
+        try bundle.prepareSharedDirectory(includeBootstrapShare: true)
+        let fileName = "bootstrap-tools-\(UUID().uuidString).sh"
+        let scriptURL = bundle.transfersDirectoryURL.appendingPathComponent(fileName, isDirectory: false)
+        try BootstrapAssets.loadBootstrapScript().write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return "\(GuestHardener.guestTransfersPath)/\(fileName)"
     }
 
     private static func normalizedXcodeXIPURL(_ url: URL) throws -> URL {

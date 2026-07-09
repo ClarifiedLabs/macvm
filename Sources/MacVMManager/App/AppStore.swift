@@ -26,6 +26,8 @@ struct SetupProgress {
     var currentPhaseID: Int?
     var vncURL: String
     var username: String
+    var statusMessage: String?
+    var logMessages: [String]
     var thumbnail: NSImage?
     var failureMessage: String?
 }
@@ -46,6 +48,8 @@ struct PendingPowerAction: Equatable {
 @MainActor
 @Observable
 final class AppStore {
+    private static let maxSetupLogMessages = 10
+
     let service: MacVMService
 
     private(set) var vms: [ManagedVM] = []
@@ -200,7 +204,11 @@ final class AppStore {
             let existing = setups[name]
             let plan = SetupFlows.plan(
                 forMacOSMajor: hostMajor,
-                options: SetupOptions(username: state.username, fullName: state.fullName)
+                options: SetupOptions(
+                    username: state.username,
+                    fullName: state.fullName,
+                    xcodeXIPURL: state.installsXcode ? URL(fileURLWithPath: "Xcode.xip") : nil
+                )
             )
             let vncURL: String
             if let session = sessions[name] {
@@ -214,6 +222,8 @@ final class AppStore {
                 currentPhaseID: state.phaseIndex,
                 vncURL: vncURL,
                 username: state.username,
+                statusMessage: state.statusMessage,
+                logMessages: state.logMessages.isEmpty ? (existing?.logMessages ?? []) : state.logMessages,
                 thumbnail: existing?.thumbnail,
                 failureMessage: state.failureMessage
             )
@@ -581,7 +591,11 @@ final class AppStore {
                 phases: plan.phases,
                 currentPhaseID: nil,
                 vncURL: session.vncURLString,
-                username: options.username
+                username: options.username,
+                statusMessage: "Booting \(name) headless",
+                logMessages: ["Booting \(name) headless"],
+                thumbnail: nil,
+                failureMessage: nil
             )
             startThumbnailLoop(vm: vm)
 
@@ -603,6 +617,7 @@ final class AppStore {
                     refresh()
                 } catch {
                     setups[name]?.failureMessage = error.localizedDescription
+                    appendSetupLog("Setup failed: \(error.localizedDescription)", name: name)
                 }
             }
         } catch {
@@ -615,8 +630,23 @@ final class AppStore {
         switch event {
         case .setupStep(let step):
             setups[name]?.currentPhaseID = step.phaseIndex
-        case .status, .progress:
-            break
+            setups[name]?.statusMessage = step.title
+            appendSetupLog("Setup [\(step.phaseIndex + 1)/\(step.phaseCount)] \(step.title)", name: name)
+        case .status(let message):
+            setups[name]?.statusMessage = message
+            appendSetupLog(message, name: name)
+        case .progress(let label, _):
+            setups[name]?.statusMessage = label
+            appendSetupLog(label, name: name)
+        }
+    }
+
+    private func appendSetupLog(_ message: String, name: String) {
+        guard !message.isEmpty else { return }
+        guard setups[name]?.logMessages.last != message else { return }
+        setups[name]?.logMessages.append(message)
+        if let count = setups[name]?.logMessages.count, count > Self.maxSetupLogMessages {
+            setups[name]?.logMessages.removeFirst(count - Self.maxSetupLogMessages)
         }
     }
 
@@ -636,7 +666,7 @@ final class AppStore {
 
     // MARK: - Restore images
 
-    func importRestoreImage(from sourceURL: URL) {
+    func importRestoreImage(from sourceURL: URL, selectForCreate: Bool = false) {
         guard !restoreImageImportInProgress else { return }
 
         let root = service.rootDirectory
@@ -659,6 +689,10 @@ final class AppStore {
             if let entry = result.entry {
                 restoreImageLabels[entry.name] = nil
                 latestCheckStatus = "Imported \(entry.name)"
+                if selectForCreate {
+                    draft.restoreMode = .localFile
+                    draft.localRestoreImageURL = entry.url
+                }
             } else if let errorMessage = result.errorMessage {
                 latestCheckStatus = nil
                 alertMessage = "Failed to import restore image: \(errorMessage)"

@@ -28,18 +28,28 @@ struct CreateVMSheet: View {
                 GridRow(alignment: .top) {
                     fieldLabel("Restore image:")
                     VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: $store.draft.restoreMode) {
-                            Text("Latest supported — fetched from Apple, cached")
-                                .tag(RestoreImageSelectionMode.latestSupported)
-                            Text(localFileLabel)
-                                .tag(RestoreImageSelectionMode.localFile)
-                        }
-                        .pickerStyle(.radioGroup)
-                        .labelsHidden()
-                        if store.draft.restoreMode == .localFile {
+                        HStack(spacing: 8) {
+                            Picker("", selection: restoreImageSelection) {
+                                Text("Latest supported").tag("")
+                                ForEach(store.restoreImages) { entry in
+                                    Text(entry.name).tag(entry.url.path)
+                                }
+                                if let url = uncachedSelectedRestoreImage {
+                                    Text(url.lastPathComponent).tag(url.path)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .frame(width: 240)
+
                             Button("Choose…") { chooseIPSW() }
                                 .controlSize(.small)
+                                .disabled(store.restoreImageImportInProgress)
+                                .help("Import a local IPSW into the restore image cache")
                         }
+                        Text(restoreImageSelectionDetail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
                     }
                 }
 
@@ -161,17 +171,13 @@ struct CreateVMSheet: View {
         if store.draft.restoreMode == .localFile && store.draft.localRestoreImageURL == nil {
             return false
         }
+        if store.restoreImageImportInProgress {
+            return false
+        }
         if store.xcodeImportInProgress {
             return false
         }
         return true
-    }
-
-    private var localFileLabel: String {
-        if let url = store.draft.localRestoreImageURL {
-            return url.lastPathComponent
-        }
-        return "Local IPSW file…"
     }
 
     nonisolated static func hostMemoryHint(physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> String {
@@ -238,6 +244,55 @@ struct CreateVMSheet: View {
         )
     }
 
+    private var restoreImageSelection: Binding<String> {
+        @Bindable var store = store
+        return Binding(
+            get: {
+                guard store.draft.restoreMode == .localFile else { return "" }
+                return store.draft.localRestoreImageURL?.path ?? ""
+            },
+            set: { path in
+                if path.isEmpty {
+                    store.draft.restoreMode = .latestSupported
+                    store.draft.localRestoreImageURL = nil
+                } else {
+                    store.draft.restoreMode = .localFile
+                    store.draft.localRestoreImageURL = URL(fileURLWithPath: path)
+                }
+            }
+        )
+    }
+
+    private var uncachedSelectedRestoreImage: URL? {
+        guard store.draft.restoreMode == .localFile,
+              let url = store.draft.localRestoreImageURL else {
+            return nil
+        }
+        let selectedURL = url.standardizedFileURL
+        let isCached = store.restoreImages.contains {
+            $0.url.standardizedFileURL == selectedURL
+        }
+        return isCached ? nil : url
+    }
+
+    private var restoreImageSelectionDetail: String {
+        if store.restoreImageImportInProgress, let status = store.latestCheckStatus {
+            return status
+        }
+        guard store.draft.restoreMode == .localFile,
+              let url = store.draft.localRestoreImageURL else {
+            return "Fetched from Apple, cached"
+        }
+        let selectedURL = url.standardizedFileURL
+        if let entry = store.restoreImages.first(where: { $0.url.standardizedFileURL == selectedURL }) {
+            return [
+                RestoreImageCatalog.formattedSize(entry.sizeBytes),
+                "cached \(DateFormatter.mediumDate.string(from: entry.modifiedAt))",
+            ].joined(separator: " · ")
+        }
+        return "Local IPSW file"
+    }
+
     private func chooseIPSW() {
         let panel = NSOpenPanel()
         if let ipswType = UTType(filenameExtension: "ipsw") {
@@ -246,7 +301,7 @@ struct CreateVMSheet: View {
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         if panel.runModal() == .OK, let url = panel.url {
-            store.draft.localRestoreImageURL = url
+            store.importRestoreImage(from: url, selectForCreate: true)
         }
     }
 

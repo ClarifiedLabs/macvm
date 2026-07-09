@@ -1,0 +1,14 @@
+confidence  x,y wxh  text (framebuffer 2560x1440)
+0.50  2154,18 119x26  U.S.-
+1.00  2277,18 245x22  Thu Jul 9 12:25PM
+1.00  826,494 491x37  Sign In to Your Apple Account
+1.00  829,535 799x37  Sign in to use iCloud, the App Store, and other Apple
+1.00  829,575 141x35  services.
+1.00  829,672 301x30  Email or Phone Number
+1.00  829,736 346x26  Create new Apple Account...
+1.00  829,788 219x26  Forgot password?
+1.00  829,1097 818x22  This Mac will be associated with your Apple Account and data such as photos,
+1.00  829,1126 866x23  contacts, and documents will be stored in iCloud so you can access them on other
+1.00  829,1152 435x27  devices. See how your data is managed...
+1.00  546,1231 301x29  Other Sign-In Options V
+1.00  1860,1235 111x22  Continue

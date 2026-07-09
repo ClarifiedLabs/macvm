@@ -91,8 +91,13 @@ func metadataRoundTripsThroughJSON() throws {
 func bootstrapScriptIncludesXcodeAutomationHooks() throws {
     let script = try BootstrapAssets.loadBootstrapScript()
     #expect(script.contains("--install-xcode"))
+    #expect(script.contains("printf '[bootstrap] %s\\n' \"$*\" >&2"))
+    #expect(script.contains("xcodebuild -license accept"))
     #expect(script.contains("xcodebuild -runFirstLaunch"))
     #expect(script.contains("xcodebuild -downloadPlatform iOS"))
+    #expect(script.contains("xip --expand \"$source_path\" >&2"))
+    #expect(script.contains("sudo_cmd ditto \"$app_source_path\" \"$target_path\" >&2"))
+    #expect(script.contains("sudo -n true"))
     #expect(script.contains("Xcode*.xip"))
     #expect(!script.contains("\"$TRANSFERS_DIR\"/Xcode*.app"))
     #expect(!script.contains("Path to Xcode.app"))
@@ -467,8 +472,9 @@ func setupStepsRoundTripThroughJSON() throws {
         .clickText("^Continue$", whenText: "FileVault", timeout: 30, optional: true),
         .advanceUntilText("Finder|Enter Password", timeout: 120),
         .clickText("Not Now", timeout: 20, optional: true),
-        .type("United States"),
+        .type("United States", holdDelay: 0.08, gapDelay: 0.18),
         .type("admin", whenText: "Enter Password", timeout: 5, optional: true),
+        .repairAccountPasswordMismatch("admin", timeout: 5),
         .keys(["tab", "return"]),
         .keys(["return"], whenText: "Enter Password", timeout: 5, optional: true),
         .delay(2),
@@ -494,33 +500,36 @@ func setupFlowLoadsOverrideFromJSON() throws {
 }
 
 @Test
-func setupFlowAnchorsEarlyOnboardingPanesBeforeAccountCreation() throws {
+func setupFlowDrivesEarlyOnboardingPanesReactivelyBeforeAccountCreation() throws {
     let steps = SetupFlows.builtIn(forMacOSMajor: 26, options: SetupOptions())
 
     let country = try #require(steps.firstIndex { $0.action == .waitText && ($0.text ?? "").contains("Country") })
-    let transfer = try #require(steps.firstIndex { $0.action == .waitText && ($0.text ?? "").contains("Transfer Your Data") })
-    let languages = try #require(steps.firstIndex { $0.action == .waitText && ($0.text ?? "").contains("Written and Spoken Languages") })
+    let dispatcher = try #require(steps.firstIndex {
+        $0.action == .advanceUntilText
+            && ($0.text ?? "").contains("Create a.*Account")
+            && ($0.text ?? "").contains("Create a Computer Account")
+    })
     let account = try #require(steps.firstIndex { $0.action == .waitText && ($0.text ?? "").contains("Create a.*Account") })
 
-    #expect(country < transfer)
-    #expect(transfer < languages)
-    #expect(languages < account)
+    #expect(country < dispatcher)
+    #expect(dispatcher < account)
     #expect(steps[country].optional != true)
-    #expect(steps[transfer].optional != true)
-    #expect(steps[languages].optional != true)
+    #expect(steps[dispatcher].optional != true)
+    #expect(!steps.contains { $0.action == .waitText && ($0.text ?? "").contains("Transfer Your Data") })
+    #expect(!steps.contains { $0.action == .waitText && ($0.text ?? "").contains("Written and Spoken Languages") })
+    #expect(!steps.contains { $0.action == .waitText && ($0.text ?? "").contains("Accessibility") })
 }
 
 @Test
 func setupPlanExposesPhasesWithAnchors() {
     let plan = SetupFlows.plan(forMacOSMajor: 26, options: SetupOptions())
 
-    #expect(plan.phases.count == 11)
-    #expect(plan.phases.map(\.id) == Array(0..<11))
+    #expect(plan.phases.count == 10)
+    #expect(plan.phases.map(\.id) == Array(0..<10))
     #expect(plan.phases.map(\.title) == [
         "Boot headless, connect RFB client",
-        "Language selection",
-        "Country or Region",
-        "Transfer Your Data",
+        "Language and region",
+        "Setup Assistant panes before account",
         "Create admin account",
         "Handle FileVault prompt",
         "Finish Setup Assistant panes",
@@ -529,26 +538,43 @@ func setupPlanExposesPhasesWithAnchors() {
         "Enable SSH, install per-VM key",
         "Wait for IP and SSH",
     ])
-    #expect(plan.phases[5].anchor == #"FileVault → "Not Now""#)
-    #expect(plan.phases[6].anchor == #"advanceUntilText "Finder|Enter Password""#)
-    #expect(plan.phases[10].anchor == "dhcpd_leases")
+    #expect(plan.phases[2].anchor == #"advanceUntilText "Create a.*Account""#)
+    #expect(plan.phases[4].anchor == #"FileVault -> "Not Now""#)
+    #expect(plan.phases[5].anchor == #"advanceUntilText "Finder|Enter Password""#)
+    #expect(plan.phases[9].anchor == "dhcpd_leases")
 
     // Pipeline-owned phases carry no step index; OCR phases point into the flow
     // in step order.
     #expect(plan.phases[0].firstStepIndex == nil)
+    #expect(plan.phases[8].firstStepIndex == nil)
     #expect(plan.phases[9].firstStepIndex == nil)
-    #expect(plan.phases[10].firstStepIndex == nil)
     let stepIndexes = plan.phases.compactMap(\.firstStepIndex)
-    #expect(stepIndexes.count == 8)
+    #expect(stepIndexes.count == 7)
     #expect(stepIndexes == stepIndexes.sorted())
     #expect(stepIndexes.allSatisfy { $0 >= 0 && $0 < plan.steps.count })
+}
+
+@Test
+func setupPlanAddsXcodePhaseOnlyWhenRequested() {
+    let plain = SetupFlows.plan(forMacOSMajor: 26, options: SetupOptions())
+    let withXcode = SetupFlows.plan(
+        forMacOSMajor: 26,
+        options: SetupOptions(xcodeXIPURL: URL(fileURLWithPath: "/tmp/Xcode.xip"))
+    )
+
+    #expect(plain.phases.map(\.title).last == "Wait for IP and SSH")
+    #expect(withXcode.phases.count == plain.phases.count + 1)
+    #expect(withXcode.phases.map(\.id) == Array(0..<withXcode.phases.count))
+    #expect(withXcode.phases.suffix(2).map(\.title) == ["Wait for IP and SSH", "Install Xcode"])
+    #expect(withXcode.phases.last?.anchor == "bootstrap-tools --install-xcode")
+    #expect(withXcode.phases.last?.firstStepIndex == nil)
 }
 
 @Test
 func setupPhasesForCustomFlowLeaveUnmatchedMarkersWithoutStepIndexes() {
     let phases = SetupFlows.phases(for: [.waitText("Custom"), .clickText("Go")])
 
-    #expect(phases.count == 11)
+    #expect(phases.count == 10)
     #expect(phases[1].firstStepIndex == 0)
     #expect(phases[2].firstStepIndex == nil)
     #expect(phases[4].firstStepIndex == nil)
@@ -567,14 +593,14 @@ func ocrQueryMatchesUsesExactSubstringAndRegexSemantics() {
 @Test
 func setupRescueTriesDismissiveButtonsBeforeGenericAdvancement() throws {
     let queries = SetupStepRunner.rescueQueries
-    let notNow = try #require(queries.firstIndex(of: "Not Now"))
+    let notNow = try #require(queries.firstIndex(of: "^Not Now$"))
     let otherSignIn = try #require(queries.firstIndex(of: "Other Sign-In Options"))
     let setUpLater = try #require(queries.firstIndex(of: "Set Up Later"))
     let signInLater = try #require(queries.firstIndex(of: "Sign in Later in Settings"))
     let dontUse = try #require(queries.firstIndex(of: "Don.t Use"))
     let adult = try #require(queries.firstIndex(of: "Adult|Acult"))
     let agree = try #require(queries.firstIndex(of: "Agree"))
-    let cont = try #require(queries.firstIndex(of: "Continue"))
+    let cont = try #require(queries.firstIndex(of: "^Continue$"))
     #expect(notNow < cont)
     #expect(setUpLater < otherSignIn)
     #expect(signInLater < otherSignIn)
@@ -662,6 +688,195 @@ func setupRescuePrefersFileVaultModalContinueOverBackgroundButtons() throws {
     #expect(match.y == 744)
 }
 
+@Test
+func setupPaneDispatcherRecognizesTransferPaneBeforeWrittenSpokenLanguages() throws {
+    let observations = [
+        TextObservation(
+            string: "Transfer Your Data to This Mac",
+            rectInPixels: CGRect(x: 760, y: 475, width: 360, height: 30),
+            confidence: 0.98
+        ),
+        TextObservation(
+            string: "How do you want to transfer your information?",
+            rectInPixels: CGRect(x: 760, y: 640, width: 420, height: 24),
+            confidence: 0.95
+        ),
+        TextObservation(
+            string: "Set up as new",
+            rectInPixels: CGRect(x: 790, y: 720, width: 130, height: 24),
+            confidence: 0.92
+        ),
+        TextObservation(
+            string: "Continue",
+            rectInPixels: CGRect(x: 1250, y: 875, width: 90, height: 26),
+            confidence: 0.94
+        ),
+    ]
+
+    let pane = try #require(SetupStepRunner.paneRule(in: observations))
+    #expect(pane.title == "Transfer or Migration Assistant")
+    // Preferred rung is the macOS 26 dismissal; the legacy radio+Continue is a
+    // separate, applicability-gated rung — never blind keystrokes.
+    #expect(pane.tactics.first == SetupPolicy.Tactic(atoms: [.click("^Not Now$")]))
+    #expect(pane.tactics.contains { tactic in
+        tactic.atoms.contains(.click("^Continue$"))
+    })
+    #expect(pane.allowGenericRescue == false)
+}
+
+@Test
+func setupPaneDispatcherCoversMacOSFamiliesFromTartTemplates() throws {
+    let migration = try #require(SetupStepRunner.paneRule(in: [
+        TextObservation(
+            string: "Migration Assistant",
+            rectInPixels: CGRect(x: 700, y: 450, width: 280, height: 34),
+            confidence: 0.96
+        ),
+    ]))
+    let appleAccount = try #require(SetupStepRunner.paneRule(in: [
+        TextObservation(
+            string: "Sign In with Your Apple ID",
+            rectInPixels: CGRect(x: 700, y: 450, width: 300, height: 34),
+            confidence: 0.96
+        ),
+    ]))
+    let terms = try #require(SetupStepRunner.paneRule(in: [
+        TextObservation(
+            string: "Terms and Conditions",
+            rectInPixels: CGRect(x: 700, y: 450, width: 280, height: 34),
+            confidence: 0.96
+        ),
+    ]))
+    let timeZone = try #require(SetupStepRunner.paneRule(in: [
+        TextObservation(
+            string: "Select Your Time Zone",
+            rectInPixels: CGRect(x: 700, y: 450, width: 280, height: 34),
+            confidence: 0.96
+        ),
+    ]))
+
+    #expect(migration.title == "Transfer or Migration Assistant")
+    #expect(appleAccount.title == "Apple Account")
+    #expect(terms.title == "Terms and Conditions")
+    #expect(timeZone.title == "Time Zone")
+}
+
+@Test
+func setupPaneDispatcherFallsBackToKeyboardWhenAccessibilityClickDoesNotAdvance() throws {
+    let pane = try #require(SetupStepRunner.paneRule(in: [
+        TextObservation(
+            string: "Accessibility",
+            rectInPixels: CGRect(x: 825, y: 497, width: 212, height: 40),
+            confidence: 1.0
+        ),
+        TextObservation(
+            string: "Not Now",
+            rectInPixels: CGRect(x: 1860, y: 1230, width: 108, height: 27),
+            confidence: 1.0
+        ),
+    ]))
+
+    #expect(pane.title == "Accessibility")
+    #expect(pane.tactics == [
+        SetupPolicy.Tactic(atoms: [.click("^Not Now$")]),
+        SetupPolicy.Tactic(atoms: [.keys(["shift+tab", "space"])]),
+    ])
+}
+
+@Test
+func setupPaneDispatcherFallsBackToKeyboardWhenWrittenSpokenClickDoesNotAdvance() throws {
+    let pane = try #require(SetupStepRunner.paneRule(in: [
+        TextObservation(
+            string: "Written and Spoken Languages",
+            rectInPixels: CGRect(x: 825, y: 497, width: 360, height: 40),
+            confidence: 1.0
+        ),
+        TextObservation(
+            string: "Continue",
+            rectInPixels: CGRect(x: 1785, y: 1230, width: 108, height: 27),
+            confidence: 1.0
+        ),
+    ]))
+
+    #expect(pane.title == "Written and Spoken Languages")
+    #expect(pane.tactics == [
+        SetupPolicy.Tactic(atoms: [.click("^Continue$")]),
+        SetupPolicy.Tactic(atoms: [.keys(["shift+tab", "space"])]),
+    ])
+}
+
+/// Button-only panes escalate from a verified click to a keyboard chord; panes
+/// with selectable rows never press blind keys (a stray space can opt in to
+/// something — on the Transfer pane it selects a migration source) and never
+/// fall through to generic rescue, whose tail is "^Continue$".
+@Test
+func setupPaneDispatcherEscalatesClicksBeforeKeysAndKeepsRowPanesClickOnly() throws {
+    let keyboardFallbackTitles = [
+        "Written and Spoken Languages",
+        "Accessibility",
+        "Data & Privacy",
+        "Terms and Conditions",
+        "Time Zone",
+        "Analytics",
+        "Screen Time",
+        "Siri",
+        "FileVault",
+        "Touch ID",
+        "Appearance",
+        "Automatic Updates",
+        "Welcome to Mac",
+    ]
+    for title in keyboardFallbackTitles {
+        let pane = try #require(SetupPolicy.paneRules.first { $0.title == title })
+        let lastTactic = try #require(pane.tactics.last)
+        #expect(lastTactic.atoms.contains { atom in
+            if case .keys = atom { return true }
+            return false
+        }, "\(title) should end with a keyboard fallback rung")
+        #expect(pane.tactics.dropLast().contains { tactic in
+            if case .click = tactic.atoms.first { return true }
+            return false
+        }, "\(title) should try a verified click before keys")
+    }
+
+    let rowPaneTitles = ["Transfer or Migration Assistant", "Age Range", "Location Services"]
+    for title in rowPaneTitles {
+        let pane = try #require(SetupPolicy.paneRules.first { $0.title == title })
+        #expect(pane.allowGenericRescue == false, "\(title) must not fall through to generic rescue")
+        for tactic in pane.tactics {
+            #expect(!tactic.atoms.contains { atom in
+                if case .keys = atom { return true }
+                return false
+            }, "\(title) must not press blind keys")
+        }
+    }
+}
+
+@Test
+func setupPaneDispatcherFailsFastWhenRecognizedPaneDoesNotAdvance() throws {
+    #expect(SetupPolicy.maxActionsPerLadder > 0)
+    #expect(SetupPolicy.maxActionsPerLadder < 30)
+    #expect(SetupPolicy.maxActionsPerModalLadder > 0)
+    #expect(SetupPolicy.maxActionsPerModalLadder <= SetupPolicy.maxActionsPerLadder)
+    #expect(SetupPolicy.maxSignatureActions > 0)
+    #expect(SetupPolicy.maxSignatureActions <= SetupPolicy.maxActionsPerLadder)
+    #expect(SetupPolicy.maxTotalActions >= SetupPolicy.maxActionsPerLadder)
+    #expect(SetupPolicy.maxIdleRoundsInLadder > 0)
+}
+
+@Test
+func builtInSetupFlowUsesReactiveDispatcherForSupportedMacOSMajors() throws {
+    for major in [12, 13, 14, 15, 26] {
+        let steps = SetupFlows.builtIn(forMacOSMajor: major, options: SetupOptions())
+        let dispatcher = try #require(steps.first {
+            $0.action == .advanceUntilText
+                && ($0.text ?? "").contains("Create a.*Account")
+                && ($0.text ?? "").contains("Create a Computer Account")
+        })
+        #expect(dispatcher.timeout == 420)
+    }
+}
+
 /// Regression for the flow ending mid-Setup-Assistant: late panes should be
 /// driven from current screenshots, not by paying one timeout for every possible
 /// pane in a linear list. The login screen is optional because some builds land
@@ -673,7 +888,9 @@ func setupFlowAdvancesLatePanesAndLogsInOnlyWhenNeeded() throws {
     let waits = steps.filter { $0.action == .waitText }
     let advances = steps.filter { $0.action == .advanceUntilText }
 
-    let firstFinishGate = try #require(advances.first)
+    let firstFinishGate = try #require(advances.first {
+        ($0.text ?? "").contains("Finder") && ($0.text ?? "").contains("Enter Password")
+    })
     #expect((firstFinishGate.text ?? "").contains("Finder"))
     #expect((firstFinishGate.text ?? "").contains("Enter Password"))
     #expect(firstFinishGate.optional != true)
@@ -741,6 +958,53 @@ func setupFlowHandlesFileVaultBeforeScreenshotDrivenTail() throws {
     #expect(fileVaultConfirmation < tail)
     #expect(steps[fileVaultChoice].optional == true)
     #expect(steps[fileVaultConfirmation].optional == true)
+}
+
+@Test
+func setupFlowSlowsAccountPasswordTypingAndRepairsMismatchAlert() throws {
+    let options = SetupOptions(username: "dev", password: "admin")
+    let steps = SetupFlows.tahoe(options: options)
+
+    let account = try #require(steps.firstIndex {
+        $0.action == .waitText && ($0.text ?? "").contains("Create a.*Account")
+    })
+    let repair = try #require(steps.firstIndex {
+        $0.action == .repairAccountPasswordMismatch
+    })
+    let fileVaultChoice = try #require(steps.firstIndex {
+        $0.action == .clickTextWhenText
+            && $0.text == "Not Now"
+            && ($0.whenText ?? "").contains("FileVault")
+    })
+
+    #expect(account < repair)
+    #expect(repair < fileVaultChoice)
+    #expect(steps[repair].text == options.password)
+    #expect(steps[repair].timeout == 5)
+
+    let accountPasswordEntries = steps[account..<repair].filter {
+        $0.action == .type && $0.text == options.password && $0.whenText == nil
+    }
+    #expect(accountPasswordEntries.count == 2)
+    #expect(accountPasswordEntries.allSatisfy { ($0.typingHoldDelay ?? 0) >= 0.08 })
+    #expect(accountPasswordEntries.allSatisfy { ($0.typingGapDelay ?? 0) >= 0.18 })
+
+    let loginPassword = try #require(steps.first {
+        $0.action == .type
+            && $0.text == options.password
+            && ($0.whenText ?? "").contains("Enter Password")
+    })
+    #expect(loginPassword.typingHoldDelay == 0.08)
+    #expect(loginPassword.typingGapDelay == 0.18)
+
+    #expect(OCRService.queryMatches(
+        SetupStepRunner.accountPasswordMismatchQuery,
+        candidate: "The passwords don't match."
+    ))
+    #expect(OCRService.queryMatches(
+        SetupStepRunner.accountPasswordMismatchQuery,
+        candidate: "The passwords don’t match."
+    ))
 }
 
 /// Regression: small framebuffers are upscaled 2x before Vision recognition, and
@@ -824,9 +1088,40 @@ func provisioningScriptContainsExpectedCommands() {
 @Test
 func guestHardenerUsesExpectedDockTargets() {
     #expect(GuestHardener.finderDockPoint(width: 2560, height: 1440) == (x: 151, y: 1392))
-    #expect(GuestHardener.launchpadDockPoint(width: 2560, height: 1440) == (x: 445, y: 1392))
+    #expect(GuestHardener.launchpadDockPoint(width: 2560, height: 1440) == (x: 261, y: 1392))
     #expect(GuestHardener.finderDockPoint(width: 1, height: 1) == (x: 0, y: 0))
     #expect(GuestHardener.launchpadDockPoint(width: 1, height: 1) == (x: 0, y: 0))
+}
+
+@Test
+func guestHardenerLaunchpadTargetStaysOnSecondDockIconAtDefaultDisplaySize() {
+    let finder = GuestHardener.finderDockPoint(width: 1280, height: 720)
+    let launchpad = GuestHardener.launchpadDockPoint(width: 1280, height: 720)
+
+    #expect(launchpad.x > finder.x)
+    #expect((launchpad.x - finder.x) >= 45)
+    #expect((launchpad.x - finder.x) <= 65)
+    #expect(launchpad.x < 170) // old value (~222) landed on later Dock apps.
+}
+
+@Test
+func guestHardenerRecognizesAppleAccountFirstLaunchPrompt() {
+    let observations = [
+        TextObservation(
+            string: "Messages",
+            rectInPixels: CGRect(x: 48, y: 6, width: 72, height: 18),
+            confidence: 0.96
+        ),
+        TextObservation(
+            string: "Sign in to iMessage with your Apple Account",
+            rectInPixels: CGRect(x: 520, y: 260, width: 420, height: 50),
+            confidence: 0.97
+        ),
+    ]
+
+    #expect(GuestHardener.menuBarShows("Messages", in: observations))
+    #expect(GuestHardener.firstLaunchPromptIsVisible(in: observations))
+    #expect(GuestHardener.foregroundAppMayStealProvisioningTyping(in: observations))
 }
 
 @Test
@@ -1059,7 +1354,10 @@ func setupRuntimeStateRoundTripsAndReportsLiveness() throws {
         username: "admin",
         fullName: "Administrator",
         phaseIndex: 6,
-        phaseCount: 11,
+        phaseCount: 14,
+        statusMessage: "Waiting for Finder",
+        logMessages: ["Waiting for Setup Assistant", "Waiting for Finder"],
+        installsXcode: true,
         pid: getpid(),
         startedAt: Date(),
         updatedAt: Date()
@@ -1071,15 +1369,37 @@ func setupRuntimeStateRoundTripsAndReportsLiveness() throws {
     #expect(decoded.fullName == live.fullName)
     #expect(decoded.phaseIndex == live.phaseIndex)
     #expect(decoded.phaseCount == live.phaseCount)
+    #expect(decoded.statusMessage == live.statusMessage)
+    #expect(decoded.logMessages == live.logMessages)
+    #expect(decoded.installsXcode == live.installsXcode)
     #expect(decoded.pid == live.pid)
     #expect(abs(decoded.startedAt.timeIntervalSince(live.startedAt)) < 1)
     #expect(abs(decoded.updatedAt.timeIntervalSince(live.updatedAt)) < 1)
     #expect(bundle.liveSetupRuntimeState()?.phaseIndex == live.phaseIndex)
 
+    try """
+    {
+      "failureMessage" : null,
+      "fullName" : "Administrator",
+      "installsXcode" : false,
+      "phaseCount" : 14,
+      "phaseIndex" : 3,
+      "pid" : \(getpid()),
+      "startedAt" : "2026-07-09T14:00:00Z",
+      "statusMessage" : "Legacy runtime state",
+      "updatedAt" : "2026-07-09T14:00:01Z",
+      "username" : "admin"
+    }
+    """.write(to: bundle.setupRuntimeStateURL, atomically: true, encoding: .utf8)
+
+    let legacy = try #require(bundle.readSetupRuntimeState())
+    #expect(legacy.logMessages.isEmpty)
+    #expect(legacy.statusMessage == "Legacy runtime state")
+
     let failed = VMSetupRuntimeState(
         username: "admin",
         fullName: "Administrator",
-        phaseCount: 11,
+        phaseCount: 14,
         failureMessage: "Timed out",
         pid: Int32.max,
         startedAt: Date(),
@@ -1091,6 +1411,22 @@ func setupRuntimeStateRoundTripsAndReportsLiveness() throws {
 
     bundle.clearSetupRuntimeState()
     #expect(bundle.readSetupRuntimeState() == nil)
+}
+
+@Test
+func logTailReturnsLastNonEmptyLinesWithinLimit() throws {
+    let url = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    try """
+    line 1
+    line 2
+    line 3
+    line 4
+    """.write(to: url, atomically: true, encoding: .utf8)
+
+    #expect(MacVMService.logTail(from: url, maxBytes: 1_000, maxLines: 2) == "line 3\nline 4")
 }
 
 @Test

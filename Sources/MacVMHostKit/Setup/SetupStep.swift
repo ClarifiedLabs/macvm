@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// One step in a Setup Assistant flow. A flat, Codable shape so flows can ship as
@@ -9,6 +10,7 @@ public struct SetupStep: Codable, Equatable, Sendable {
         case clickTextWhenText // wait for `whenText`, then click `text`
         case advanceUntilText // click known setup buttons until `text` appears
         case type       // type `text` literally
+        case repairAccountPasswordMismatch // recover from Setup Assistant's password mismatch alert
         case keys       // press each chord in `keys` (e.g. "return", "cmd+space")
         case delay      // sleep `seconds`
         case screenshot // dump a labelled screenshot (`text` = label)
@@ -22,6 +24,11 @@ public struct SetupStep: Codable, Equatable, Sendable {
     public var timeout: TimeInterval?
     public var occurrence: Int?
     public var seconds: TimeInterval?
+    /// Optional per-character typing delays, in seconds. Password fields use a
+    /// slower cadence than ordinary text because Setup Assistant can drop secure
+    /// field keystrokes sent too quickly over VNC.
+    public var typingHoldDelay: TimeInterval?
+    public var typingGapDelay: TimeInterval?
     /// If true, a text-anchored step that times out is skipped instead of failing
     /// for panes that only appear on some macOS builds.
     public var optional: Bool?
@@ -34,6 +41,8 @@ public struct SetupStep: Codable, Equatable, Sendable {
         timeout: TimeInterval? = nil,
         occurrence: Int? = nil,
         seconds: TimeInterval? = nil,
+        typingHoldDelay: TimeInterval? = nil,
+        typingGapDelay: TimeInterval? = nil,
         optional: Bool? = nil
     ) {
         self.action = action
@@ -43,6 +52,8 @@ public struct SetupStep: Codable, Equatable, Sendable {
         self.timeout = timeout
         self.occurrence = occurrence
         self.seconds = seconds
+        self.typingHoldDelay = typingHoldDelay
+        self.typingGapDelay = typingGapDelay
         self.optional = optional
     }
 
@@ -62,12 +73,35 @@ public struct SetupStep: Codable, Equatable, Sendable {
         SetupStep(action: .advanceUntilText, text: text, timeout: timeout, optional: optional)
     }
 
-    public static func type(_ text: String) -> SetupStep {
-        SetupStep(action: .type, text: text)
+    public static func type(
+        _ text: String,
+        holdDelay: TimeInterval? = nil,
+        gapDelay: TimeInterval? = nil
+    ) -> SetupStep {
+        SetupStep(action: .type, text: text, typingHoldDelay: holdDelay, typingGapDelay: gapDelay)
     }
 
-    public static func type(_ text: String, whenText: String, timeout: TimeInterval = 8, optional: Bool = false) -> SetupStep {
-        SetupStep(action: .type, text: text, whenText: whenText, timeout: timeout, optional: optional)
+    public static func type(
+        _ text: String,
+        whenText: String,
+        timeout: TimeInterval = 8,
+        optional: Bool = false,
+        holdDelay: TimeInterval? = nil,
+        gapDelay: TimeInterval? = nil
+    ) -> SetupStep {
+        SetupStep(
+            action: .type,
+            text: text,
+            whenText: whenText,
+            timeout: timeout,
+            typingHoldDelay: holdDelay,
+            typingGapDelay: gapDelay,
+            optional: optional
+        )
+    }
+
+    public static func repairAccountPasswordMismatch(_ password: String, timeout: TimeInterval = 5) -> SetupStep {
+        SetupStep(action: .repairAccountPasswordMismatch, text: password, timeout: timeout)
     }
 
     public static func keys(_ keys: [String]) -> SetupStep {
@@ -100,48 +134,28 @@ struct SetupStepRunner {
     /// structured `.setupStep` event for UIs.
     var phases: [SetupPhase] = []
 
-    /// Buttons that advance an unexpected or lingering pane, in the order a
-    /// rescue pass tries them after a required step times out. Dismissive
-    /// choices come before generic advancement so a rescue never opts in to
-    /// anything.
-    static let rescueQueries = [
-        "Not Now",
-        "Set Up Later",
-        "Sign in Later in Settings",
-        "Other Sign-In Options",
-        "Don.t Use",
-        "^Skip$",
-        "Adult|Acult",
-        "Set up as new",
-        "Get Started",
-        "^Agree$",
-        "Agree",
-        "Continue",
-        "^Done$",
-    ]
+    /// The pane/modal knowledge and every advancement decision live in
+    /// `SetupPolicy`, which is pure and unit-testable. These shims keep the
+    /// step-timeout rescue path on the same tables.
+    static let rescueQueries = SetupPolicy.rescueQueries
 
-    private struct ModalRescue {
-        let anchor: String
-        let button: String
+    static func rescueMatch(in observations: [TextObservation]) -> GuestTextMatch? {
+        SetupPolicy.rescueMatch(in: observations)
     }
 
-    /// Foreground modal confirmations whose body text must win over stale
-    /// background buttons that are still visible to OCR but no longer clickable.
-    private static let modalRescues = [
-        ModalRescue(
-            anchor: "Are you sure you want to skip|signing in with an Apple",
-            button: "^Skip$"
-        ),
-        ModalRescue(
-            anchor: "Mac Data Will Not Be Securely Encrypted|Securely Encrypted",
-            button: "^Continue$"
-        ),
-    ]
+    static func paneRule(in observations: [TextObservation]) -> SetupPolicy.PaneRule? {
+        SetupPolicy.paneRule(in: observations)
+    }
+
+    static let accountPasswordMismatchQuery = "passwords don.t match"
 
     /// How many unexpected panes a single required step may click through
     /// before its timeout is treated as fatal. The login/desktop gates at the
     /// end of the flow may legitimately need to clear several panes in a row.
     static let maxRescueAttempts = 8
+    private static let pollStatusInterval: TimeInterval = 10
+    private static let setupPasswordHoldDelay: TimeInterval = 0.08
+    private static let setupPasswordGapDelay: TimeInterval = 0.18
 
     func run(_ steps: [SetupStep]) async throws {
         for (index, step) in steps.enumerated() {
@@ -172,7 +186,7 @@ struct SetupStepRunner {
                 _ = try await poll(text: text, timeout: step.timeout ?? defaultTimeout, occurrence: step.occurrence ?? 0)
             } catch {
                 if step.optional == true {
-                    DebugLog.log("Setup: optional wait for “\(text)” timed out; skipping.")
+                    reportStatus("Setup: optional wait for “\(text)” timed out; skipping.")
                 } else {
                     try await rescueAndRetry(step, originalError: error)
                 }
@@ -188,7 +202,7 @@ struct SetupStepRunner {
                 }
             } catch {
                 if step.optional == true {
-                    DebugLog.log("Setup: optional click on “\(text)” not found; skipping.")
+                    reportStatus("Setup: optional click on “\(text)” not found; skipping.")
                 } else {
                     try await rescueAndRetry(step, originalError: error)
                 }
@@ -202,7 +216,7 @@ struct SetupStepRunner {
                 try await performGatedClick(step, timeout: step.timeout ?? defaultTimeout)
             } catch {
                 if step.optional == true {
-                    DebugLog.log("Setup: optional gated click on “\(text)” after “\(whenText)” not found; skipping.")
+                    reportStatus("Setup: optional gated click on “\(text)” after “\(whenText)” not found; skipping.")
                 } else {
                     try await rescueAndRetry(step, originalError: error)
                 }
@@ -215,7 +229,7 @@ struct SetupStepRunner {
                 _ = try await advanceUntilText(text, timeout: step.timeout ?? defaultTimeout)
             } catch {
                 if step.optional == true {
-                    DebugLog.log("Setup: optional advance until “\(text)” timed out; skipping.")
+                    reportStatus("Setup: optional advance until “\(text)” timed out; skipping.")
                 } else {
                     throw error
                 }
@@ -225,9 +239,14 @@ struct SetupStepRunner {
             guard try await shouldRunConditionalStep(step) else {
                 return
             }
+            let holdDelay = step.typingHoldDelay.map(Self.nanoseconds(from:)) ?? 35_000_000
+            let gapDelay = step.typingGapDelay.map(Self.nanoseconds(from:)) ?? 90_000_000
             try await withInputClient { inputClient in
-                try await inputClient.typeText(step.text ?? "")
+                try await inputClient.typeText(step.text ?? "", holdDelay: holdDelay, gapDelay: gapDelay)
             }
+
+        case .repairAccountPasswordMismatch:
+            try await repairAccountPasswordMismatch(password: step.text ?? "", timeout: step.timeout ?? 5)
 
         case .keys:
             guard try await shouldRunConditionalStep(step) else {
@@ -260,6 +279,85 @@ struct SetupStepRunner {
         }
     }
 
+    private func repairAccountPasswordMismatch(password: String, timeout: TimeInterval) async throws {
+        guard await visibleText(Self.accountPasswordMismatchQuery, timeout: timeout) != nil else {
+            return
+        }
+
+        progress?(.status("Setup: password mismatch alert appeared; retrying account password entry"))
+        let attempts = 2
+        for attempt in 1...attempts {
+            let goBack = try await poll(text: "Go Back", timeout: 10, occurrence: 0)
+            try await click(goBack)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+            _ = try await poll(text: "Create a.*Account|Full Name|Hint \\(Optional\\)", timeout: 20, occurrence: 0)
+            try await refillAccountPasswordFields(password: password, attempt: attempt)
+
+            let continueButton = try await poll(text: "Continue", timeout: 15, occurrence: 0)
+            try await click(continueButton)
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+
+            if await visibleText(Self.accountPasswordMismatchQuery, timeout: 2) == nil {
+                return
+            }
+
+            if attempt < attempts {
+                progress?(.status("Setup: password mismatch persisted; retrying account password entry again"))
+            }
+        }
+
+        await dumpScreenshot(label: "account-password-mismatch")
+        throw MacVMError.message("Setup Assistant reported mismatched account passwords after retrying account password entry.")
+    }
+
+    private func refillAccountPasswordFields(password: String, attempt: Int) async throws {
+        let multiplier = attempt == 1 ? 1 : 1.5
+        let holdDelay = Self.setupPasswordHoldDelay * multiplier
+        let gapDelay = Self.setupPasswordGapDelay * multiplier
+
+        try await refillAccountPasswordField("^Password$", password: password, holdDelay: holdDelay, gapDelay: gapDelay)
+        try await refillAccountPasswordField("Verify Password", password: password, holdDelay: holdDelay, gapDelay: gapDelay)
+    }
+
+    private func refillAccountPasswordField(
+        _ fieldText: String,
+        password: String,
+        holdDelay: TimeInterval,
+        gapDelay: TimeInterval
+    ) async throws {
+        let field = try await poll(text: fieldText, timeout: 15, occurrence: 0)
+        try await click(field)
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        try await clearFocusedText(maxCharacters: max(12, password.count + 2))
+        try await withInputClient { inputClient in
+            try await inputClient.typeText(
+                password,
+                holdDelay: Self.nanoseconds(from: holdDelay),
+                gapDelay: Self.nanoseconds(from: gapDelay)
+            )
+        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+
+    private func clearFocusedText(maxCharacters: Int) async throws {
+        try await withInputClient { inputClient in
+            if let selectAll = Keysym.parseChord("cmd+a") {
+                try await inputClient.pressKey(selectAll.key, modifiers: selectAll.modifiers)
+            }
+            for _ in 0..<maxCharacters {
+                try await inputClient.pressKey(Keysym.backspace)
+            }
+        }
+    }
+
+    private func click(_ match: GuestTextMatch) async throws {
+        try await withInputClient { inputClient in
+            try await inputClient.click(x: match.x, y: match.y)
+        }
+    }
+
     func visibleText(_ text: String, timeout: TimeInterval) async -> GuestTextMatch? {
         try? await poll(text: text, timeout: timeout, occurrence: 0)
     }
@@ -272,10 +370,12 @@ struct SetupStepRunner {
     /// nothing clickable is on screen or the retries never find the target.
     private func rescueAndRetry(_ step: SetupStep, originalError: Error) async throws {
         let text = step.text ?? ""
+        reportStatus("Setup: required step did not find “\(text)”; trying safe recovery clicks")
 
         for attempt in 1...Self.maxRescueAttempts {
             guard let rescued = await clickAnyRescueButton() else {
-                DebugLog.log("Setup rescue: no advance button visible; giving up on “\(text)”.")
+                let visible = await currentVisibleTextSummary()
+                reportStatus("Setup rescue: no safe advance button visible while waiting for “\(text)”; visible: \(visible)")
                 break
             }
             progress?(.status("Setup: unexpected pane — clicked “\(rescued.text)” to advance (rescue \(attempt)/\(Self.maxRescueAttempts))"))
@@ -306,6 +406,7 @@ struct SetupStepRunner {
         }
 
         await dumpScreenshot(label: "rescue-exhausted-\(step.action.rawValue)")
+        reportStatus("Setup rescue exhausted while waiting for “\(text)”")
         throw originalError
     }
 
@@ -334,44 +435,171 @@ struct SetupStepRunner {
             return true
         } catch {
             if step.optional == true {
-                DebugLog.log("Setup: conditional step skipped because “\(whenText)” was not visible.")
+                reportStatus("Setup: conditional step skipped because “\(whenText)” was not visible.")
                 return false
             }
             throw error
         }
     }
 
+    /// Perceive → decide → act → verify until `text` appears. Perception and
+    /// action live here; every decision — which pane/modal owns the screen,
+    /// which tactic to try next, when to give up — is `SetupPolicy.decide`,
+    /// which is pure. After each action the loop measures whether the screen
+    /// actually changed and feeds that back, so a click that did nothing
+    /// escalates to the next rung instead of repeating forever.
     @discardableResult
     private func advanceUntilText(_ text: String, timeout: TimeInterval) async throws -> GuestTextMatch {
         let deadline = Date().addingTimeInterval(timeout)
-        var clickCount = 0
+        let startedAt = Date()
+        var nextStatusAt = startedAt.addingTimeInterval(Self.pollStatusInterval)
+        var state = SetupPolicy.PolicyState()
+        var screen = try await captureScreen()
 
         repeat {
-            // Treat each pass as a fresh screenshot-driven decision. This avoids
-            // paying one timeout per possible pane when Setup Assistant reorders
-            // or skips late onboarding screens.
-            try? await nudgeDisplay()
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            let framebuffer = try await captureFramebufferForOCR()
-            let observations = OCRService.observations(in: framebuffer)
+            let (decision, nextState) = SetupPolicy.decide(target: text, screen: screen, state: state)
+            state = nextState
 
-            if let match = OCRService.match(text, in: observations) {
+            switch decision {
+            case .reachedTarget(let match):
                 return match
-            }
 
-            if let match = Self.rescueMatch(in: observations) {
-                clickCount += 1
-                progress?(.status("Setup: clicked “\(match.text)” while advancing Setup Assistant (\(clickCount))"))
-                try await withInputClient { inputClient in
-                    try await inputClient.click(x: match.x, y: match.y)
+            case .stuck(let reason):
+                await dumpScreenshot(label: "stuck-\(state.ladderKey.isEmpty ? "unknown" : state.ladderKey)")
+                throw MacVMError.message(
+                    "\(reason.summary) while advancing until “\(text)”. Last visible text: \(Self.visibleTextSummary(screen.observations))."
+                )
+
+            case .wait(let seconds):
+                let now = Date()
+                if now >= nextStatusAt {
+                    let elapsed = Int(now.timeIntervalSince(startedAt))
+                    progress?(.status("Setup: still advancing until “\(text)” (\(elapsed)s); visible: \(Self.visibleTextSummary(screen.observations))"))
+                    nextStatusAt = now.addingTimeInterval(Self.pollStatusInterval)
                 }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-            } else {
-                try? await Task.sleep(nanoseconds: 700_000_000)
+                try? await Task.sleep(nanoseconds: Self.nanoseconds(from: seconds))
+                screen = try await captureScreen()
+
+            case .act(let tactic, let ladderKey, let rationale):
+                reportStatus("Setup: \(rationale)")
+                let before = screen
+                try await perform(tactic, on: screen)
+                let outcome = try await awaitScreenChange(from: before, anchor: SetupPolicy.anchor(forLadderKey: ladderKey))
+                state.lastActionAdvanced = outcome.advanced
+                screen = outcome.screen
+                if !outcome.advanced {
+                    reportStatus("Setup: “\(ladderKey)” did not advance (similarity \(String(format: "%.2f", SetupPolicy.similarity(from: before, to: outcome.screen)))); escalating")
+                }
             }
         } while Date() < deadline
 
-        throw MacVMError.message("Timed out after \(Int(timeout))s advancing until “\(text)”.")
+        throw MacVMError.message("Timed out after \(Int(timeout))s advancing until “\(text)”. Last visible text: \(Self.visibleTextSummary(screen.observations)).")
+    }
+
+    /// Nudge the display awake, let it settle, then capture and OCR one frame.
+    /// An asleep guest serves a blank point-sized framebuffer that OCRs to
+    /// nothing; retry a few times so a sleep blink doesn't reach the policy as
+    /// a phantom "screen changed" or hide the pane we're on. A guest that is
+    /// genuinely showing a blank screen (mid-transition) falls through after
+    /// the retries and the policy waits.
+    private func captureScreen() async throws -> SetupPolicy.Screen {
+        var screen = try await captureScreenOnce()
+        var retries = 0
+        while screen.observations.isEmpty && retries < 3 {
+            retries += 1
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            screen = try await captureScreenOnce()
+        }
+        return screen
+    }
+
+    private func captureScreenOnce() async throws -> SetupPolicy.Screen {
+        try? await nudgeDisplay()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let framebuffer = try await captureFramebufferForOCR()
+        return SetupPolicy.Screen(
+            observations: OCRService.observations(in: framebuffer),
+            size: CGSize(width: framebuffer.width, height: framebuffer.height)
+        )
+    }
+
+    /// Execute a tactic's atoms in order. Clicks after the first re-resolve
+    /// against a fresh capture because earlier atoms may have moved the layout;
+    /// a query that no longer matches abandons the tactic — the verify step
+    /// then reports "did not advance" and the policy escalates.
+    private func perform(_ tactic: SetupPolicy.Tactic, on screen: SetupPolicy.Screen) async throws {
+        // Input sent to an asleep display is consumed as a wake event and the
+        // click never lands. Wake it just before acting, not only at capture
+        // time — an aggressive guest can blank in the gap between the two.
+        try? await nudgeDisplay()
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        var observations = screen.observations
+        for (index, atom) in tactic.atoms.enumerated() {
+            switch atom {
+            case .click(let query):
+                if index > 0 {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    if let framebuffer = try? await captureFramebufferForOCR() {
+                        observations = OCRService.observations(in: framebuffer)
+                    }
+                }
+                guard let match = OCRService.match(query, in: observations) else {
+                    reportStatus("Setup: “\(query)” is not on screen mid-tactic; abandoning this attempt")
+                    return
+                }
+                try await click(match)
+
+            case .clickMatch(let match):
+                try await click(match)
+
+            case .keys(let keys):
+                try await pressKeys(keys)
+
+            case .type(let text):
+                try await withInputClient { inputClient in
+                    try await inputClient.typeText(text)
+                }
+
+            case .delay(let seconds):
+                try await Task.sleep(nanoseconds: Self.nanoseconds(from: seconds))
+            }
+        }
+    }
+
+    /// Give the guest a moment to transition, then poll for a visible change.
+    /// Patience matters more than speed: declaring "did not advance" on a pane
+    /// that merely transitions slowly escalates to a redundant tactic, so poll
+    /// several times and return as soon as the screen moves. Returns the last
+    /// capture either way so the caller reuses it as the next perception.
+    private func awaitScreenChange(
+        from before: SetupPolicy.Screen,
+        anchor: String?
+    ) async throws -> (advanced: Bool, screen: SetupPolicy.Screen) {
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        var latest = before
+        for attempt in 0..<4 {
+            latest = try await captureScreen()
+            if SetupPolicy.didAdvance(from: before, to: latest, anchor: anchor) {
+                return (true, latest)
+            }
+            if attempt < 3 {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+            }
+        }
+        return (false, latest)
+    }
+
+    private func pressKeys(_ keys: [String]) async throws {
+        try await withInputClient { inputClient in
+            for token in keys {
+                guard let chord = Keysym.parseChord(token) else {
+                    throw MacVMError.message("Unknown key in setup pane action: '\(token)'")
+                }
+                try await inputClient.pressKey(chord.key, modifiers: chord.modifiers)
+                try? await Task.sleep(nanoseconds: 120_000_000)
+            }
+        }
     }
 
     private func clickAnyRescueButton() async -> GuestTextMatch? {
@@ -393,39 +621,32 @@ struct SetupStepRunner {
         }
     }
 
-    static func rescueMatch(in observations: [TextObservation]) -> GuestTextMatch? {
-        for modal in modalRescues {
-            guard OCRService.match(modal.anchor, in: observations) != nil else {
-                continue
-            }
-            if let match = OCRService.match(modal.button, in: observations) {
-                return match
-            }
-        }
-
-        for query in rescueQueries {
-            if let match = OCRService.match(query, in: observations) {
-                return match
-            }
-        }
-        return nil
-    }
-
     private func poll(text: String, timeout: TimeInterval, occurrence: Int) async throws -> GuestTextMatch {
         let deadline = Date().addingTimeInterval(timeout)
+        let startedAt = Date()
+        var nextStatusAt = startedAt.addingTimeInterval(Self.pollStatusInterval)
+        var lastVisibleSummary = "none"
         repeat {
             // Nudge, then let the display finish waking before capturing — a headless
             // guest dims its screen and an immediate capture can still be blank.
             try? await nudgeDisplay()
             try? await Task.sleep(nanoseconds: 400_000_000)
             let framebuffer = try await captureFramebufferForOCR()
-            if let match = OCRService.match(text, in: framebuffer, occurrence: occurrence) {
+            let observations = OCRService.observations(in: framebuffer)
+            lastVisibleSummary = Self.visibleTextSummary(observations)
+            if let match = OCRService.match(text, in: observations, occurrence: occurrence) {
                 return match
+            }
+            let now = Date()
+            if now >= nextStatusAt {
+                let elapsed = Int(now.timeIntervalSince(startedAt))
+                progress?(.status("Setup: still waiting for “\(text)” (\(elapsed)s); visible: \(lastVisibleSummary)"))
+                nextStatusAt = now.addingTimeInterval(Self.pollStatusInterval)
             }
             try? await Task.sleep(nanoseconds: 700_000_000)
         } while Date() < deadline
 
-        throw MacVMError.message("Timed out after \(Int(timeout))s waiting for “\(text)”.")
+        throw MacVMError.message("Timed out after \(Int(timeout))s waiting for “\(text)”. Last visible text: \(lastVisibleSummary).")
     }
 
     private func captureFramebufferForOCR() async throws -> Framebuffer {
@@ -452,6 +673,50 @@ struct SetupStepRunner {
         }
 
         return try await body(client)
+    }
+
+    private func reportStatus(_ message: String) {
+        DebugLog.log(message)
+        progress?(.status(message))
+    }
+
+    private func currentVisibleTextSummary() async -> String {
+        guard let framebuffer = try? await captureFramebufferForOCR() else {
+            return "capture failed"
+        }
+        return Self.visibleTextSummary(OCRService.observations(in: framebuffer))
+    }
+
+    static func visibleTextSummary(_ observations: [TextObservation], limit: Int = 8) -> String {
+        let sorted = observations.sorted { lhs, rhs in
+            if abs(lhs.rectInPixels.minY - rhs.rectInPixels.minY) > 8 {
+                return lhs.rectInPixels.minY < rhs.rectInPixels.minY
+            }
+            return lhs.rectInPixels.minX < rhs.rectInPixels.minX
+        }
+
+        var summary: [String] = []
+        for observation in sorted {
+            let compacted = observation.string
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            guard !compacted.isEmpty else { continue }
+
+            let clipped = compacted.count > 48 ? "\(compacted.prefix(45))..." : compacted
+            guard !summary.contains(clipped) else { continue }
+
+            summary.append(clipped)
+            if summary.count == limit {
+                break
+            }
+        }
+
+        return summary.isEmpty ? "none" : summary.joined(separator: " | ")
+    }
+
+    private static func nanoseconds(from seconds: TimeInterval) -> UInt64 {
+        UInt64((max(0, seconds) * 1_000_000_000).rounded())
     }
 
     private func dumpScreenshot(label: String) async {

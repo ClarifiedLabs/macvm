@@ -85,6 +85,43 @@ struct GuestSSH {
         return process.terminationStatus
     }
 
+    /// Run a remote command and write combined stdout/stderr to a host-side log.
+    /// This is used for long bootstrap commands where retaining the guest output
+    /// is more useful than streaming it through the setup UI.
+    @discardableResult
+    func runLogged(remoteCommand: [String], logFile: URL) throws -> Int32 {
+        try FileManager.default.createDirectory(
+            at: logFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let header = """
+        $ ssh \(Self.arguments(host: host, user: user, identityFile: identityFile, remoteCommand: remoteCommand, batchMode: true, connectTimeout: 10).joined(separator: " "))
+
+        """
+        _ = FileManager.default.createFile(atPath: logFile.path, contents: Data(header.utf8))
+        let logHandle = try FileHandle(forWritingTo: logFile)
+        logHandle.seekToEndOfFile()
+        defer { logHandle.closeFile() }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = Self.arguments(
+            host: host,
+            user: user,
+            identityFile: identityFile,
+            remoteCommand: remoteCommand,
+            batchMode: true,
+            connectTimeout: 10
+        )
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
     /// Poll until a non-interactive SSH connection succeeds or the timeout elapses.
     @discardableResult
     func waitForSSH(timeout: TimeInterval, pollInterval: TimeInterval = 3) -> Bool {
