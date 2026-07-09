@@ -106,9 +106,9 @@ struct SetupStepRunner {
     /// anything.
     static let rescueQueries = [
         "Not Now",
-        "Other Sign-In Options",
         "Set Up Later",
         "Sign in Later in Settings",
+        "Other Sign-In Options",
         "Don.t Use",
         "^Skip$",
         "Adult|Acult",
@@ -128,6 +128,10 @@ struct SetupStepRunner {
     /// Foreground modal confirmations whose body text must win over stale
     /// background buttons that are still visible to OCR but no longer clickable.
     private static let modalRescues = [
+        ModalRescue(
+            anchor: "Are you sure you want to skip|signing in with an Apple",
+            button: "^Skip$"
+        ),
         ModalRescue(
             anchor: "Mac Data Will Not Be Securely Encrypted|Securely Encrypted",
             button: "^Continue$"

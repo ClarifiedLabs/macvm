@@ -570,11 +570,14 @@ func setupRescueTriesDismissiveButtonsBeforeGenericAdvancement() throws {
     let notNow = try #require(queries.firstIndex(of: "Not Now"))
     let otherSignIn = try #require(queries.firstIndex(of: "Other Sign-In Options"))
     let setUpLater = try #require(queries.firstIndex(of: "Set Up Later"))
+    let signInLater = try #require(queries.firstIndex(of: "Sign in Later in Settings"))
     let dontUse = try #require(queries.firstIndex(of: "Don.t Use"))
     let adult = try #require(queries.firstIndex(of: "Adult|Acult"))
     let agree = try #require(queries.firstIndex(of: "Agree"))
     let cont = try #require(queries.firstIndex(of: "Continue"))
     #expect(notNow < cont)
+    #expect(setUpLater < otherSignIn)
+    #expect(signInLater < otherSignIn)
     #expect(otherSignIn < cont)
     #expect(setUpLater < cont)
     #expect(dontUse < cont)
@@ -584,6 +587,53 @@ func setupRescueTriesDismissiveButtonsBeforeGenericAdvancement() throws {
     // "Don.t Use" must match both apostrophe variants OCR produces.
     #expect(OCRService.queryMatches("Don.t Use", candidate: "Don't Use"))
     #expect(OCRService.queryMatches("Don.t Use", candidate: "Don’t Use"))
+}
+
+@Test
+func setupRescueSelectsAppleAccountSignInLaterMenuItemBeforeMenuButton() throws {
+    let observations = [
+        TextObservation(
+            string: "Other Sign-In Options",
+            rectInPixels: CGRect(x: 610, y: 710, width: 150, height: 28),
+            confidence: 0.96
+        ),
+        TextObservation(
+            string: "Sign in Later in Settings",
+            rectInPixels: CGRect(x: 625, y: 765, width: 160, height: 24),
+            confidence: 0.98
+        ),
+    ]
+
+    let match = try #require(SetupStepRunner.rescueMatch(in: observations))
+    #expect(match.text == "Sign in Later in Settings")
+    #expect(match.x == 705)
+    #expect(match.y == 777)
+}
+
+@Test
+func setupRescuePrefersAppleAccountSkipModalOverBackgroundButtons() throws {
+    let observations = [
+        TextObservation(
+            string: "Other Sign-In Options",
+            rectInPixels: CGRect(x: 610, y: 930, width: 150, height: 28),
+            confidence: 0.96
+        ),
+        TextObservation(
+            string: "Are you sure you want to skip",
+            rectInPixels: CGRect(x: 850, y: 525, width: 300, height: 28),
+            confidence: 0.98
+        ),
+        TextObservation(
+            string: "Skip",
+            rectInPixels: CGRect(x: 1030, y: 720, width: 170, height: 44),
+            confidence: 0.98
+        ),
+    ]
+
+    let match = try #require(SetupStepRunner.rescueMatch(in: observations))
+    #expect(match.text == "Skip")
+    #expect(match.x == 1115)
+    #expect(match.y == 742)
 }
 
 @Test
