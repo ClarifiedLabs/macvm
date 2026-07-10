@@ -808,7 +808,20 @@ final class AppStore {
             do {
                 let image = try await VZMacOSRestoreImage.latestSupported
                 let version = image.operatingSystemVersion
-                let name = image.url.lastPathComponent
+                let name = image.url.lastPathComponent.isEmpty ? "latest-supported.ipsw" : image.url.lastPathComponent
+                let metadata = LatestSupportedRestoreImageMetadata(
+                    imageName: name,
+                    sourceURLString: image.url.absoluteString,
+                    buildVersion: image.buildVersion,
+                    majorVersion: version.majorVersion,
+                    minorVersion: version.minorVersion,
+                    patchVersion: version.patchVersion
+                )
+                try RestoreImageCacheMetadata.writeLatestSupported(
+                    metadata,
+                    in: RestoreImageCatalog.cacheDirectory(root: service.rootDirectory)
+                )
+                refresh()
                 let cached = restoreImages.contains { $0.name == name }
                 latestCheckStatus = "Latest supported: macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion) (\(image.buildVersion)) — \(cached ? "already cached" : "downloads on first use")"
             } catch {

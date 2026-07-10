@@ -1037,6 +1037,7 @@ public final class MacVMService: Sendable {
             DebugLog.log("Latest supported restore image URL is \(restoreImage.url.absoluteString)")
 
             if FileManager.default.fileExists(atPath: cachedRestoreImageURL.path) {
+                recordLatestSupportedRestoreImage(restoreImage, imageName: restoreImageName)
                 progress?(.status("Using cached restore image at \(cachedRestoreImageURL.path)"))
                 DebugLog.log("Restore image cache hit at \(cachedRestoreImageURL.path)")
                 return cachedRestoreImageURL
@@ -1047,8 +1048,26 @@ public final class MacVMService: Sendable {
             let (temporaryURL, _) = try await URLSession.shared.download(from: restoreImage.url)
             try? FileManager.default.removeItem(at: cachedRestoreImageURL)
             try FileManager.default.moveItem(at: temporaryURL, to: cachedRestoreImageURL)
+            recordLatestSupportedRestoreImage(restoreImage, imageName: restoreImageName)
             DebugLog.log("Restore image download complete: \(cachedRestoreImageURL.path)")
             return cachedRestoreImageURL
+        }
+    }
+
+    private func recordLatestSupportedRestoreImage(_ restoreImage: VZMacOSRestoreImage, imageName: String) {
+        let version = restoreImage.operatingSystemVersion
+        let metadata = LatestSupportedRestoreImageMetadata(
+            imageName: imageName,
+            sourceURLString: restoreImage.url.absoluteString,
+            buildVersion: restoreImage.buildVersion,
+            majorVersion: version.majorVersion,
+            minorVersion: version.minorVersion,
+            patchVersion: version.patchVersion
+        )
+        do {
+            try RestoreImageCacheMetadata.writeLatestSupported(metadata, in: storage.restoreCacheDirectory)
+        } catch {
+            DebugLog.log("Failed to record latest supported restore image metadata: \(error.localizedDescription)")
         }
     }
 }

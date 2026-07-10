@@ -360,7 +360,7 @@ func managerReconstructsXcodeSetupProgressFromRuntimeState() throws {
 // MARK: - RestoreImageCatalog
 
 @Test
-func restoreImageCatalogListsIPSWsNewestFirstWithLatestBadge() throws {
+func restoreImageCatalogListsIPSWsNewestFirstWithoutGuessingLatest() throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     let cache = RestoreImageCatalog.cacheDirectory(root: root)
@@ -381,11 +381,49 @@ func restoreImageCatalogListsIPSWsNewestFirstWithLatestBadge() throws {
     let entries = RestoreImageCatalog.list(root: root)
     #expect(entries.count == 2)
     #expect(entries[0].name == "UniversalMac_26.5.2_25G120_Restore.ipsw")
-    #expect(entries[0].isLatest)
+    #expect(!entries[0].isLatest)
     #expect(entries[0].sizeBytes == 2048)
     #expect(entries[1].name == "UniversalMac_26.4_25E100_Restore.ipsw")
     #expect(!entries[1].isLatest)
     #expect(RestoreImageCatalog.totalSizeBytes(entries) == 3072)
+}
+
+@Test
+func restoreImageCatalogMarksOnlyAppleReportedLatestName() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let cache = RestoreImageCatalog.cacheDirectory(root: root)
+    try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let publicRelease = cache.appendingPathComponent("UniversalMac_26.5.2_25F84_Restore.ipsw")
+    let importedBeta = cache.appendingPathComponent("UniversalMac_27.0_26A5378j_Restore.ipsw")
+    try Data(repeating: 0, count: 1024).write(to: publicRelease)
+    try Data(repeating: 0, count: 2048).write(to: importedBeta)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSinceNow: -3600)],
+        ofItemAtPath: publicRelease.path
+    )
+
+    try RestoreImageCacheMetadata.writeLatestSupported(
+        LatestSupportedRestoreImageMetadata(
+            imageName: publicRelease.lastPathComponent,
+            sourceURLString: "https://example.invalid/\(publicRelease.lastPathComponent)",
+            buildVersion: "25F84",
+            majorVersion: 26,
+            minorVersion: 5,
+            patchVersion: 2
+        ),
+        in: cache
+    )
+    let entries = RestoreImageCatalog.list(root: root)
+
+    #expect(entries.map(\.name) == [
+        "UniversalMac_27.0_26A5378j_Restore.ipsw",
+        "UniversalMac_26.5.2_25F84_Restore.ipsw",
+    ])
+    #expect(!entries[0].isLatest)
+    #expect(entries[1].isLatest)
 }
 
 @Test
@@ -410,7 +448,7 @@ func restoreImageCatalogImportsIPSWIntoCache() throws {
     let entry = try RestoreImageCatalog.importImage(from: source, root: root)
     #expect(entry.name == "UniversalMac_26.5.2_25G120_Restore.ipsw")
     #expect(entry.url.deletingLastPathComponent().standardizedFileURL == RestoreImageCatalog.cacheDirectory(root: root).standardizedFileURL)
-    #expect(entry.isLatest)
+    #expect(!entry.isLatest)
     #expect(try Data(contentsOf: entry.url) == payload)
 }
 

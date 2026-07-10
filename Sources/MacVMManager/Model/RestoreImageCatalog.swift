@@ -7,7 +7,7 @@ struct RestoreImageEntry: Identifiable, Equatable, Sendable {
     let name: String
     let sizeBytes: UInt64
     let modifiedAt: Date
-    /// True for the most recently cached image ("Latest supported" badge).
+    /// True when this cached file matches Apple's current latest supported restore image.
     let isLatest: Bool
 
     var id: String { url.path }
@@ -39,8 +39,16 @@ enum RestoreImageCatalog {
         root.appendingPathComponent(".restore-images", isDirectory: true)
     }
 
-    /// Cached IPSWs sorted newest first; the newest carries the latest badge.
     static func list(root: URL) -> [RestoreImageEntry] {
+        let directory = cacheDirectory(root: root)
+        return list(
+            root: root,
+            latestSupportedImageName: RestoreImageCacheMetadata.readLatestSupported(in: directory)?.imageName
+        )
+    }
+
+    /// Cached IPSWs sorted newest first.
+    static func list(root: URL, latestSupportedImageName: String?) -> [RestoreImageEntry] {
         let directory = cacheDirectory(root: root)
         let contents = (try? FileManager.default.contentsOfDirectory(
             at: directory,
@@ -58,13 +66,13 @@ enum RestoreImageCatalog {
             }
             .sorted { $0.2 > $1.2 }
 
-        return files.enumerated().map { index, file in
+        return files.map { file in
             RestoreImageEntry(
                 url: file.0,
                 name: file.0.lastPathComponent,
                 sizeBytes: file.1,
                 modifiedAt: file.2,
-                isLatest: index == 0
+                isLatest: file.0.lastPathComponent == latestSupportedImageName
             )
         }
     }
