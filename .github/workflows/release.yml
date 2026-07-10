@@ -185,6 +185,9 @@ jobs:
       XCODE_DERIVED_DATA_PATH: .build/ci/xcode-derived-data
       BUILD_DIR: .build/release
 
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -392,3 +395,67 @@ jobs:
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
           rm -rf "$HOME/.appstoreconnect"
+
+  homebrew-publish:
+    name: Publish Homebrew cask
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: source
+
+      - name: Create tap token
+        id: tap-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.HOMEBREW_TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: ClarifiedLabs
+          repositories: homebrew-tap
+          permission-contents: write
+
+      - name: Checkout tap
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ClarifiedLabs/homebrew-tap
+          token: ${{ steps.tap-token.outputs.token }}
+          path: homebrew-tap
+
+      - name: Download package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: MacVM-${{ needs.build.outputs.version }}.pkg
+          path: package
+
+      - name: Update cask
+        env:
+          TAG: ${{ github.ref_name }}
+          TAP_DIR: ${{ github.workspace }}/homebrew-tap
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          package_path="package/MacVM-${VERSION}.pkg"
+          PKG_SHA256="$(sha256sum "$package_path" | awk '{print $1}')" \
+            source/scripts/homebrew-cask.sh
+
+      - name: Commit tap update
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd homebrew-tap
+          git config user.name "${{ steps.tap-token.outputs.app-slug }}[bot]"
+          git config user.email "${{ steps.tap-token.outputs.app-slug }}[bot]@users.noreply.github.com"
+          git add Casks/macvm.rb
+          if git diff --cached --quiet; then
+            echo "No Homebrew cask changes"
+          else
+            git commit -m "chore: update macvm ${TAG}"
+            git push
+          fi

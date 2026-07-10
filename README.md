@@ -19,7 +19,13 @@ MacVM can fetch the latest macOS restore image supported by your host. You can a
 
 ## Install
 
-Download the latest `MacVM-<version>.pkg` from GitHub Releases, open it, and complete the installer.
+Install with Homebrew:
+
+```bash
+brew install --cask clarifiedlabs/tap/macvm
+```
+
+Alternatively, download the latest `MacVM-<version>.pkg` from GitHub Releases, open it, and complete the installer.
 
 The package installs:
 

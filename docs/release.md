@@ -1,6 +1,6 @@
 # Release Process
 
-MacVM releases are GitHub Releases containing a signed, notarized `.pkg` installer. There is no App Store or TestFlight publishing path.
+MacVM releases are GitHub Releases containing a signed, notarized `.pkg` installer. Each release also updates the `macvm` cask in `ClarifiedLabs/homebrew-tap`. There is no App Store or TestFlight publishing path.
 
 ## Workflows
 
@@ -17,10 +17,11 @@ MacVM releases are GitHub Releases containing a signed, notarized `.pkg` install
 - `v*.*.*` tags
 - manual dispatch
 
-The release workflow has two jobs:
+The release workflow has three jobs:
 
 1. `require-tests` waits for a successful `test.yml` run for the same commit, or dispatches one and waits.
 2. `build` signs, notarizes, staples, and uploads `MacVM-<version>.pkg`.
+3. `homebrew-publish` calculates the package SHA-256 and updates `Casks/macvm.rb` in `ClarifiedLabs/homebrew-tap` using a GitHub App installation token.
 
 Only tag runs create or update a GitHub Release. `release-ci` runs the full signing/notarization/package path and uploads the package as an Actions artifact without creating a public release.
 
@@ -38,6 +39,13 @@ Notarization with App Store Connect API keys:
 - `APP_STORE_CONNECT_KEY_ID`
 - `APP_STORE_CONNECT_ISSUER_ID`
 - `APP_STORE_CONNECT_PRIVATE_KEY`
+
+Homebrew tap publishing:
+
+- `HOMEBREW_TAP_APP_CLIENT_ID`
+- `HOMEBREW_TAP_APP_PRIVATE_KEY`
+
+The GitHub App must be installed on `ClarifiedLabs/homebrew-tap` with repository Contents read/write permission. The tap repository must already have an initialized default branch; the cask file is created automatically on the first release.
 
 The certificates should be `.p12` exports, base64 encoded without committing them to the repository.
 
@@ -83,7 +91,11 @@ The helper:
 3. commits with `chore(release): bump version to vX.Y.Z`
 4. creates an annotated `vX.Y.Z` tag
 
-Pushing the tag triggers `release.yml`, which builds `dist/MacVM-X.Y.Z.pkg` and attaches it to the GitHub Release.
+Pushing the tag triggers `release.yml`, which builds `dist/MacVM-X.Y.Z.pkg`, attaches it to the GitHub Release, and publishes the matching Homebrew cask. After the workflow succeeds, install it with:
+
+```bash
+brew install --cask clarifiedlabs/tap/macvm
+```
 
 ## Local Package Smoke Test
 
