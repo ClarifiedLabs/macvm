@@ -148,6 +148,45 @@ func directoryStagerRecursivelyCopiesWithoutChangingSource() throws {
 }
 
 @Test
+func directoryStagerSkipsExactUnreadableRelativePath() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let source = root.appendingPathComponent("Source", isDirectory: true)
+    let skipped = source.appendingPathComponent("Ignored", isDirectory: true)
+    let retained = source
+        .appendingPathComponent("Nested", isDirectory: true)
+        .appendingPathComponent("Ignored", isDirectory: true)
+    let destination = root.appendingPathComponent("Destination", isDirectory: true)
+    try FileManager.default.createDirectory(at: skipped, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: retained, withIntermediateDirectories: true)
+    defer {
+        _ = chmod(skipped.path, 0o700)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    let retainedFile = retained.appendingPathComponent("payload.txt")
+    try Data("retained".utf8).write(to: retainedFile)
+    #expect(chmod(skipped.path, 0o1311) == 0)
+
+    try MacVMFileStager.copyDirectoryCloneFirst(
+        from: source,
+        to: destination,
+        excludingRelativePaths: ["Ignored"]
+    )
+
+    #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("Ignored").path))
+    let copiedRetainedFile = destination
+        .appendingPathComponent("Nested", isDirectory: true)
+        .appendingPathComponent("Ignored", isDirectory: true)
+        .appendingPathComponent("payload.txt")
+    #expect(try String(contentsOf: copiedRetainedFile, encoding: .utf8) == "retained")
+
+    var skippedStat = stat()
+    #expect(lstat(skipped.path, &skippedStat) == 0)
+    #expect(skippedStat.st_mode & 0o7777 == 0o1311)
+}
+
+@Test
 func cloneVMPreservesPersistentStateAndRefreshesHostIdentity() async throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -226,6 +265,60 @@ func cloneVMPreservesPersistentStateAndRefreshesHostIdentity() async throws {
         #expect(try Data(contentsOf: sourceFile) == expectedData)
         #expect(try Data(contentsOf: clonedFile) == expectedData)
     }
+}
+
+@Test
+func cloneVMSkipsUnreadableGuestSharedMetadataWithoutChangingSource() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let sourceURL = root.appendingPathComponent("template.macvm", isDirectory: true)
+    let sourceBundle = VMBundle(url: sourceURL)
+    let trashURL = sourceBundle.sharedDirectoryRootURL.appendingPathComponent(".Trashes", isDirectory: true)
+    let fseventsURL = sourceBundle.sharedDirectoryRootURL.appendingPathComponent(".fseventsd", isDirectory: true)
+    try FileManager.default.createDirectory(at: trashURL, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: fseventsURL, withIntermediateDirectories: true)
+    defer {
+        _ = chmod(trashURL.path, 0o700)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    let metadata = VMMetadata(
+        name: "template",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: true,
+        macAddress: "02:00:00:00:00:01"
+    )
+    try sourceBundle.writeMetadata(metadata)
+    let sharedFile = sourceBundle.transfersDirectoryURL.appendingPathComponent("keep.txt")
+    try FileManager.default.createDirectory(
+        at: sharedFile.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try Data("shared data".utf8).write(to: sharedFile)
+    try FileManager.default.createDirectory(at: sourceBundle.runtimeDirectoryURL, withIntermediateDirectories: true)
+    try Data("stale".utf8).write(to: sourceBundle.runtimeDirectoryURL.appendingPathComponent("marker"))
+
+    // Regression: macOS creates this directory in writable VirtioFS shares
+    // without owner read permission, which made recursive cloning fail.
+    #expect(chmod(trashURL.path, 0o1311) == 0)
+
+    let service = MacVMService(rootDirectory: root)
+    let source = ManagedVM(bundleURL: sourceURL, metadata: metadata)
+    let clone = try await service.cloneVM(from: source, named: "copy")
+    let clonedBundle = VMBundle(url: clone.bundleURL)
+
+    #expect(try String(contentsOf: clonedBundle.transfersDirectoryURL.appendingPathComponent("keep.txt"), encoding: .utf8) == "shared data")
+    #expect(!FileManager.default.fileExists(atPath: clonedBundle.sharedDirectoryRootURL.appendingPathComponent(".Trashes").path))
+    #expect(!FileManager.default.fileExists(atPath: clonedBundle.sharedDirectoryRootURL.appendingPathComponent(".fseventsd").path))
+    #expect(!FileManager.default.fileExists(atPath: clonedBundle.runtimeDirectoryURL.path))
+
+    var trashStat = stat()
+    #expect(lstat(trashURL.path, &trashStat) == 0)
+    #expect(trashStat.st_mode & 0o7777 == 0o1311)
 }
 
 @Test

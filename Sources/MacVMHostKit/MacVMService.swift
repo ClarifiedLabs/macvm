@@ -89,6 +89,15 @@ private extension NSLock {
 }
 
 public final class MacVMService: Sendable {
+    private static let cloneExcludedRelativePaths: Set<String> = [
+        "Runtime",
+        "Shared/.DocumentRevisions-V100",
+        "Shared/.Spotlight-V100",
+        "Shared/.TemporaryItems",
+        "Shared/.Trashes",
+        "Shared/.fseventsd",
+    ]
+
     private let storage: VMStorage
     private let launchOnBoot: VMLaunchOnBootController
 
@@ -225,13 +234,18 @@ public final class MacVMService: Sendable {
         progress?(.status("Cloning \(source.metadata.name)..."))
         return try await Task.detached {
             let fileManager = FileManager.default
-            defer { try? fileManager.removeItem(at: temporaryURL) }
-
-            try MacVMFileStager.copyDirectoryCloneFirst(from: sourceURL, to: temporaryURL)
-            let temporaryBundle = VMBundle(url: temporaryURL)
-            if fileManager.fileExists(atPath: temporaryBundle.runtimeDirectoryURL.path) {
-                try fileManager.removeItem(at: temporaryBundle.runtimeDirectoryURL)
+            defer {
+                if fileManager.fileExists(atPath: temporaryURL.path) {
+                    try? VMBundle(url: temporaryURL).removeFromDisk()
+                }
             }
+
+            try MacVMFileStager.copyDirectoryCloneFirst(
+                from: sourceURL,
+                to: temporaryURL,
+                excludingRelativePaths: Self.cloneExcludedRelativePaths
+            )
+            let temporaryBundle = VMBundle(url: temporaryURL)
             try temporaryBundle.writeMetadata(metadata)
             try fileManager.moveItem(at: temporaryURL, to: destinationURL)
 
