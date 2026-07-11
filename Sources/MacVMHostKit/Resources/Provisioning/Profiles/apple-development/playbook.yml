@@ -1,0 +1,15 @@
+---
+- name: Configure Apple development tools
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Verify Xcode is configured
+      ansible.builtin.raw: xcode-select -p && xcodebuild -version
+      changed_when: false
+
+    - name: Install Swift development utilities
+      ansible.builtin.raw: |
+        set -e
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        brew install xcbeautify swiftformat swiftlint
+      changed_when: false

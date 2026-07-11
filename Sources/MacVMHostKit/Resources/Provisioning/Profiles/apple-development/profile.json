@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "apple-development",
+  "name": "Apple Development",
+  "description": "Configure Xcode and install common Swift build, lint, and formatting tools.",
+  "category": "Apple",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "dependencies": ["homebrew"],
+  "requirements": ["xcode"]
+}

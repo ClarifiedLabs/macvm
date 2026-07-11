@@ -7,6 +7,107 @@ import Virtualization
 @testable import MacVMHostKit
 
 @Test
+func bundledProvisioningCatalogContainsExpectedProfilesAndResolvesDependencies() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let catalog = ProvisioningCatalog.load(rootDirectory: root)
+    let visible = Set(catalog.profiles.filter { !$0.manifest.hidden }.map(\.id))
+
+    #expect(visible.contains("apple-development"))
+    #expect(visible.contains("android-sdk"))
+    #expect(visible.contains("go"))
+    #expect(visible.contains("typescript"))
+    #expect(visible.contains("codex"))
+    #expect(visible.contains("claude-code"))
+    #expect(visible.contains("github-runner"))
+
+    let resolved = try catalog.resolve(["android-studio", "codex"])
+    #expect(resolved.map(\.id) == ["homebrew", "android-sdk", "android-studio", "codex"])
+}
+
+@Test
+func provisioningCatalogLoadsRootProfilesAndRejectsDuplicateIDs() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let profiles = root.appendingPathComponent(".profiles")
+    let custom = profiles.appendingPathComponent("custom")
+    try FileManager.default.createDirectory(at: custom, withIntermediateDirectories: true)
+    try "---\n- hosts: macvm\n  gather_facts: false\n  tasks: []\n".write(
+        to: custom.appendingPathComponent("playbook.yml"), atomically: true, encoding: .utf8
+    )
+    try """
+    {"schemaVersion":1,"id":"custom-tools","name":"Custom Tools","description":"Test","category":"Local","version":"1","playbook":"playbook.yml","dependencies":["homebrew"]}
+    """.write(to: custom.appendingPathComponent("profile.json"), atomically: true, encoding: .utf8)
+
+    var catalog = ProvisioningCatalog.load(rootDirectory: root)
+    #expect(catalog.profile(id: "custom-tools")?.source == .vmRoot)
+    #expect(try catalog.resolve(["custom-tools"]).map(\.id) == ["homebrew", "custom-tools"])
+
+    let duplicate = profiles.appendingPathComponent("duplicate")
+    try FileManager.default.createDirectory(at: duplicate, withIntermediateDirectories: true)
+    try "---\n- hosts: macvm\n  gather_facts: false\n  tasks: []\n".write(
+        to: duplicate.appendingPathComponent("playbook.yml"), atomically: true, encoding: .utf8
+    )
+    try """
+    {"schemaVersion":1,"id":"go","name":"Fake Go","description":"Duplicate","category":"Local","version":"1","playbook":"playbook.yml"}
+    """.write(to: duplicate.appendingPathComponent("profile.json"), atomically: true, encoding: .utf8)
+    catalog = ProvisioningCatalog.load(rootDirectory: root)
+    #expect(catalog.profile(id: "go") == nil)
+    #expect(catalog.diagnostics.contains { $0.message.contains("Duplicate provisioning profile ID 'go'") })
+}
+
+@Test
+func ansibleProvisionerUsesExecutableAndPersistsSuccessfulState() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let bundleURL = root.appendingPathComponent("test.macvm")
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.createDirectory()
+    let metadata = VMMetadata(
+        name: "test",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        setupUsername: "admin"
+    )
+    try bundle.writeMetadata(metadata)
+    try FileManager.default.createDirectory(at: bundle.setupDirectoryURL, withIntermediateDirectories: true)
+    try "key".write(to: bundle.setupPrivateKeyURL, atomically: true, encoding: .utf8)
+
+    let profileDirectory = root.appendingPathComponent("profile")
+    try FileManager.default.createDirectory(at: profileDirectory, withIntermediateDirectories: true)
+    try "---\n- hosts: macvm\n  gather_facts: false\n  tasks: []\n".write(
+        to: profileDirectory.appendingPathComponent("playbook.yml"), atomically: true, encoding: .utf8
+    )
+    try """
+    {"schemaVersion":1,"id":"test-profile","name":"Test","description":"Test","category":"Test","version":"1","playbook":"playbook.yml"}
+    """.write(to: profileDirectory.appendingPathComponent("profile.json"), atomically: true, encoding: .utf8)
+    let profile = try ProvisioningCatalog.validateProfile(at: profileDirectory)
+
+    let fake = root.appendingPathComponent("ansible-playbook")
+    try "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 0\n".write(to: fake, atomically: true, encoding: .utf8)
+    #expect(chmod(fake.path, 0o755) == 0)
+    #expect(AnsibleProvisioner.findExecutable(environment: ["MACVM_ANSIBLE_PLAYBOOK": fake.path]) == fake)
+
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    try AnsibleProvisioner(
+        vm: vm,
+        host: "127.0.0.1",
+        user: "admin",
+        identityFile: bundle.setupPrivateKeyURL,
+        profiles: [profile],
+        inputs: [:],
+        executableURL: fake,
+        progress: nil
+    ).run()
+
+    let record = try #require(bundle.readProvisioningState()?.profiles["test-profile"])
+    #expect(record.status == .succeeded)
+    #expect(FileManager.default.fileExists(atPath: bundle.setupDirectoryURL.appendingPathComponent(record.logPath).path))
+}
+
+@Test
 func sanitizedBundleNameDropsInvalidCharacters() {
     #expect(sanitizedBundleName(" dev vm / 01 ") == "dev-vm-01")
     #expect(sanitizedBundleName("...") == "vm")
@@ -1957,6 +2058,15 @@ func guestSSHArgumentsAreWellFormed() {
     )
     #expect(!command.contains("-i"))   // no identity file supplied
     #expect(command.suffix(2) == ["admin@host", "uptime"])
+}
+
+@Test
+func shutdownCommandDetachesBeforeSSHConnectionCloses() {
+    let command = MacVMService.shutdownRemoteCommand
+
+    #expect(command.count == 1)
+    #expect(command[0].contains("/usr/bin/nohup /sbin/shutdown -h now"))
+    #expect(command[0].hasSuffix("&'"))
 }
 
 @Test

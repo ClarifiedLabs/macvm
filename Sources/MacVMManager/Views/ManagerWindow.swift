@@ -39,6 +39,14 @@ struct ManagerWindow: View {
         ) {
             CloneVMSheet()
         }
+        .sheet(
+            isPresented: Binding(
+                get: { store.provisionSheetVMName != nil },
+                set: { if !$0 { store.provisionSheetVMName = nil } }
+            )
+        ) {
+            ProvisionVMSheet()
+        }
         .alert(
             "MacVM Manager",
             isPresented: Binding(

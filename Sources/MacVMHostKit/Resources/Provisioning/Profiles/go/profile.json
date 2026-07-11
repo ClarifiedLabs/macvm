@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "go",
+  "name": "Go",
+  "description": "Install Go with gopls, golangci-lint, and Delve.",
+  "category": "Languages",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "dependencies": ["homebrew"]
+}

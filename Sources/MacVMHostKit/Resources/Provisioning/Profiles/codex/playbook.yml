@@ -1,0 +1,10 @@
+---
+- name: Install Codex
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Install Codex from Homebrew
+      ansible.builtin.raw: |
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        brew install --cask codex
+      changed_when: false

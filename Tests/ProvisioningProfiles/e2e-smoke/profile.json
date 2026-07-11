@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "e2e-smoke",
+  "name": "Provisioning E2E Smoke Test",
+  "description": "Write a caller-provided marker into the guest to verify profile inputs and idempotency.",
+  "category": "Tests",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "inputs": [
+    {
+      "id": "marker",
+      "label": "Marker",
+      "type": "string",
+      "required": true
+    }
+  ]
+}

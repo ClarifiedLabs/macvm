@@ -57,8 +57,18 @@ struct SetupArguments: ParsableArguments {
     @Option(name: .long, help: "Path to a custom setup step-list (JSON) overriding the built-in flow.")
     var script: String?
 
-    func makeOptions(xcodeXIPURL: URL? = nil) -> SetupOptions {
-        SetupOptions(
+    @Option(name: .long, help: "Provisioning profile to apply after setup. Repeat for multiple profiles.")
+    var profile: [String] = []
+
+    @Option(name: .long, help: "Profile input in PROFILE.KEY=VALUE form. Repeat for multiple inputs.")
+    var profileInput: [String] = []
+
+    func makeOptions(xcodeXIPURL: URL? = nil) throws -> SetupOptions {
+        var profileIDs = profile
+        if xcodeXIPURL != nil && !profileIDs.contains("apple-development") {
+            profileIDs.append("apple-development")
+        }
+        return SetupOptions(
             username: username,
             password: password,
             fullName: fullName,
@@ -68,9 +78,31 @@ struct SetupArguments: ParsableArguments {
             requestedVNCPort: UInt(vncPort ?? 0),
             shutdownAfter: shutdownAfter,
             scriptOverride: script.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) },
-            xcodeXIPURL: xcodeXIPURL
+            xcodeXIPURL: xcodeXIPURL,
+            provisioningSelection: try provisioningSelection(profileIDs: profileIDs, values: profileInput)
         )
     }
+}
+
+func provisioningSelection(profileIDs: [String], values: [String]) throws -> ProvisioningSelection {
+    var inputs: [String: [String: String]] = [:]
+    for value in values {
+        guard let equals = value.firstIndex(of: "=") else {
+            throw ValidationError("Profile inputs must use PROFILE.KEY=VALUE form: \(value)")
+        }
+        let qualifiedKey = String(value[..<equals])
+        let inputValue = String(value[value.index(after: equals)...])
+        guard let dot = qualifiedKey.firstIndex(of: ".") else {
+            throw ValidationError("Profile inputs must use PROFILE.KEY=VALUE form: \(value)")
+        }
+        let profileID = String(qualifiedKey[..<dot])
+        let key = String(qualifiedKey[qualifiedKey.index(after: dot)...])
+        guard !profileID.isEmpty, !key.isEmpty else {
+            throw ValidationError("Profile inputs must use PROFILE.KEY=VALUE form: \(value)")
+        }
+        inputs[profileID, default: [:]][key] = inputValue
+    }
+    return ProvisioningSelection(profileIDs: profileIDs, inputs: inputs)
 }
 
 final class CLIReporter: @unchecked Sendable {
@@ -376,6 +408,8 @@ struct MacVMCommand: AsyncParsableCommand {
             WaitText.self,
             ClickText.self,
             Setup.self,
+            Profiles.self,
+            Provision.self,
         ],
         defaultSubcommand: List.self
     )
@@ -597,9 +631,6 @@ extension MacVMCommand {
             if display != nil && displayPixels != nil {
                 throw ValidationError("Use either --display or --display-pixels, not both.")
             }
-            if xcode != nil && !setup {
-                throw ValidationError("--xcode requires --setup.")
-            }
             if let xcode {
                 let expandedPath = NSString(string: xcode).expandingTildeInPath
                 let url = URL(fileURLWithPath: expandedPath)
@@ -617,6 +648,16 @@ extension MacVMCommand {
         mutating func run() async throws {
             debugOptions.apply()
             let service = MacVMService(rootDirectory: storage.resolvedURL)
+            let xcodeURL = xcode.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) }
+            let setupOptions = try setupArguments.makeOptions(xcodeXIPURL: xcodeURL)
+            let shouldSetup = setup || !setupOptions.provisioningSelection.profileIDs.isEmpty || xcodeURL != nil
+            if shouldSetup {
+                try service.preflightProvisioning(
+                    selection: setupOptions.provisioningSelection,
+                    xcodeXIPURL: xcodeURL,
+                    freshVM: true
+                )
+            }
             var draft = service.defaultDraft(named: name)
 
             if let cpu {
@@ -669,13 +710,12 @@ extension MacVMCommand {
                 }
             }
 
-            if setup {
+            if shouldSetup {
                 // Let the installer's VM release its lock on the auxiliary storage
                 // before the setup runner boots a new VM against the same bundle.
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 let withIdentity = try service.ensureNetworkIdentity(virtualMachine)
-                let xcodeURL = xcode.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) }
-                try await performSetup(service: service, virtualMachine: withIdentity, options: setupArguments.makeOptions(xcodeXIPURL: xcodeURL))
+                try await performSetup(service: service, virtualMachine: withIdentity, options: setupOptions)
             } else {
                 print("Run it with: macvm run \(virtualMachine.metadata.name)")
             }
@@ -1329,7 +1369,85 @@ extension MacVMCommand {
             let service = MacVMService(rootDirectory: storage.resolvedURL)
             let resolved = try service.resolveVM(identifier: identifier)
             let virtualMachine = try service.ensureNetworkIdentity(resolved)
-            try await performSetup(service: service, virtualMachine: virtualMachine, options: setup.makeOptions())
+            let options = try setup.makeOptions()
+            try service.preflightProvisioning(selection: options.provisioningSelection, vm: virtualMachine)
+            try await performSetup(service: service, virtualMachine: virtualMachine, options: options)
+        }
+    }
+
+    struct Profiles: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Inspect and validate provisioning profiles.",
+            subcommands: [ListProfiles.self, Validate.self],
+            defaultSubcommand: ListProfiles.self
+        )
+
+        struct ListProfiles: ParsableCommand {
+            static let configuration = CommandConfiguration(commandName: "list")
+            @OptionGroup var storage: StorageOptions
+            @Flag(name: .long, help: "Include hidden dependency profiles.") var all = false
+
+            func run() throws {
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let catalog = service.provisioningCatalog()
+                for profile in catalog.profiles where all || !profile.manifest.hidden {
+                    let dependencies = profile.manifest.dependencies.isEmpty
+                        ? ""
+                        : " [depends: \(profile.manifest.dependencies.joined(separator: ", "))]"
+                    print("\(profile.id)\t\(profile.manifest.name)\t\(profile.source.label)\(dependencies)")
+                }
+                for diagnostic in catalog.diagnostics {
+                    fputs("Invalid profile at \(diagnostic.path): \(diagnostic.message)\n", stderr)
+                }
+            }
+        }
+
+        struct Validate: ParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Validate one profile directory.")
+            @Argument var directory: String
+
+            func run() throws {
+                let path = NSString(string: directory).expandingTildeInPath
+                let profile = try ProvisioningCatalog.validateProfile(at: URL(fileURLWithPath: path, isDirectory: true))
+                print("Valid profile '\(profile.id)' (version \(profile.manifest.version), digest \(profile.definitionDigest)).")
+            }
+        }
+    }
+
+    struct Provision: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Apply provisioning profiles to a running, SSH-ready VM."
+        )
+
+        @OptionGroup var storage: StorageOptions
+        @OptionGroup var debugOptions: DebugOptions
+        @Option(name: .long, help: "Provisioning profile to apply. Repeat for multiple profiles.")
+        var profile: [String] = []
+        @Option(name: .long, help: "Profile input in PROFILE.KEY=VALUE form.")
+        var profileInput: [String] = []
+        @Option(name: .long, help: "Login user. Defaults to the setup account, or 'admin'.")
+        var user: String?
+        @Option(name: .long, help: "Optional Xcode .xip to install before applying profiles.")
+        var xcode: String?
+        @Argument(help: "VM name, bundle basename, or full bundle path.")
+        var identifier: String
+
+        func run() async throws {
+            debugOptions.apply()
+            guard !profile.isEmpty else { throw ValidationError("Provide at least one --profile.") }
+            let selection = try provisioningSelection(profileIDs: profile, values: profileInput)
+            let service = MacVMService(rootDirectory: storage.resolvedURL)
+            let vm = try service.resolveVM(identifier: identifier)
+            let xcodeURL = xcode.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) }
+            try service.preflightProvisioning(selection: selection, xcodeXIPURL: xcodeURL, vm: vm)
+            if let xcodeURL {
+                try await service.installXcode(vm, xipURL: xcodeURL, user: user) { event in
+                    CLIReporter().handle(event)
+                }
+            }
+            let reporter = CLIReporter()
+            try await service.provision(vm, selection: selection, user: user) { event in reporter.handle(event) }
+            print("Provisioning complete for \(vm.metadata.name).")
         }
     }
 

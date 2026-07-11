@@ -1,0 +1,16 @@
+---
+- name: Install Rust development tools
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Install rustup and Cargo utilities
+      ansible.builtin.raw: |
+        set -e
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        brew install rustup cargo-nextest cargo-watch
+        rustup default stable
+        rustup component add rustfmt clippy
+        line='export PATH="/opt/homebrew/opt/rustup/bin:$PATH"'
+        touch "$HOME/.zprofile"
+        grep -Fqx "$line" "$HOME/.zprofile" || printf '%s\n' "$line" >> "$HOME/.zprofile"
+      changed_when: false

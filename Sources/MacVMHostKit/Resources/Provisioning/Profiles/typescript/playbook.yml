@@ -1,0 +1,23 @@
+---
+- name: Install TypeScript development tools
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Install nvm with Homebrew and the latest Node LTS
+      ansible.builtin.raw: |
+        set -e
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        brew install nvm
+        export NVM_DIR="$HOME/.nvm"
+        mkdir -p "$NVM_DIR"
+        . "$(brew --prefix nvm)/nvm.sh"
+        nvm install --lts
+        nvm alias default 'lts/*'
+        npm install --global typescript pnpm eslint prettier
+
+        touch "$HOME/.zprofile"
+        grep -Fqx 'export NVM_DIR="$HOME/.nvm"' "$HOME/.zprofile" || \
+          printf '%s\n' 'export NVM_DIR="$HOME/.nvm"' >> "$HOME/.zprofile"
+        grep -Fqx '[ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"' "$HOME/.zprofile" || \
+          printf '%s\n' '[ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh"' >> "$HOME/.zprofile"
+      changed_when: false

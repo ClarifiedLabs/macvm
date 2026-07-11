@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "ios-simulator",
+  "name": "iOS Simulator",
+  "description": "Download an iOS Simulator runtime through Xcode.",
+  "category": "Apple",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "dependencies": ["apple-development"],
+  "requirements": ["xcode"],
+  "inputs": [
+    {
+      "id": "runtimeBuild",
+      "label": "Runtime build",
+      "help": "Optional build identifier passed to xcodebuild.",
+      "type": "string"
+    },
+    {
+      "id": "architecture",
+      "label": "Architecture",
+      "type": "choice",
+      "default": "arm64",
+      "choices": ["arm64", "universal"]
+    }
+  ]
+}

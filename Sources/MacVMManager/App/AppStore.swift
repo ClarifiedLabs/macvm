@@ -76,6 +76,11 @@ final class AppStore {
     var draft: VMCreationDraft
     var setupAfterInstall = false
     var selectedXcodeXIPURL: URL?
+    var selectedProfileIDs: Set<String> = []
+    var profileInputValues: [String: [String: String]] = [:]
+    var provisionSheetVMName: String?
+    var provisionProfileIDs: Set<String> = []
+    var provisionInputValues: [String: [String: String]] = [:]
     var cloneSheetSourceName: String?
     var cloneName = ""
     private(set) var lastCommand = CLIEquivalent.list()
@@ -98,6 +103,9 @@ final class AppStore {
     private(set) var latestCheckStatus: String?
     private(set) var restoreImageImportInProgress = false
     private(set) var xcodeArchives: [XcodeArchiveEntry] = []
+    private(set) var profileCatalog: ProvisioningCatalog
+    private(set) var provisioningStates: [String: ProvisioningState] = [:]
+    private(set) var provisioningStatus: [String: String] = [:]
     private(set) var xcodeImportStatus: String?
     private(set) var xcodeImportInProgress = false
 
@@ -109,6 +117,8 @@ final class AppStore {
     init(service: MacVMService = MacVMService()) {
         self.service = service
         self.draft = service.defaultDraft()
+        self.profileCatalog = service.provisioningCatalog()
+        setenv("MACVM_MANAGER_PROCESS", "1", 1)
         refresh()
         selection = vms.first.map { .vm($0.metadata.name) } ?? .images
         updateCommandForSelection()
@@ -232,6 +242,10 @@ final class AppStore {
 
         restoreImages = RestoreImageCatalog.list(root: service.rootDirectory)
         xcodeArchives = XcodeArchiveCatalog.list(root: service.rootDirectory)
+        profileCatalog = service.provisioningCatalog()
+        provisioningStates = Dictionary(uniqueKeysWithValues: vms.compactMap { vm in
+            service.provisioningState(for: vm).map { (vm.metadata.name, $0) }
+        })
     }
 
     private func reconcileSetupProgress(from setupStates: [String: VMSetupRuntimeState], sessions: [String: VNCSession]) {
@@ -658,6 +672,9 @@ final class AppStore {
         draft = service.defaultDraft()
         setupAfterInstall = false
         selectedXcodeXIPURL = nil
+        selectedProfileIDs = []
+        profileInputValues = [:]
+        profileCatalog = service.provisioningCatalog()
         if let url {
             draft.restoreMode = .localFile
             draft.localRestoreImageURL = url
@@ -665,6 +682,7 @@ final class AppStore {
         if let xcodeURL {
             setupAfterInstall = true
             selectedXcodeXIPURL = xcodeURL
+            selectedProfileIDs.insert("apple-development")
         }
         sheetPresented = true
     }
@@ -674,7 +692,9 @@ final class AppStore {
             draft,
             defaults: service.defaultDraft(),
             setupAfter: setupAfterInstall,
-            xcodeXIPURL: setupAfterInstall ? selectedXcodeXIPURL : nil
+            xcodeXIPURL: setupAfterInstall ? selectedXcodeXIPURL : nil,
+            profileIDs: Array(selectedProfileIDs),
+            profileInputs: profileInputValues
         )
     }
 
@@ -682,7 +702,8 @@ final class AppStore {
         let draft = self.draft
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        if setupAfterInstall, let selectedXcodeXIPURL {
+        let shouldSetup = setupAfterInstall || !selectedProfileIDs.isEmpty
+        if shouldSetup, let selectedXcodeXIPURL {
             var isDirectory: ObjCBool = false
             guard selectedXcodeXIPURL.pathExtension.lowercased() == "xip",
                   FileManager.default.fileExists(atPath: selectedXcodeXIPURL.path, isDirectory: &isDirectory),
@@ -692,11 +713,31 @@ final class AppStore {
                 return
             }
         }
+        var effectiveProfileIDs = selectedProfileIDs
+        if selectedXcodeXIPURL != nil {
+            effectiveProfileIDs.insert("apple-development")
+        }
+        let provisioningSelection = ProvisioningSelection(
+            profileIDs: Array(effectiveProfileIDs),
+            inputs: profileInputValues
+        )
+        do {
+            try service.preflightProvisioning(
+                selection: provisioningSelection,
+                xcodeXIPURL: selectedXcodeXIPURL,
+                freshVM: true
+            )
+        } catch {
+            alertMessage = error.localizedDescription
+            return
+        }
         let installCommand = CLIEquivalent.create(
             draft,
             defaults: service.defaultDraft(),
-            setupAfter: setupAfterInstall,
-            xcodeXIPURL: setupAfterInstall ? selectedXcodeXIPURL : nil
+            setupAfter: shouldSetup,
+            xcodeXIPURL: shouldSetup ? selectedXcodeXIPURL : nil,
+            profileIDs: Array(effectiveProfileIDs),
+            profileInputs: profileInputValues
         )
 
         sheetPresented = false
@@ -704,8 +745,9 @@ final class AppStore {
         selection = .vm(name)
         lastCommand = installCommand
 
-        let runSetupAfter = setupAfterInstall
-        let setupXcodeXIPURL = setupAfterInstall ? selectedXcodeXIPURL : nil
+        let runSetupAfter = shouldSetup
+        let setupXcodeXIPURL = shouldSetup ? selectedXcodeXIPURL : nil
+        let setupSelection = provisioningSelection
         Task { @MainActor in
             do {
                 let vm = try await service.createVM(from: draft) { [weak self] event in
@@ -734,7 +776,13 @@ final class AppStore {
                     try? await Task.sleep(nanoseconds: 5_000_000_000)
                     installs[name] = nil
                     let withIdentity = try service.ensureNetworkIdentity(vm)
-                    startSetup(for: withIdentity, options: SetupOptions(xcodeXIPURL: setupXcodeXIPURL))
+                    startSetup(
+                        for: withIdentity,
+                        options: SetupOptions(
+                            xcodeXIPURL: setupXcodeXIPURL,
+                            provisioningSelection: setupSelection
+                        )
+                    )
                 }
             } catch {
                 installs[name] = nil
@@ -756,6 +804,95 @@ final class AppStore {
     }
 
     // MARK: - Setup
+
+    func setProfile(_ id: String, selected: Bool, forProvisioning: Bool = false) {
+        if selected {
+            do {
+                for profile in try profileCatalog.resolve([id]) where profile.source != .bundled {
+                    if !confirmTrust(profile) { return }
+                }
+            } catch {
+                alertMessage = error.localizedDescription
+                return
+            }
+        }
+        if forProvisioning {
+            if selected { provisionProfileIDs.insert(id) } else { provisionProfileIDs.remove(id) }
+        } else {
+            if selected {
+                selectedProfileIDs.insert(id)
+                setupAfterInstall = true
+            } else {
+                selectedProfileIDs.remove(id)
+            }
+        }
+    }
+
+    private func confirmTrust(_ profile: ProvisioningProfile) -> Bool {
+        let key = "trusted-profile-\(profile.definitionDigest)"
+        if UserDefaults.standard.bool(forKey: key) { return true }
+        let alert = NSAlert()
+        alert.messageText = "Run local profile “\(profile.manifest.name)”?"
+        alert.informativeText = "Local Ansible profiles are executable code and may also run commands on this Mac. Source: \(profile.directoryURL.path)"
+        alert.addButton(withTitle: "Trust and Select")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        UserDefaults.standard.set(true, forKey: key)
+        return true
+    }
+
+    func setProfileInput(
+        profileID: String,
+        key: String,
+        value: String,
+        forProvisioning: Bool = false
+    ) {
+        if forProvisioning {
+            provisionInputValues[profileID, default: [:]][key] = value
+        } else {
+            profileInputValues[profileID, default: [:]][key] = value
+        }
+    }
+
+    func openProvisionSheet(_ vm: ManagedVM) {
+        profileCatalog = service.provisioningCatalog(for: vm)
+        provisionProfileIDs = []
+        provisionInputValues = [:]
+        provisionSheetVMName = vm.metadata.name
+    }
+
+    func submitProvision() {
+        guard let name = provisionSheetVMName,
+              let vm = vm(named: name),
+              !provisionProfileIDs.isEmpty else { return }
+        let selection = ProvisioningSelection(
+            profileIDs: Array(provisionProfileIDs),
+            inputs: provisionInputValues
+        )
+        do {
+            try service.preflightProvisioning(selection: selection, vm: vm)
+        } catch {
+            alertMessage = error.localizedDescription
+            return
+        }
+        provisionSheetVMName = nil
+        provisioningStatus[name] = "Preparing provisioning…"
+        lastCommand = CLIEquivalent.provision(name, profileIDs: Array(provisionProfileIDs))
+        Task { @MainActor in
+            do {
+                try await service.provision(vm, selection: selection) { [weak self] event in
+                    guard case .status(let message) = event else { return }
+                    DispatchQueue.main.async { self?.provisioningStatus[name] = message }
+                }
+                provisioningStatus[name] = nil
+                provisioningStates[name] = service.provisioningState(for: vm)
+            } catch {
+                provisioningStatus[name] = "Failed: \(error.localizedDescription)"
+                alertMessage = error.localizedDescription
+                provisioningStates[name] = service.provisioningState(for: vm)
+            }
+        }
+    }
 
     func startSetup(for vm: ManagedVM, options: SetupOptions = SetupOptions()) {
         let name = vm.metadata.name

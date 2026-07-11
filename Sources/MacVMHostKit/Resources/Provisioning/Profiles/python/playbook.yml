@@ -1,0 +1,10 @@
+---
+- name: Install Python development tools
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Install Python and utilities
+      ansible.builtin.raw: |
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        brew install python uv ruff pyright
+      changed_when: false

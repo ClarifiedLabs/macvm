@@ -177,6 +177,8 @@ public struct SetupOptions: Sendable {
     public var scriptOverride: URL?
     /// Optional host-side Xcode .xip to stage and install during setup.
     public var xcodeXIPURL: URL?
+    /// Composable Ansible profiles to apply after SSH becomes ready.
+    public var provisioningSelection: ProvisioningSelection
 
     public init(
         username: String = "admin",
@@ -188,7 +190,8 @@ public struct SetupOptions: Sendable {
         requestedVNCPort: UInt = 0,
         shutdownAfter: Bool = false,
         scriptOverride: URL? = nil,
-        xcodeXIPURL: URL? = nil
+        xcodeXIPURL: URL? = nil,
+        provisioningSelection: ProvisioningSelection = ProvisioningSelection()
     ) {
         self.username = username
         self.password = password
@@ -200,6 +203,7 @@ public struct SetupOptions: Sendable {
         self.shutdownAfter = shutdownAfter
         self.scriptOverride = scriptOverride
         self.xcodeXIPURL = xcodeXIPURL
+        self.provisioningSelection = provisioningSelection
     }
 }
 

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "python",
+  "name": "Python",
+  "description": "Install Python with uv, Ruff, and Pyright.",
+  "category": "Languages",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "dependencies": ["homebrew"]
+}

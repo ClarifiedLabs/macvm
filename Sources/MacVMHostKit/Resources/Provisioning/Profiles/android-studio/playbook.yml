@@ -1,0 +1,10 @@
+---
+- name: Install Android Studio
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Install Android Studio from Homebrew
+      ansible.builtin.raw: |
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        brew install --cask android-studio
+      changed_when: false

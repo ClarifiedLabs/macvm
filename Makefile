@@ -14,7 +14,7 @@ XCODE_RESULT_BUNDLE ?=
 XCODE_COMMON_FLAGS = -clonedSourcePackagesDirPath "$(XCODE_SOURCE_PACKAGES)" -skipPackagePluginValidation -skipMacroValidation
 XCODE_RESULT_BUNDLE_FLAGS = $(if $(XCODE_RESULT_BUNDLE),-resultBundlePath "$(XCODE_RESULT_BUNDLE)",)
 
-.PHONY: all build build-cli build-app test dist-cli app dev-app package release release-list test-release clean help
+.PHONY: all build build-cli build-app test test-provisioning test-provisioning-e2e dist-cli app dev-app package release release-list test-release clean help
 
 all: dist-cli
 
@@ -25,6 +25,8 @@ help:
 		'make build-cli     Build the macvm CLI in debug mode with xcodebuild' \
 		'make build-app     Build "MacVM Manager.app" in debug mode with xcodebuild' \
 		'make test          Run the Xcode test suite' \
+		'make test-provisioning  Syntax-check bundled and example Ansible playbooks' \
+		'make test-provisioning-e2e  Create a real VM and smoke-test provisioning' \
 		'make dist-cli      Run tests and build the signed dist/macvm binary' \
 		'make app           Run tests and build the signed "dist/MacVM Manager.app"' \
 		'make dev-app       Build a signed debug "dist/MacVM Manager.app" (no tests)' \
@@ -44,6 +46,12 @@ build-app:
 
 test:
 	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "MacVM Manager" -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) -destination '$(XCODE_DESTINATION)' $(XCODE_RESULT_BUNDLE_FLAGS) test
+
+test-provisioning:
+	@./scripts/check-provisioning-playbooks.sh
+
+test-provisioning-e2e: build-cli
+	@MACVM_E2E_BINARY="$(abspath $(XCODE_DERIVED_DATA))/Build/Products/Debug/macvm" ./scripts/test-provisioning-e2e.sh
 
 dist-cli: test
 	XCODE_DERIVED_DATA="$(XCODE_DERIVED_DATA)" XCODE_SOURCE_PACKAGES="$(XCODE_SOURCE_PACKAGES)" ./scripts/build-release.sh

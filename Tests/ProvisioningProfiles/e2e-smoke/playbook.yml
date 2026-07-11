@@ -1,0 +1,18 @@
+---
+- name: Verify MacVM provisioning end to end
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Write the smoke-test marker idempotently
+      ansible.builtin.raw: |
+        set -e
+        marker_file="$HOME/.macvm-provisioning-smoke"
+        desired={{ macvm_inputs.marker | quote }}
+        if [ -f "$marker_file" ] && [ "$(cat "$marker_file")" = "$desired" ]; then
+          echo unchanged
+        else
+          printf '%s\n' "$desired" > "$marker_file"
+          echo changed
+        fi
+      register: marker_result
+      changed_when: "'changed' in marker_result.stdout_lines"

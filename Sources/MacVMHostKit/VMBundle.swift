@@ -249,6 +249,29 @@ struct VMBundle {
         runtimeDirectoryURL.appendingPathComponent("setup-state.json")
     }
 
+    var provisioningStateURL: URL {
+        setupDirectoryURL.appendingPathComponent("provisioning-state.json")
+    }
+
+    var provisioningLogsDirectoryURL: URL {
+        setupDirectoryURL.appendingPathComponent("Provisioning", isDirectory: true)
+    }
+
+    func readProvisioningState() -> ProvisioningState? {
+        guard let data = try? Data(contentsOf: provisioningStateURL) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(ProvisioningState.self, from: data)
+    }
+
+    func writeProvisioningState(_ state: ProvisioningState) throws {
+        try FileManager.default.createDirectory(at: setupDirectoryURL, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(state).write(to: provisioningStateURL, options: .atomic)
+    }
+
     var viewerWindowStateURL: URL {
         url.appendingPathComponent("ViewerWindow.json")
     }

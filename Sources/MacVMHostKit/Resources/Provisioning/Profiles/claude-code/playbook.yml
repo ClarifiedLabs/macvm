@@ -1,0 +1,10 @@
+---
+- name: Install Claude Code
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Install Claude Code from Homebrew
+      ansible.builtin.raw: |
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        brew install --cask claude-code
+      changed_when: false

@@ -79,7 +79,9 @@ enum CLIEquivalent {
         _ draft: VMCreationDraft,
         defaults: VMCreationDraft,
         setupAfter: Bool,
-        xcodeXIPURL: URL? = nil
+        xcodeXIPURL: URL? = nil,
+        profileIDs: [String] = [],
+        profileInputs: [String: [String: String]] = [:]
     ) -> String {
         var command = "macvm create --name \(draft.name.isEmpty ? "<name>" : draft.name)"
         if draft.cpuCount != defaults.cpuCount {
@@ -109,7 +111,20 @@ enum CLIEquivalent {
                 command += " --xcode \(abbreviatePath(xcodeXIPURL.path))"
             }
         }
+        for id in profileIDs.sorted() {
+            command += " --profile \(id)"
+        }
+        for profileID in profileInputs.keys.sorted() {
+            for key in (profileInputs[profileID] ?? [:]).keys.sorted() {
+                let value = profileInputs[profileID]?[key] ?? ""
+                command += " --profile-input \(profileID).\(key)=\(value.isEmpty ? "<value>" : value)"
+            }
+        }
         return command
+    }
+
+    static func provision(_ name: String, profileIDs: [String]) -> String {
+        "macvm provision \(name) " + profileIDs.sorted().map { "--profile \($0)" }.joined(separator: " ")
     }
 
     /// Abbreviate the current user's home directory to `~`.

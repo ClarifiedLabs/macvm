@@ -33,6 +33,8 @@ class HomebrewCaskTestCase(unittest.TestCase):
             self.assertIn("releases/download/v#{version}/MacVM-#{version}.pkg", cask)
             self.assertIn('depends_on arch: :arm64', cask)
             self.assertIn('depends_on macos: :tahoe', cask)
+            self.assertIn('brew install ansible', cask)
+            self.assertNotIn('depends_on formula: "ansible"', cask)
             self.assertIn('uninstall pkgutil: "dev.macvm.macvm.pkg"', cask)
 
     def test_rejects_invalid_checksum(self) -> None:

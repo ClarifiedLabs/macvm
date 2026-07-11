@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "android-sdk",
+  "name": "Android SDK",
+  "description": "Install Temurin 25 and a build-ready Android command-line SDK.",
+  "category": "Android",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "dependencies": ["homebrew"]
+}

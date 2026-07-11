@@ -1,0 +1,13 @@
+---
+- name: Install an iOS Simulator runtime
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Download the requested iOS runtime
+      ansible.builtin.raw: >-
+        xcodebuild -downloadPlatform iOS
+        -architecture {{ macvm_inputs.architecture | default('arm64') | quote }}
+        {% if macvm_inputs.runtimeBuild | default('') | length > 0 %}
+        -buildVersion {{ macvm_inputs.runtimeBuild | quote }}
+        {% endif %}
+      changed_when: false

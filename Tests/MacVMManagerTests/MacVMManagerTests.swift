@@ -29,6 +29,24 @@ func cliEquivalentRendersFixedActionCommands() {
 }
 
 @Test
+func cliEquivalentRendersProvisioningProfilesAndInputs() {
+    let defaults = VMCreationDraft(
+        name: "dev", cpuCount: 4, memoryGiB: 8, diskGiB: 80,
+        displayWidth: 1280, displayHeight: 720, restoreMode: .latestSupported
+    )
+    #expect(
+        CLIEquivalent.create(
+            defaults,
+            defaults: defaults,
+            setupAfter: true,
+            profileIDs: ["python", "go"],
+            profileInputs: ["python": ["version": "3.14"]]
+        ) == "macvm create --name dev --setup --profile go --profile python --profile-input python.version=3.14"
+    )
+    #expect(CLIEquivalent.provision("dev", profileIDs: ["python", "go"]) == "macvm provision dev --profile go --profile python")
+}
+
+@Test
 func attachmentRoutingPrefersNativeViewerThenVNC() {
     let session = VNCSession(port: 5901, password: "secret42", pid: getpid(), startedAt: Date())
 

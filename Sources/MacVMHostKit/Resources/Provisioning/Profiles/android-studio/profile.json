@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "android-studio",
+  "name": "Android Studio",
+  "description": "Install Android Studio on top of the Android SDK profile.",
+  "category": "Android",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "dependencies": ["android-sdk"]
+}

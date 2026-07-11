@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "typescript",
+  "name": "TypeScript",
+  "description": "Install nvm through Homebrew, the latest Node LTS, TypeScript, pnpm, ESLint, and Prettier.",
+  "category": "Languages",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "dependencies": ["homebrew"]
+}

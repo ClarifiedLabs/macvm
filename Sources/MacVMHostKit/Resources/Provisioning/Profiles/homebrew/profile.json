@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "homebrew",
+  "name": "Homebrew",
+  "description": "Install Homebrew and configure it for login shells.",
+  "category": "Foundation",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "hidden": true
+}

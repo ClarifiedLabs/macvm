@@ -27,6 +27,7 @@ struct VMDetailView: View {
                     SpecCardsView(vm: vm, status: status)
                     AccessSectionView(vm: vm, status: status)
                     AutomationSectionView(vm: vm)
+                    ProvisioningSectionView(vm: vm, status: status)
                     BundleSectionView(vm: vm)
                 }
             }

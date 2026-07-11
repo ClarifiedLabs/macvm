@@ -70,6 +70,12 @@ jobs:
             -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
             -skipPackagePluginValidation
 
+      - name: Check provisioning playbooks
+        run: |
+          set -euo pipefail
+          brew install ansible
+          make test-provisioning
+
       - name: Run tests
         run: |
           set -euo pipefail

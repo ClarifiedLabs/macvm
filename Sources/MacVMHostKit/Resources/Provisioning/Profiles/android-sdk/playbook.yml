@@ -1,0 +1,26 @@
+---
+- name: Install Android SDK tooling
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Install Temurin and Android command-line tools
+      ansible.builtin.raw: |
+        set -e
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        brew install --cask temurin@25 android-commandlinetools
+      changed_when: false
+
+    - name: Install the latest stable Android platform and build tools
+      ansible.builtin.raw: |
+        set -e
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        sdkmanager="/opt/homebrew/share/android-commandlinetools/cmdline-tools/latest/bin/sdkmanager"
+        yes | "$sdkmanager" --licenses >/dev/null || true
+        packages="$($sdkmanager --list | awk '/^  platforms;android-[0-9]+ / {print $1} /^  build-tools;[0-9]+\.[0-9]+\.[0-9]+ / {print $1}')"
+        platform="$(printf '%s\n' "$packages" | grep '^platforms;' | sort -V | tail -1)"
+        build_tools="$(printf '%s\n' "$packages" | grep '^build-tools;' | sort -V | tail -1)"
+        "$sdkmanager" platform-tools "$platform" "$build_tools"
+        line='export ANDROID_HOME="/opt/homebrew/share/android-commandlinetools"'
+        touch "$HOME/.zprofile"
+        grep -Fqx "$line" "$HOME/.zprofile" || printf '%s\n' "$line" >> "$HOME/.zprofile"
+      changed_when: false

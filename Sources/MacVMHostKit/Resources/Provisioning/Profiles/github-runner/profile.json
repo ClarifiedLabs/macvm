@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "github-runner",
+  "name": "GitHub Actions Runner",
+  "description": "Install the official macOS arm64 runner without registering it.",
+  "category": "Automation",
+  "version": "2.335.1",
+  "playbook": "playbook.yml"
+}

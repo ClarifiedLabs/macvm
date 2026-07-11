@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "codex",
+  "name": "Codex",
+  "description": "Install the Codex coding agent CLI without credentials.",
+  "category": "Coding Agents",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "dependencies": ["homebrew"]
+}

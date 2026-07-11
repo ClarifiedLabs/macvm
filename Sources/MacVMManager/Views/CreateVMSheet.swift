@@ -131,6 +131,11 @@ struct CreateVMSheet: View {
                                     .font(.system(size: 11))
                                     .foregroundStyle(.tertiary)
                             }
+                            Divider()
+                                .padding(.vertical, 3)
+                            Text("Provisioning profiles")
+                                .font(.system(size: 12, weight: .semibold))
+                            ProvisioningProfilePicker()
                         }
                     }
                     .toggleStyle(.checkbox)
@@ -241,6 +246,9 @@ struct CreateVMSheet: View {
             },
             set: { path in
                 store.selectedXcodeXIPURL = path.isEmpty ? nil : URL(fileURLWithPath: path)
+                if !path.isEmpty {
+                    store.setProfile("apple-development", selected: true)
+                }
             }
         )
     }

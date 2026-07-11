@@ -25,6 +25,12 @@ Install with Homebrew:
 brew install --cask clarifiedlabs/tap/macvm
 ```
 
+To use the optional provisioning profiles, install Ansible on the host:
+
+```bash
+brew install ansible
+```
+
 Alternatively, download the latest `MacVM-<version>.pkg` from GitHub Releases, open it, and complete the installer.
 
 The package installs:
@@ -123,6 +129,25 @@ To install Xcode during setup, pass a local `.xip` archive:
 ```bash
 macvm create --name xcode-02 --setup --xcode ~/Downloads/Xcode_26.3.xip
 ```
+
+Apply one or more bundled provisioning profiles during creation:
+
+```bash
+macvm profiles list
+macvm create --name dev-03 --profile go --profile python --profile codex
+```
+
+Profiles imply `--setup`. To provision an existing SSH-ready VM, start it and run:
+
+```bash
+macvm provision dev-03 --profile typescript --profile claude-code
+```
+
+Local profiles are discovered from `~/Library/Application Support/macvm/Profiles`,
+`~/.config/macvm/profiles`, the VM root's `.profiles` directory, and a VM bundle's
+`Setup/Profiles` directory. See [Provisioning Profiles](docs/provisioning.md) for
+the manifest format, inputs, security model, GitHub runner example, and opt-in
+real-VM smoke test.
 
 ## Display and VNC Access
 

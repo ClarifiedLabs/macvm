@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "github-runner-register",
+  "name": "Register GitHub Runner",
+  "description": "Register the installed runner using a host-side GitHub App.",
+  "category": "Local Examples",
+  "version": "1",
+  "playbook": "playbook.yml",
+  "dependencies": ["github-runner"],
+  "inputs": [
+    {"id": "scope", "label": "Scope", "type": "choice", "default": "repository", "choices": ["repository", "organization"]},
+    {"id": "githubURL", "label": "GitHub URL", "help": "https://github.com/OWNER/REPO or https://github.com/ORG", "type": "string", "required": true},
+    {"id": "appID", "label": "App ID", "type": "string", "required": true},
+    {"id": "installationID", "label": "Installation ID", "type": "string", "required": true},
+    {"id": "privateKey", "label": "Private key", "help": "Use file:/path/to/app.pem from the CLI", "type": "secret", "required": true},
+    {"id": "runnerName", "label": "Runner name", "type": "string"},
+    {"id": "labels", "label": "Labels", "help": "Comma-separated custom labels", "type": "string", "default": "macvm,apple-silicon"},
+    {"id": "ephemeral", "label": "Ephemeral", "type": "boolean", "default": false}
+  ]
+}

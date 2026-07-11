@@ -1,0 +1,21 @@
+---
+- name: Install GitHub Actions runner
+  hosts: macvm
+  gather_facts: false
+  vars:
+    runner_version: "2.335.1"
+    runner_sha256: "e1a9bc7a3661e06fa0b129d15c2064fe65dc81a431001d8958a9db1409b73769"
+  tasks:
+    - name: Download and verify the runner
+      ansible.builtin.raw: |
+        set -e
+        destination="$HOME/actions-runner"
+        archive="/tmp/actions-runner-osx-arm64-{{ runner_version }}.tar.gz"
+        if [[ -x "$destination/run.sh" ]]; then exit 0; fi
+        curl -fL "https://github.com/actions/runner/releases/download/v{{ runner_version }}/actions-runner-osx-arm64-{{ runner_version }}.tar.gz" -o "$archive"
+        actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+        [[ "$actual" == "{{ runner_sha256 }}" ]]
+        mkdir -p "$destination"
+        tar xzf "$archive" -C "$destination"
+        rm -f "$archive"
+      changed_when: false

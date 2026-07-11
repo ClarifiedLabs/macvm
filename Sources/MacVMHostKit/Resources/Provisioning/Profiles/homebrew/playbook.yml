@@ -1,0 +1,22 @@
+---
+- name: Install Homebrew
+  hosts: macvm
+  gather_facts: false
+  tasks:
+    - name: Install Homebrew when absent
+      ansible.builtin.raw: |
+        set -e
+        if [[ ! -x /opt/homebrew/bin/brew ]]; then
+          NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        fi
+      changed_when: false
+
+    - name: Configure Homebrew for zsh login shells
+      ansible.builtin.raw: |
+        set -e
+        line='eval "$(/opt/homebrew/bin/brew shellenv)"'
+        touch "$HOME/.zprofile"
+        grep -Fqx "$line" "$HOME/.zprofile" || printf '\n%s\n' "$line" >> "$HOME/.zprofile"
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        brew update
+      changed_when: false

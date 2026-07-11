@@ -89,6 +89,10 @@ private extension NSLock {
 }
 
 public final class MacVMService: Sendable {
+    static let shutdownRemoteCommand = [
+        "sudo /bin/sh -c '/usr/bin/nohup /sbin/shutdown -h now >/dev/null 2>&1 </dev/null &'",
+    ]
+
     private static let cloneExcludedRelativePaths: Set<String> = [
         "Runtime",
         "Shared/.DocumentRevisions-V100",
@@ -115,6 +119,89 @@ public final class MacVMService: Sendable {
 
     public var rootDirectory: URL {
         storage.rootDirectory
+    }
+
+    public func provisioningCatalog(for vm: ManagedVM? = nil) -> ProvisioningCatalog {
+        ProvisioningCatalog.load(rootDirectory: rootDirectory, vmBundleURL: vm?.bundleURL)
+    }
+
+    public func provisioningState(for vm: ManagedVM) -> ProvisioningState? {
+        VMBundle(url: vm.bundleURL).readProvisioningState()
+    }
+
+    public func preflightProvisioning(
+        selection: ProvisioningSelection,
+        xcodeXIPURL: URL? = nil,
+        vm: ManagedVM? = nil,
+        freshVM: Bool = false
+    ) throws {
+        guard !selection.profileIDs.isEmpty else { return }
+        guard AnsibleProvisioner.findExecutable() != nil else {
+            throw MacVMError.message("ansible-playbook was not found on this host. Install it with: brew install ansible")
+        }
+        let profiles = try provisioningCatalog(for: vm).validate(selection)
+        if freshVM,
+           profiles.contains(where: { $0.manifest.requirements.contains("xcode") }),
+           xcodeXIPURL == nil {
+            throw MacVMError.message("The selected provisioning profiles require Xcode. Pass an Xcode .xip with --xcode.")
+        }
+    }
+
+    public func provision(
+        _ vm: ManagedVM,
+        selection: ProvisioningSelection,
+        user: String? = nil,
+        progress: VMOperationHandler? = nil
+    ) async throws {
+        guard !selection.profileIDs.isEmpty else { return }
+        guard let executable = AnsibleProvisioner.findExecutable() else {
+            throw MacVMError.message("ansible-playbook was not found on this host. Install it with: brew install ansible")
+        }
+        let catalog = provisioningCatalog(for: vm)
+        let profiles = try catalog.validate(selection)
+        let host = try resolveGuestIP(vm)
+        guard let identity = guestIdentityFile(for: vm) else {
+            throw MacVMError.message("No setup SSH key exists for '\(vm.metadata.name)'. Run macvm setup first.")
+        }
+        let guestUser = guestUser(for: vm, override: user)
+        let provisioner = AnsibleProvisioner(
+            vm: vm,
+            host: host,
+            user: guestUser,
+            identityFile: identity,
+            profiles: profiles,
+            inputs: selection.inputs,
+            executableURL: executable,
+            progress: progress
+        )
+        try await Task.detached(priority: .userInitiated) {
+            try provisioner.run()
+        }.value
+    }
+
+    public func installXcode(
+        _ vm: ManagedVM,
+        xipURL: URL,
+        user: String? = nil,
+        progress: VMOperationHandler? = nil
+    ) async throws {
+        let host = try resolveGuestIP(vm)
+        let guestUser = guestUser(for: vm, override: user)
+        let result = SetupResult(
+            username: guestUser,
+            ipAddress: host,
+            sshReady: true,
+            inventoryLine: inventoryLine(vm, host: host, user: guestUser)
+        )
+        var options = SetupOptions(username: guestUser, xcodeXIPURL: xipURL)
+        options.password = ""
+        try await installXcodeIfRequested(
+            for: vm,
+            bundle: VMBundle(url: vm.bundleURL),
+            options: options,
+            setupResult: result,
+            progress: progress
+        )
     }
 
     public func defaultDraft(named name: String = "") -> VMCreationDraft {
@@ -432,7 +519,7 @@ public final class MacVMService: Sendable {
             vm,
             host: host,
             user: user,
-            remoteCommand: ["sudo", "shutdown", "-h", "now"],
+            remoteCommand: Self.shutdownRemoteCommand,
             allocateTTY: false
         )
     }
@@ -700,6 +787,13 @@ public final class MacVMService: Sendable {
             metadata.setupFullName = options.fullName
             metadata.setupCompletedAt = Date()
             try bundle.writeMetadata(metadata)
+
+            try await provision(
+                vm,
+                selection: options.provisioningSelection,
+                user: options.username,
+                progress: setupProgress
+            )
             runtimePublisher.clear()
 
             return result

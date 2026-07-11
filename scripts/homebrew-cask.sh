@@ -34,6 +34,11 @@ cask "macvm" do
 
   pkg "MacVM-#{version}.pkg"
 
+  caveats <<~EOS
+    Ansible is optional and is required only when using provisioning profiles:
+      brew install ansible
+  EOS
+
   uninstall pkgutil: "dev.macvm.macvm.pkg"
 end
 CASK
