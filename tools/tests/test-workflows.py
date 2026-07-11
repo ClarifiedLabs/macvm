@@ -73,9 +73,16 @@ def main() -> None:
         "test-release:",
         "tools/tests/test-release.py",
         "tools/tests/test-workflows.py",
+        "all: dist",
+        "dist: dist-cli dist-app",
         "dist-cli:",
+        "dist-app:",
+        "./scripts/stage-cli.sh",
+        "./scripts/stage-app.sh",
     ):
         require_contains(makefile, needle, "Makefile")
+
+    require_absent(makefile, "dev-app", "Makefile")
 
     for forbidden in (
         "draft: true",

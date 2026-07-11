@@ -14,22 +14,22 @@ XCODE_RESULT_BUNDLE ?=
 XCODE_COMMON_FLAGS = -clonedSourcePackagesDirPath "$(XCODE_SOURCE_PACKAGES)" -skipPackagePluginValidation -skipMacroValidation
 XCODE_RESULT_BUNDLE_FLAGS = $(if $(XCODE_RESULT_BUNDLE),-resultBundlePath "$(XCODE_RESULT_BUNDLE)",)
 
-.PHONY: all build build-cli build-app test test-provisioning test-provisioning-e2e dist-cli app dev-app package release release-list test-release clean help
+.PHONY: all build build-cli build-app test test-provisioning test-provisioning-e2e dist dist-cli dist-app package release release-list test-release clean help
 
-all: dist-cli
+all: dist
 
 help:
 	@printf '%s\n' \
-		'make               Run tests and build the signed dist/macvm binary' \
+		'make               Run tests and build the signed CLI and app in dist/' \
 		'make build         Build the CLI and app in debug mode with xcodebuild' \
 		'make build-cli     Build the macvm CLI in debug mode with xcodebuild' \
 		'make build-app     Build "MacVM Manager.app" in debug mode with xcodebuild' \
 		'make test          Run the Xcode test suite' \
 		'make test-provisioning  Syntax-check bundled and example Ansible playbooks' \
 		'make test-provisioning-e2e  Create a real VM and smoke-test provisioning' \
+		'make dist          Run tests and build the signed CLI and app in dist/' \
 		'make dist-cli      Run tests and build the signed dist/macvm binary' \
-		'make app           Run tests and build the signed "dist/MacVM Manager.app"' \
-		'make dev-app       Build a signed debug "dist/MacVM Manager.app" (no tests)' \
+		'make dist-app      Run tests and build the signed "dist/MacVM Manager.app"' \
 		'make package       Build a local unsigned installer package for payload testing' \
 		'make release       Create a GitHub release tag (VERSION=patch|minor|major|X.Y.Z)' \
 		'make release-list  List the current release tag' \
@@ -53,14 +53,13 @@ test-provisioning:
 test-provisioning-e2e: build-cli
 	@MACVM_E2E_BINARY="$(abspath $(XCODE_DERIVED_DATA))/Build/Products/Debug/macvm" ./scripts/test-provisioning-e2e.sh
 
+dist: dist-cli dist-app
+
 dist-cli: test
-	XCODE_DERIVED_DATA="$(XCODE_DERIVED_DATA)" XCODE_SOURCE_PACKAGES="$(XCODE_SOURCE_PACKAGES)" ./scripts/build-release.sh
+	XCODE_DERIVED_DATA="$(XCODE_DERIVED_DATA)" XCODE_SOURCE_PACKAGES="$(XCODE_SOURCE_PACKAGES)" ./scripts/stage-cli.sh
 
-app: test
-	XCODE_DERIVED_DATA="$(XCODE_DERIVED_DATA)" XCODE_SOURCE_PACKAGES="$(XCODE_SOURCE_PACKAGES)" ./scripts/build-app.sh
-
-dev-app:
-	CONFIG=Debug XCODE_DERIVED_DATA="$(XCODE_DERIVED_DATA)" XCODE_SOURCE_PACKAGES="$(XCODE_SOURCE_PACKAGES)" ./scripts/build-app.sh
+dist-app: test
+	XCODE_DERIVED_DATA="$(XCODE_DERIVED_DATA)" XCODE_SOURCE_PACKAGES="$(XCODE_SOURCE_PACKAGES)" ./scripts/stage-app.sh
 
 package:
 	XCODE_DERIVED_DATA="$(XCODE_DERIVED_DATA)" XCODE_SOURCE_PACKAGES="$(XCODE_SOURCE_PACKAGES)" ./scripts/package-release.sh

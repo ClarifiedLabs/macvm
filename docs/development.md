@@ -22,13 +22,13 @@ make test
 make build
 make build-cli
 make build-app
+make dist
 make dist-cli
-make app
-make dev-app
+make dist-app
 make package
 ```
 
-`make test` runs the Xcode test suite. `make dist-cli` runs tests and stages `dist/macvm` with the local Xcode signing configuration. `make app` runs tests and stages `dist/MacVM Manager.app`. `make package` builds a local unsigned installer package for payload testing.
+`make build`, `make build-cli`, and `make build-app` produce locally signed Debug products in Xcode's derived data without running tests. `make test` runs the Xcode test suite. Bare `make` and `make dist` run tests and stage Release builds of both `dist/macvm` and `dist/MacVM Manager.app` with the local Xcode signing configuration. Use `make dist-cli` or `make dist-app` to test and stage only one product. `make package` builds a local unsigned installer package for payload testing.
 
 The public release package is produced in GitHub Actions with Developer ID signing and notarization.
 
