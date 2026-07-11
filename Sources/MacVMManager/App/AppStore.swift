@@ -20,6 +20,12 @@ struct InstallProgress {
     var command: String
 }
 
+struct CloneProgress {
+    var destinationName: String
+    var status: String
+    var command: String
+}
+
 /// Live setup progress for a VM this app is driving through Setup Assistant.
 struct SetupProgress {
     var phases: [SetupPhase]
@@ -58,12 +64,15 @@ final class AppStore {
     var draft: VMCreationDraft
     var setupAfterInstall = false
     var selectedXcodeXIPURL: URL?
+    var cloneSheetSourceName: String?
+    var cloneName = ""
     private(set) var lastCommand = CLIEquivalent.list()
     private(set) var copiedKey: String?
     var alertMessage: String?
     var pendingPowerAction: PendingPowerAction?
 
     private(set) var installs: [String: InstallProgress] = [:]
+    private(set) var clones: [String: CloneProgress] = [:]
     private(set) var setups: [String: SetupProgress] = [:]
     private(set) var liveProcesses: [String: VMProcessRuntimeState] = [:]
     private(set) var liveSessions: [String: VNCSession] = [:]
@@ -102,6 +111,7 @@ final class AppStore {
 
     func status(forName name: String) -> VMStatus {
         VMStatus.derive(
+            cloning: clones[name] != nil,
             installing: installs[name] != nil,
             settingUp: setups[name] != nil,
             viewerActive: viewers[name] != nil,
@@ -481,6 +491,73 @@ final class AppStore {
             }
         } catch {
             alertMessage = "Failed to remove \(name): \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Clone
+
+    nonisolated static func suggestedCloneName(source: String, occupiedNames: Set<String>) -> String {
+        let base = "\(source)-copy"
+        guard occupiedNames.contains(base) else { return base }
+        var suffix = 2
+        while occupiedNames.contains("\(base)-\(suffix)") {
+            suffix += 1
+        }
+        return "\(base)-\(suffix)"
+    }
+
+    func requestClone(_ vm: ManagedVM) {
+        guard status(forName: vm.metadata.name) == .stopped else {
+            alertMessage = "Stop \(vm.metadata.name) before cloning it."
+            return
+        }
+        let occupied = Set(vms.map(\.metadata.name)).union(installs.keys)
+        cloneName = Self.suggestedCloneName(source: vm.metadata.name, occupiedNames: occupied)
+        cloneSheetSourceName = vm.metadata.name
+    }
+
+    var cloneCommandPreview: String {
+        CLIEquivalent.clone(cloneSheetSourceName ?? "<source>", name: cloneName)
+    }
+
+    func submitClone() {
+        guard let sourceName = cloneSheetSourceName,
+              let source = vm(named: sourceName),
+              status(forName: sourceName) == .stopped else {
+            cloneSheetSourceName = nil
+            alertMessage = "The source VM must be stopped before cloning."
+            return
+        }
+        let destinationName = cloneName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !destinationName.isEmpty else { return }
+
+        let command = CLIEquivalent.clone(sourceName, name: destinationName)
+        cloneSheetSourceName = nil
+        clones[sourceName] = CloneProgress(
+            destinationName: destinationName,
+            status: "Preparing copy…",
+            command: command
+        )
+        lastCommand = command
+
+        Task { @MainActor in
+            do {
+                let clonedVM = try await service.cloneVM(from: source, named: destinationName) { [weak self] event in
+                    guard case .status(let message) = event else { return }
+                    DispatchQueue.main.async {
+                        self?.clones[sourceName]?.status = message
+                    }
+                }
+                clones[sourceName] = nil
+                refresh()
+                selection = .vm(clonedVM.metadata.name)
+                updateCommandForSelection()
+                lastCommand = command
+            } catch {
+                clones[sourceName] = nil
+                refresh()
+                alertMessage = "Failed to clone \(sourceName): \(error.localizedDescription)"
+            }
         }
     }
 

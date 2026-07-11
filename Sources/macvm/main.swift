@@ -353,6 +353,7 @@ struct MacVMCommand: AsyncParsableCommand {
             Show.self,
             Remove.self,
             Create.self,
+            Clone.self,
             Run.self,
             Stop.self,
             Autostart.self,
@@ -675,6 +676,34 @@ extension MacVMCommand {
             } else {
                 print("Run it with: macvm run \(virtualMachine.metadata.name)")
             }
+        }
+    }
+
+    struct Clone: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Clone a stopped VM without reinstalling macOS."
+        )
+
+        @OptionGroup var storage: StorageOptions
+        @OptionGroup var debugOptions: DebugOptions
+
+        @Argument(help: "Source VM name, bundle basename, or full bundle path.")
+        var source: String
+
+        @Option(name: .long, help: "Name of the cloned VM bundle to create.")
+        var name: String
+
+        func run() async throws {
+            debugOptions.apply()
+            let service = MacVMService(rootDirectory: storage.resolvedURL)
+            let sourceVM = try service.resolveVM(identifier: source)
+            let reporter = CLIReporter()
+            let clonedVM = try await service.cloneVM(from: sourceVM, named: name) { event in
+                reporter.handle(event)
+            }
+
+            print("Cloned \(sourceVM.metadata.name) to \(clonedVM.metadata.name) at \(clonedVM.bundleURL.path)")
+            print("Run it with: macvm run \(clonedVM.metadata.name)")
         }
     }
 

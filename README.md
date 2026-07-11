@@ -74,9 +74,31 @@ macvm rm dev-01
 
 VMs are stored under `~/VirtualMachines/MacVMHost` by default.
 
+## Clone a VM
+
+After configuring a VM with the accounts and tools you want, stop it and clone
+it instead of installing macOS again:
+
+```bash
+macvm shutdown dev-01
+macvm clone dev-01 --name dev-02
+macvm run dev-02
+```
+
+On APFS, macvm uses copy-on-write clones for the installed disk and other
+files, so the initial clone is fast and shares unchanged storage blocks. Other
+filesystems fall back to ordinary copies. Leave enough free space for both VMs
+to diverge over time.
+
+The clone inherits the guest accounts, tools, hostname, machine identifier,
+SSH state, VM sizing, setup metadata, and shared files. It receives a new
+macvm UUID, creation date, and MAC address. Runtime session files and launch on
+boot are not copied. The source must remain stopped for the duration of the
+clone, and Apple Account services may require reauthentication.
+
 ## MacVM Manager
 
-Open `MacVM Manager` from `/Applications` for a graphical VM manager. It can create VMs, list existing VMs, start viewer windows, run setup, manage restore images, and track Xcode `.xip` archives used for guest provisioning.
+Open `MacVM Manager` from `/Applications` for a graphical VM manager. It can create and clone VMs, list existing VMs, start viewer windows, run setup, manage restore images, and track Xcode `.xip` archives used for guest provisioning. Use the Clone button or a stopped VM's sidebar context menu to create a copy.
 
 ## Automated Setup
 

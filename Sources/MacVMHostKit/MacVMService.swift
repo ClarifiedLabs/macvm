@@ -183,6 +183,63 @@ public final class MacVMService: Sendable {
         return ManagedVM(bundleURL: vm.bundleURL, metadata: updated)
     }
 
+    /// Clone a stopped VM into a new bundle. Persistent guest and platform
+    /// state is copied, while macvm's bundle identity, creation date, network
+    /// identity, and ephemeral runtime descriptors are refreshed.
+    public func cloneVM(
+        from source: ManagedVM,
+        named name: String,
+        progress: VMOperationHandler? = nil
+    ) async throws -> ManagedVM {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw MacVMError.invalidName
+        }
+
+        try storage.ensureRootDirectories()
+        let destinationURL = storage.bundleURL(for: name)
+        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
+            throw MacVMError.bundleAlreadyExists(destinationURL)
+        }
+
+        let sourceBundle = VMBundle(url: source.bundleURL)
+        guard sourceBundle.liveVMProcessRuntimeState() == nil,
+              sourceBundle.liveVNCSession() == nil,
+              sourceBundle.liveDisplayRuntimeState() == nil,
+              sourceBundle.liveSetupRuntimeState() == nil else {
+            throw MacVMError.message(
+                "'\(source.metadata.name)' is running or setting up. Stop it before cloning: macvm stop \(source.metadata.name)"
+            )
+        }
+
+        let temporaryURL = storage.rootDirectory.appendingPathComponent(
+            ".clone-\(sanitizedBundleName(name))-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let sourceURL = source.bundleURL
+        var metadata = source.metadata
+        metadata.id = UUID()
+        metadata.name = name
+        metadata.createdAt = Date()
+        metadata.macAddress = VZMACAddress.randomLocallyAdministered().string
+
+        progress?(.status("Cloning \(source.metadata.name)..."))
+        return try await Task.detached {
+            let fileManager = FileManager.default
+            defer { try? fileManager.removeItem(at: temporaryURL) }
+
+            try MacVMFileStager.copyDirectoryCloneFirst(from: sourceURL, to: temporaryURL)
+            let temporaryBundle = VMBundle(url: temporaryURL)
+            if fileManager.fileExists(atPath: temporaryBundle.runtimeDirectoryURL.path) {
+                try fileManager.removeItem(at: temporaryBundle.runtimeDirectoryURL)
+            }
+            try temporaryBundle.writeMetadata(metadata)
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+
+            progress?(.status("Clone complete."))
+            return ManagedVM(bundleURL: destinationURL, metadata: metadata)
+        }.value
+    }
+
     private static func diskSizeBytes(fromGiB diskGiB: Int) throws -> UInt64 {
         guard diskGiB > 0 else {
             throw MacVMError.invalidDiskGiB(diskGiB)

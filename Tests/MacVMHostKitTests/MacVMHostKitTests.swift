@@ -126,6 +126,147 @@ func fileStagerCopiesWithoutChangingSource() throws {
 }
 
 @Test
+func directoryStagerRecursivelyCopiesWithoutChangingSource() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let source = root.appendingPathComponent("Source", isDirectory: true)
+    let nested = source.appendingPathComponent("Nested", isDirectory: true)
+    let destination = root.appendingPathComponent("Destination", isDirectory: true)
+    try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sourceFile = nested.appendingPathComponent("payload.txt")
+    try Data("original".utf8).write(to: sourceFile)
+    try MacVMFileStager.copyDirectoryCloneFirst(from: source, to: destination)
+
+    let destinationFile = destination
+        .appendingPathComponent("Nested", isDirectory: true)
+        .appendingPathComponent("payload.txt")
+    try Data("changed".utf8).write(to: destinationFile)
+    #expect(try String(contentsOf: sourceFile, encoding: .utf8) == "original")
+    #expect(try String(contentsOf: destinationFile, encoding: .utf8) == "changed")
+}
+
+@Test
+func cloneVMPreservesPersistentStateAndRefreshesHostIdentity() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let sourceURL = root.appendingPathComponent("template.macvm", isDirectory: true)
+    let launchAgentsURL = root.appendingPathComponent("LaunchAgents", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let metadata = VMMetadata(
+        name: "template",
+        createdAt: createdAt,
+        cpuCount: 6,
+        memorySizeBytes: 12 * oneGiB,
+        diskSizeBytes: 80 * oneGiB,
+        displayWidth: 1440,
+        displayHeight: 900,
+        bootstrapShareEnabled: true,
+        installedRestoreImageName: "UniversalMac.ipsw",
+        macAddress: "02:00:00:00:00:01",
+        setupUsername: "developer",
+        setupFullName: "Developer",
+        setupCompletedAt: createdAt
+    )
+    let sourceBundle = VMBundle(url: sourceURL)
+    try sourceBundle.writeMetadata(metadata)
+
+    let persistentFiles: [(URL, Data)] = [
+        (sourceBundle.hardwareModelURL, Data("hardware".utf8)),
+        (sourceBundle.machineIdentifierURL, Data("machine".utf8)),
+        (sourceBundle.auxiliaryStorageURL, Data("auxiliary".utf8)),
+        (sourceBundle.diskImageURL, Data("installed guest".utf8)),
+        (sourceBundle.setupPrivateKeyURL, Data("private key".utf8)),
+        (sourceBundle.setupPublicKeyURL, Data("public key".utf8)),
+        (sourceBundle.transfersDirectoryURL.appendingPathComponent("tool.xip"), Data("tool".utf8)),
+    ]
+    for (url, data) in persistentFiles {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url)
+    }
+    try FileManager.default.createDirectory(at: sourceBundle.runtimeDirectoryURL, withIntermediateDirectories: true)
+    try Data("stale".utf8).write(to: sourceBundle.runtimeDirectoryURL.appendingPathComponent("marker"))
+
+    let service = MacVMService(
+        rootDirectory: root,
+        launchAgentsDirectory: launchAgentsURL,
+        executableURL: URL(fileURLWithPath: "/usr/bin/true")
+    )
+    let source = ManagedVM(bundleURL: sourceURL, metadata: metadata)
+    try service.setLaunchOnBoot(true, for: source)
+
+    let clone = try await service.cloneVM(from: source, named: "fresh")
+    let clonedBundle = VMBundle(url: clone.bundleURL)
+    let clonedMetadata = try clonedBundle.readMetadata()
+
+    #expect(clonedMetadata.id != metadata.id)
+    #expect(clonedMetadata.name == "fresh")
+    #expect(clonedMetadata.createdAt > metadata.createdAt)
+    #expect(clonedMetadata.macAddress != metadata.macAddress)
+    #expect(clonedMetadata.cpuCount == metadata.cpuCount)
+    #expect(clonedMetadata.memorySizeBytes == metadata.memorySizeBytes)
+    #expect(clonedMetadata.diskSizeBytes == metadata.diskSizeBytes)
+    #expect(clonedMetadata.displayWidth == metadata.displayWidth)
+    #expect(clonedMetadata.displayHeight == metadata.displayHeight)
+    #expect(clonedMetadata.bootstrapShareEnabled == metadata.bootstrapShareEnabled)
+    #expect(clonedMetadata.installedRestoreImageName == metadata.installedRestoreImageName)
+    #expect(clonedMetadata.setupUsername == metadata.setupUsername)
+    #expect(clonedMetadata.setupFullName == metadata.setupFullName)
+    #expect(clonedMetadata.setupCompletedAt == metadata.setupCompletedAt)
+    #expect(!FileManager.default.fileExists(atPath: clonedBundle.runtimeDirectoryURL.path))
+    #expect(service.launchOnBootStatus(for: clone).enabled == false)
+
+    for (sourceFile, expectedData) in persistentFiles {
+        let relativePath = String(sourceFile.path.dropFirst(sourceURL.path.count + 1))
+        let clonedFile = clone.bundleURL.appendingPathComponent(relativePath)
+        #expect(try Data(contentsOf: sourceFile) == expectedData)
+        #expect(try Data(contentsOf: clonedFile) == expectedData)
+    }
+}
+
+@Test
+func cloneVMRejectsLiveSourceWithoutCreatingDestination() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let sourceURL = root.appendingPathComponent("running.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let metadata = VMMetadata(
+        name: "running",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        macAddress: "02:00:00:00:00:01"
+    )
+    let bundle = VMBundle(url: sourceURL)
+    try bundle.writeMetadata(metadata)
+    try bundle.writeVNCSession(VNCSession(port: 5901, password: "secret", pid: getpid(), startedAt: Date()))
+
+    let service = MacVMService(rootDirectory: root)
+    let source = ManagedVM(bundleURL: sourceURL, metadata: metadata)
+    do {
+        _ = try await service.cloneVM(from: source, named: "copy")
+        Issue.record("Expected a live source to be rejected")
+    } catch {
+        #expect(error.localizedDescription.contains("Stop it before cloning"))
+    }
+
+    let destination = root.appendingPathComponent("copy.macvm", isDirectory: true)
+    #expect(!FileManager.default.fileExists(atPath: destination.path))
+    let temporaryEntries = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        .filter { $0.hasPrefix(".clone-") }
+    #expect(temporaryEntries.isEmpty)
+}
+
+@Test
 func defaultDraftUsesExpectedSizingDefaults() {
     let service = MacVMService()
     let draft = service.defaultDraft(named: "defaults")

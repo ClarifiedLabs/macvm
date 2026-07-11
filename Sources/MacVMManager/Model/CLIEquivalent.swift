@@ -45,6 +45,10 @@ enum CLIEquivalent {
         "macvm rm \(name)"
     }
 
+    static func clone(_ source: String, name: String) -> String {
+        "macvm clone \(source) --name \(name.isEmpty ? "<name>" : name)"
+    }
+
     static func autostartStatus(_ name: String) -> String {
         "macvm autostart status \(name)"
     }

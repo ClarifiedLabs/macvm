@@ -31,6 +31,14 @@ struct ManagerWindow: View {
         .sheet(isPresented: $store.sheetPresented) {
             CreateVMSheet()
         }
+        .sheet(
+            isPresented: Binding(
+                get: { store.cloneSheetSourceName != nil },
+                set: { if !$0 { store.cloneSheetSourceName = nil } }
+            )
+        ) {
+            CloneVMSheet()
+        }
         .alert(
             "MacVM Manager",
             isPresented: Binding(

@@ -211,3 +211,25 @@ struct InstallingCard: View {
         }
     }
 }
+
+struct CloningCard: View {
+    let clone: CloneProgress
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Cloning to \(clone.destinationName)")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(clone.status)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                ProgressView()
+                    .progressViewStyle(.linear)
+                CLICommandStrip(command: clone.command)
+                    .padding(.top, 2)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}

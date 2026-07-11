@@ -14,6 +14,13 @@ struct SidebarView: View {
                     VMRow(name: name)
                         .tag(SidebarItem.vm(name))
                         .contextMenu {
+                            Button("Clone…") {
+                                if let vm = store.vm(named: name) {
+                                    store.requestClone(vm)
+                                }
+                            }
+                            .disabled(store.status(forName: name) != .stopped)
+
                             Button("Remove…", role: .destructive) {
                                 store.requestRemove(name)
                             }

@@ -19,6 +19,9 @@ struct VMDetailView: View {
                 if status == .installing, let install = store.installs[name] {
                     InstallingCard(install: install)
                 }
+                if status == .cloning, let clone = store.clones[name] {
+                    CloningCard(clone: clone)
+                }
 
                 if let vm {
                     SpecCardsView(vm: vm, status: status)
@@ -56,6 +59,12 @@ struct VMDetailView: View {
         HStack(spacing: 8) {
             switch status {
             case .stopped:
+                Button("Clone…") {
+                    store.requestClone(vm)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+
                 Button("Recovery") {
                     store.runViewer(vm, recovery: true)
                 }
@@ -117,7 +126,7 @@ struct VMDetailView: View {
                 .buttonBorderShape(.capsule)
                 .tint(Theme.stopRed)
 
-            case .installing:
+            case .cloning, .installing:
                 EmptyView()
             }
         }
@@ -340,6 +349,8 @@ struct AccessSectionView: View {
         switch status {
         case .stopped:
             "Start the VM to obtain an IP. For iCloud sign-in, run with the viewer window."
+        case .cloning:
+            "Access remains unavailable while the stopped VM is being cloned."
         case .settingUp:
             "SSH becomes available when setup finishes. Attach to the live session via its vnc:// URL."
         case .installing:

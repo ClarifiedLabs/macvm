@@ -32,4 +32,25 @@ public enum MacVMFileStager {
         }
         try fileManager.moveItem(at: temporaryURL, to: destination)
     }
+
+    /// Recursively copy a directory hierarchy, cloning regular files on
+    /// filesystems that support copy-on-write and falling back to ordinary
+    /// copies everywhere else. The destination must not already exist.
+    public static func copyDirectoryCloneFirst(from sourceURL: URL, to destinationURL: URL) throws {
+        let source = sourceURL.standardizedFileURL
+        let destination = destinationURL.standardizedFileURL
+
+        guard source.path != destination.path else {
+            return
+        }
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw MacVMError.bundleAlreadyExists(destination)
+        }
+
+        let flags = copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_CLONE)
+        guard copyfile(source.path, destination.path, nil, flags) == 0 else {
+            let message = String(cString: strerror(errno))
+            throw MacVMError.message("Couldn't clone directory from \(source.path) to \(destination.path): \(message)")
+        }
+    }
 }

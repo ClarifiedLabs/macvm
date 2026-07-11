@@ -20,6 +20,7 @@ func cliEquivalentRendersFixedActionCommands() {
     #expect(CLIEquivalent.vnc("dev") == "macvm vnc dev")
     #expect(CLIEquivalent.vnc("dev", open: true) == "macvm vnc dev --open")
     #expect(CLIEquivalent.rm("dev") == "macvm rm dev")
+    #expect(CLIEquivalent.clone("dev", name: "dev-copy") == "macvm clone dev --name dev-copy")
     #expect(CLIEquivalent.autostartStatus("dev") == "macvm autostart status dev")
     #expect(CLIEquivalent.autostartEnable("dev") == "macvm autostart enable dev")
     #expect(CLIEquivalent.autostartDisable("dev") == "macvm autostart disable dev")
@@ -160,17 +161,71 @@ func vmStatusDerivationFollowsPrecedence() {
     let display = VMDisplayRuntimeState(width: 1920, height: 1080, source: .viewer, pid: 1, updatedAt: Date())
 
     // In-app operations win over everything.
-    #expect(VMStatus.derive(installing: true, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .installing)
-    #expect(VMStatus.derive(installing: false, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .settingUp)
+    #expect(VMStatus.derive(cloning: true, installing: true, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .cloning)
+    #expect(VMStatus.derive(cloning: false, installing: true, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .installing)
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .settingUp)
 
     // Any liveness signal means running.
-    #expect(VMStatus.derive(installing: false, settingUp: false, viewerActive: true, liveProcess: nil, liveDisplay: nil, liveSession: nil) == .running)
-    #expect(VMStatus.derive(installing: false, settingUp: false, viewerActive: false, liveProcess: process, liveDisplay: nil, liveSession: nil) == .running)
-    #expect(VMStatus.derive(installing: false, settingUp: false, viewerActive: false, liveProcess: nil, liveDisplay: display, liveSession: nil) == .running)
-    #expect(VMStatus.derive(installing: false, settingUp: false, viewerActive: false, liveProcess: nil, liveDisplay: nil, liveSession: session) == .running)
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: false, viewerActive: true, liveProcess: nil, liveDisplay: nil, liveSession: nil) == .running)
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: false, viewerActive: false, liveProcess: process, liveDisplay: nil, liveSession: nil) == .running)
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: false, viewerActive: false, liveProcess: nil, liveDisplay: display, liveSession: nil) == .running)
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: false, viewerActive: false, liveProcess: nil, liveDisplay: nil, liveSession: session) == .running)
 
     // Nothing live → stopped.
-    #expect(VMStatus.derive(installing: false, settingUp: false, viewerActive: false, liveProcess: nil, liveDisplay: nil, liveSession: nil) == .stopped)
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: false, viewerActive: false, liveProcess: nil, liveDisplay: nil, liveSession: nil) == .stopped)
+}
+
+@Test
+func cloneNameSuggestionAvoidsExistingNames() {
+    #expect(AppStore.suggestedCloneName(source: "dev", occupiedNames: []) == "dev-copy")
+    #expect(
+        AppStore.suggestedCloneName(
+            source: "dev",
+            occupiedNames: ["dev-copy", "dev-copy-2", "unrelated"]
+        ) == "dev-copy-3"
+    )
+}
+
+@Test
+@MainActor
+func managerCloneWorkflowSelectsCompletedClone() async throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("template", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "template",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        macAddress: "02:00:00:00:00:01"
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(metadata)
+    try Data("installed guest".utf8).write(to: bundle.diskImageURL)
+
+    let store = AppStore(service: MacVMService(rootDirectory: rootURL))
+    let source = try #require(store.vm(named: "template"))
+    store.requestClone(source)
+    #expect(store.cloneName == "template-copy")
+    store.submitClone()
+
+    for _ in 0..<40 where store.vm(named: "template-copy") == nil && store.alertMessage == nil {
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
+
+    #expect(store.alertMessage == nil)
+    #expect(store.vm(named: "template-copy") != nil)
+    #expect(store.selection == .vm("template-copy"))
+    #expect(store.clones["template"] == nil)
+    #expect(store.lastCommand == "macvm clone template --name template-copy")
 }
 
 @Test

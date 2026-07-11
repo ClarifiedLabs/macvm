@@ -115,6 +115,7 @@ struct StatusDot: View {
         switch status {
         case .running: Color(nsColor: .systemGreen)
         case .settingUp: Color(nsColor: .systemOrange)
+        case .cloning: Color.accentColor
         case .installing: Color.accentColor
         case .stopped: Theme.statusStopped
         }
