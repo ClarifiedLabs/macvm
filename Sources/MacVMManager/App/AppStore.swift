@@ -339,13 +339,10 @@ final class AppStore {
         )
     }
 
-    nonisolated static func shutdownRoute(hasNativeViewer: Bool, hasInProcessRunner: Bool) -> VMShutdownRoute {
-        if hasNativeViewer {
-            return .nativeViewer
-        }
-        if hasInProcessRunner {
-            return .inProcessRunner
-        }
+    nonisolated static func shutdownRoute(hasNativeViewer _: Bool, hasInProcessRunner _: Bool) -> VMShutdownRoute {
+        // `VZVirtualMachine.requestStop()` behaves like pressing the guest's
+        // power button and displays a confirmation dialog. Always use the same
+        // immediate SSH shutdown as the CLI, even when Manager owns the VM.
         return .ssh
     }
 

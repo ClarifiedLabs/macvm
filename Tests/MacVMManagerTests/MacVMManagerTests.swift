@@ -50,9 +50,10 @@ func attachmentRoutingPrefersNativeViewerThenVNC() {
 }
 
 @Test
-func shutdownRoutingUsesDirectOwnersBeforeSSH() {
-    #expect(AppStore.shutdownRoute(hasNativeViewer: true, hasInProcessRunner: true) == .nativeViewer)
-    #expect(AppStore.shutdownRoute(hasNativeViewer: false, hasInProcessRunner: true) == .inProcessRunner)
+func shutdownRoutingAlwaysUsesSSH() {
+    #expect(AppStore.shutdownRoute(hasNativeViewer: true, hasInProcessRunner: true) == .ssh)
+    #expect(AppStore.shutdownRoute(hasNativeViewer: true, hasInProcessRunner: false) == .ssh)
+    #expect(AppStore.shutdownRoute(hasNativeViewer: false, hasInProcessRunner: true) == .ssh)
     #expect(AppStore.shutdownRoute(hasNativeViewer: false, hasInProcessRunner: false) == .ssh)
 }
 

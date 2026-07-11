@@ -51,7 +51,7 @@ struct SetupArguments: ParsableArguments {
     @Option(name: .long, help: "VNC port to use during setup. Defaults to an auto-assigned port.")
     var vncPort: Int?
 
-    @Flag(name: .long, help: "Power the VM off after provisioning instead of leaving it running.")
+    @Flag(name: .long, help: "Shut the guest OS down after provisioning instead of leaving it running.")
     var shutdownAfter = false
 
     @Option(name: .long, help: "Path to a custom setup step-list (JSON) overriding the built-in flow.")
@@ -1435,8 +1435,30 @@ private func performSetup(service: MacVMService, virtualMachine: ManagedVM, opti
     }
 
     if options.shutdownAfter {
-        print("Shutting the VM down.")
-        await runner.stop()
+        guard result.sshReady else {
+            print("Cannot shut the guest down cleanly because SSH is not ready.")
+            print("The VM is still running — inspect it at \(session.vncURLString).")
+            print("Press Ctrl+C to stop it.")
+            fflush(stdout)
+            try await runner.waitUntilStopped()
+            throw ExitCode.failure
+        }
+
+        print("Shutting the guest OS down.")
+        do {
+            let status = try service.shutdownGuest(virtualMachine, user: result.username)
+            guard status == 0 else {
+                throw ValidationError("Shutdown command failed with exit code \(status).")
+            }
+            try await runner.waitUntilStopped()
+        } catch {
+            print("Shutdown failed: \(error.localizedDescription)")
+            print("The VM is still running — inspect it at \(session.vncURLString).")
+            print("Press Ctrl+C to stop it.")
+            fflush(stdout)
+            try await runner.waitUntilStopped()
+            throw ExitCode.failure
+        }
     } else {
         print("VM left running. Press Ctrl+C to stop it.")
         fflush(stdout)

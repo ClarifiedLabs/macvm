@@ -1414,6 +1414,7 @@ func provisioningScriptContainsExpectedCommands() {
     #expect(script.contains("NOPASSWD: ALL"))
     #expect(script.contains("visudo -cf")) // sudoers validated before install
     #expect(script.contains("sysadminctl -autologin set"))
+    #expect(script.contains("defaults write com.apple.loginwindow LoginwindowLaunchesRelaunchApps -bool false"))
     #expect(script.contains("pmset -a sleep 0"))
     #expect(script.contains(GuestProvisioningScript.doneMarker))
 
@@ -1424,6 +1425,7 @@ func provisioningScriptContainsExpectedCommands() {
         passwordFilePath: "/tmp/pw"
     ))
     #expect(!noAutoLogin.contains("sysadminctl -autologin set"))
+    #expect(noAutoLogin.contains("defaults write com.apple.loginwindow LoginwindowLaunchesRelaunchApps -bool false"))
 }
 
 @Test

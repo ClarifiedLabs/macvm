@@ -80,6 +80,9 @@ enum GuestProvisioningScript {
         # Auto-login for an unattended desktop session.
         \(autoLoginBlock)
 
+        # Do not restore the previous desktop session after a macvm shutdown.
+        defaults write com.apple.loginwindow LoginwindowLaunchesRelaunchApps -bool false
+
         # Keep the machine awake and unlocked for CI use.
         echo "$PW" | sudo -S pmset -a sleep 0 displaysleep 0 disksleep 0 2>/dev/null || true
         defaults -currentHost write com.apple.screensaver idleTime 0 2>/dev/null || true
