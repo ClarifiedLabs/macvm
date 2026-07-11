@@ -25,7 +25,7 @@ Python-based Ansible modules such as `ping` require a real Python interpreter in
 
 ## VNC Automation Commands
 
-These commands attach to a live `--headless` or `setup` session:
+These commands attach to the VNC session published by any live viewer, `--headless`, or `setup` owner:
 
 ```bash
 macvm vnc dev-01
@@ -52,7 +52,7 @@ RFB has no request-current-pasteboard message. `pbpaste` and `pbsync <vm> host` 
 
 There is no public API to inject input into a headless macOS guest. MacVM uses the private `_VZVNCServer` in Virtualization.framework through the isolated `MacVMPrivateVZ` target. The shim resolves the symbol at runtime with `NSClassFromString` and fails with a descriptive error if the private API is absent or changed.
 
-`_VZVNCServer` binds all interfaces, so each session uses a random password printed in the `vnc://` URL. Treat a headless VM as reachable from the LAN by anyone with that password.
+`_VZVNCServer` binds all interfaces, so each session uses a random password printed in the `vnc://` URL. Treat every running VM as reachable from the LAN by anyone with that password.
 
 ## Setup Assistant Drift
 

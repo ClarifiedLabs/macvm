@@ -64,6 +64,7 @@ Manage VMs:
 macvm --version
 macvm list
 macvm show dev-01
+macvm attach dev-01
 macvm autostart enable dev-01
 macvm autostart status dev-01
 macvm autostart disable dev-01
@@ -98,7 +99,7 @@ clone, and Apple Account services may require reauthentication.
 
 ## MacVM Manager
 
-Open `MacVM Manager` from `/Applications` for a graphical VM manager. It can create and clone VMs, list existing VMs, start viewer windows, run setup, manage restore images, and track Xcode `.xip` archives used for guest provisioning. Use the Clone button or a stopped VM's sidebar context menu to create a copy.
+Open `MacVM Manager` from `/Applications` for a graphical VM manager. It can create and clone VMs, list existing VMs, start viewer windows, run setup, manage restore images, and track Xcode `.xip` archives used for guest provisioning. Closing a VM display hides it without stopping the VM; use **Attach** to restore a Manager-owned native window or open another running owner in macOS Screen Sharing. Use the Clone button or a stopped VM's sidebar context menu to create a copy.
 
 ## Automated Setup
 
@@ -123,12 +124,17 @@ To install Xcode during setup, pass a local `.xip` archive:
 macvm create --name xcode-02 --setup --xcode ~/Downloads/Xcode_26.3.xip
 ```
 
-## Headless Access
+## Display and VNC Access
 
-Headless runs publish a temporary VNC session so automation commands can attach:
+Every running VM owner publishes a temporary password-protected VNC session. Closing a native viewer window leaves its VM running. Reopen the viewer from its Dock icon, use **Attach** in MacVM Manager, or attach from the CLI:
 
 ```bash
+macvm run dev-02
+macvm attach dev-02
+macvm vnc dev-02
+
 macvm run dev-02 --headless
+macvm attach dev-02
 macvm vnc dev-02
 macvm screenshot dev-02 -o shot.png
 macvm wait-text dev-02 "Continue"
@@ -137,7 +143,7 @@ macvm type dev-02 "hello"
 macvm keys dev-02 return tab
 ```
 
-Headless VNC uses a random password printed in the `vnc://` URL. Treat it as reachable from your local network while the VM is running.
+`macvm attach` prints the live `vnc://` URL and opens it with the system handler; `macvm vnc` remains useful when you only want the URL. The private VNC server binds beyond loopback and uses a random password embedded in that URL. Treat the session as reachable from your local network while the VM is running.
 
 ## Launch On Boot
 

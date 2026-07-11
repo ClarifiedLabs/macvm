@@ -113,9 +113,9 @@ struct ManagerWindow: View {
         guard let action = store.pendingPowerAction else { return "" }
         switch action.kind {
         case .stop:
-            return "The VM owner process will be terminated immediately. Unsaved guest work may be lost."
+            return "The VM will be powered off immediately. Unsaved guest work may be lost."
         case .shutDown:
-            return "The guest will be asked to run sudo shutdown -h now over SSH."
+            return "The guest will be asked to shut down cleanly."
         }
     }
 

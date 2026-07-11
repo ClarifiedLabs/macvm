@@ -4,7 +4,7 @@ import MacVMPrivateVZ
 import Virtualization
 
 /// Boots a VM headlessly (no AppKit window) and publishes a private VNC server so
-/// automation and remote viewers can attach over loopback RFB.
+/// automation and remote viewers can attach over RFB.
 ///
 /// This mirrors `VMViewer`'s VM lifecycle but drops everything AppKit: there is no
 /// `NSApplication`, no window, and no `VZVirtualMachineView`. It relies on the
@@ -33,6 +33,9 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     private var stopContinuation: CheckedContinuation<Void, Error>?
     private var signalSources: [DispatchSourceSignal] = []
     private var finished = false
+
+    /// Called once after the VM and its published runtime state are torn down.
+    public var onStop: (@MainActor () -> Void)?
 
     /// True when the VM was started with native macOS 27 guest provisioning (so the
     /// caller can skip the OCR-driven Setup Assistant flow).
@@ -67,6 +70,10 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         virtualMachine
     }
 
+    public var isFinished: Bool {
+        finished
+    }
+
     /// Build the config, start the VNC server, publish the session, and boot the
     /// VM. Returns once the VM has begun running.
     @discardableResult
@@ -86,7 +93,13 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         self.vncServer = server
         DebugLog.log("VNC server listening on 127.0.0.1:\(boundPort)")
 
-        let session = VNCSession(port: boundPort, password: password, pid: getpid(), startedAt: Date())
+        let session = VNCSession(
+            port: boundPort,
+            password: password,
+            pid: getpid(),
+            startedAt: Date(),
+            ownerRole: processRuntimeRole ?? .headless
+        )
         try bundle.writeVNCSession(session)
         try bundle.writeDisplayRuntimeState(VMDisplayRuntimeState(
             width: managedVM.metadata.displayWidth,
@@ -173,6 +186,14 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         finish(error: nil)
     }
 
+    /// Ask a Manager-owned guest to shut down through Virtualization.framework.
+    public func requestGuestStop() throws {
+        guard let virtualMachine, virtualMachine.state == .running else {
+            throw MacVMError.message("The VM is not running.")
+        }
+        try virtualMachine.requestStop()
+    }
+
     // MARK: - VZVirtualMachineDelegate
 
     nonisolated public func guestDidStop(_ virtualMachine: VZVirtualMachine) {
@@ -202,12 +223,15 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
 
         vncServer?.stop()
         vncServer = nil
+        virtualMachine = nil
         if processRuntimeRole != nil {
             bundle.clearVMProcessRuntimeState()
         }
         bundle.clearSetupRuntimeState()
         bundle.clearVNCSession()
         bundle.clearDisplayRuntimeState()
+
+        onStop?()
 
         if let continuation = stopContinuation {
             stopContinuation = nil

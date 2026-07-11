@@ -6,8 +6,8 @@ import Virtualization
 /// The CLI viewer process: wraps a `VMViewerController` in a full
 /// `NSApplication` lifecycle for `macvm run`. It owns everything that only
 /// makes sense when the viewer is the whole app — the main menu, the parent
-/// process monitor, and process termination when the VM stops or the window
-/// closes. All window/VM behavior lives in the controller.
+/// process monitor, and process termination when the VM stops. Closing the
+/// display only hides it; reopening the Dock app restores it.
 @MainActor
 public final class VMViewer: NSObject, NSApplicationDelegate {
     private let controller: VMViewerController
@@ -73,7 +73,12 @@ public final class VMViewer: NSObject, NSApplicationDelegate {
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
+    }
+
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        controller.showWindow()
+        return true
     }
 
     public func applicationWillTerminate(_ notification: Notification) {

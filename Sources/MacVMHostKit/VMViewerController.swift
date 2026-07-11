@@ -32,7 +32,9 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     public private(set) var window: NSWindow?
     private var displayView: VZVirtualMachineView?
     private var virtualMachine: VZVirtualMachine?
-    private var clipboardVNCServer: MacVMVNCServer?
+    private let processRuntimeRole: VMProcessRuntimeRole?
+    private var vncServer: MacVMVNCServer?
+    private var vncSession: VNCSession?
     private var clipboardTransferInProgress = false
     private var startHeartbeatTimer: Timer?
     private var lastPublishedDisplaySize: DisplayRuntimeSize?
@@ -44,19 +46,19 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     /// closes the window and releases the controller.
     public var onStop: (@MainActor () -> Void)?
 
-    /// When true, closing the window hides it instead, leaving the VM running
-    /// so a host app can re-show it later. The CLI keeps the default (false)
-    /// and terminates when its only window closes.
-    public var hidesWindowOnClose = false
-
-    public init(managedVM: ManagedVM) {
+    public init(managedVM: ManagedVM, processRuntimeRole: VMProcessRuntimeRole? = nil) {
         self.managedVM = managedVM
         self.bundle = VMBundle(url: managedVM.bundleURL)
         self.vmName = managedVM.metadata.name
+        self.processRuntimeRole = processRuntimeRole
     }
 
     public var isRunning: Bool {
         virtualMachine?.state == .running
+    }
+
+    public var isFinished: Bool {
+        finished
     }
 
     /// Build the window (restoring persisted geometry) without starting the VM.
@@ -110,13 +112,20 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         finish()
     }
 
-    /// Persist geometry, drop observers, and clear the published display state.
+    /// Persist geometry, stop VNC, drop observers, and clear published state.
     /// Idempotent; also invoked from the terminal-state path.
     public func tearDown() {
         recordWindowGeometry()
         removeWindowObservers()
         stopHeartbeat()
+        vncServer?.stop()
+        vncServer = nil
+        vncSession = nil
+        bundle.clearVNCSession()
         bundle.clearDisplayRuntimeState()
+        if processRuntimeRole != nil {
+            bundle.clearVMProcessRuntimeState()
+        }
     }
 
     // MARK: - VZVirtualMachineDelegate
@@ -165,11 +174,8 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     }
 
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if hidesWindowOnClose {
-            sender.orderOut(nil)
-            return false
-        }
-        return true
+        sender.orderOut(nil)
+        return false
     }
 
     private func setUpWindow() throws {
@@ -321,6 +327,39 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         self.virtualMachine = virtualMachine
         displayView?.virtualMachine = virtualMachine
 
+        // _VZVNCServer binds all interfaces, so every viewer session must use
+        // a per-run password even when its primary display is a local window.
+        let password = Self.randomVNCPassword()
+        let server = try MacVMVNCServer(virtualMachine: virtualMachine, port: 0, password: password)
+        do {
+            let port = try server.start().intValue
+            vncServer = server
+            let session = VNCSession(
+                port: port,
+                password: password,
+                pid: getpid(),
+                startedAt: Date(),
+                ownerRole: processRuntimeRole ?? .viewer
+            )
+            try bundle.writeVNCSession(session)
+            vncSession = session
+            if let processRuntimeRole {
+                try bundle.writeVMProcessRuntimeState(VMProcessRuntimeState(
+                    role: processRuntimeRole,
+                    pid: getpid(),
+                    startedAt: session.startedAt
+                ))
+            }
+        } catch {
+            server.stop()
+            vncServer = nil
+            bundle.clearVNCSession()
+            bundle.clearVMProcessRuntimeState()
+            displayView?.virtualMachine = nil
+            self.virtualMachine = nil
+            throw error
+        }
+
         let snapshot = snapshot(for: virtualMachine)
         DebugLog.log("Viewer VM canStart=\(snapshot.canStart) currentState=\(describe(snapshot.state))")
 
@@ -453,25 +492,14 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     }
 
     private func withClipboardRFBClient<T>(_ body: (RFBClient) async throws -> T) async throws -> T {
-        guard let virtualMachine else {
-            throw MacVMError.message("The virtual machine is not initialized.")
-        }
-        guard virtualMachine.state == .running else {
+        guard virtualMachine?.state == .running else {
             throw MacVMError.message("The VM must be running before its pasteboard can be accessed.")
         }
-
-        let password = Self.randomClipboardPassword()
-        let server = try MacVMVNCServer(virtualMachine: virtualMachine, port: 0, password: password)
-        let port = try server.start().intValue
-        clipboardVNCServer = server
-        defer {
-            server.stop()
-            if clipboardVNCServer === server {
-                clipboardVNCServer = nil
-            }
+        guard let session = vncSession, let password = session.password else {
+            throw MacVMError.message("The viewer VNC session is unavailable.")
         }
 
-        let client = RFBClient(port: port)
+        let client = RFBClient(port: session.port)
         do {
             try await client.connect(password: password)
             let result = try await body(client)
@@ -495,7 +523,7 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         }
     }
 
-    private static func randomClipboardPassword() -> String {
+    private static func randomVNCPassword() -> String {
         let alphabet = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
         return String((0..<8).map { _ in alphabet[Int.random(in: 0..<alphabet.count)] })
     }

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Descriptor for a live headless VNC session, published to the VM bundle so
+/// Descriptor for a live VNC session, published by every VM owner so
 /// entitlement-free client commands (`screenshot`/`type`/`keys`/…) can attach to
 /// the loopback RFB port without owning the `VZVirtualMachine`.
 public struct VNCSession: Codable, Equatable, Sendable {
@@ -8,12 +8,20 @@ public struct VNCSession: Codable, Equatable, Sendable {
     public var password: String?
     public var pid: Int32
     public var startedAt: Date
+    public var ownerRole: VMProcessRuntimeRole
 
-    public init(port: Int, password: String?, pid: Int32, startedAt: Date) {
+    public init(
+        port: Int,
+        password: String?,
+        pid: Int32,
+        startedAt: Date,
+        ownerRole: VMProcessRuntimeRole = .headless
+    ) {
         self.port = port
         self.password = password
         self.pid = pid
         self.startedAt = startedAt
+        self.ownerRole = ownerRole
     }
 
     /// The loopback `vnc://` URL clients can hand to the system VNC handler.

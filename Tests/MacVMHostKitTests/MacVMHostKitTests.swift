@@ -1535,6 +1535,7 @@ func vncSessionRoundTripsAndReportsLiveness() throws {
     #expect(decoded.port == live.port)
     #expect(decoded.password == live.password)
     #expect(decoded.pid == live.pid)
+    #expect(decoded.ownerRole == .headless)
     #expect(abs(decoded.startedAt.timeIntervalSince(live.startedAt)) < 1)
     #expect(bundle.liveVNCSession()?.pid == live.pid)
 
@@ -1677,6 +1678,84 @@ func stopVMUsesLiveVNCSessionOwnerWhenProcessStateIsMissing() throws {
     }
 
     #expect(didThrow)
+}
+
+@Test
+func stopVMRefusesToTerminateManagerOwner() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("dev-01", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "dev-01",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(metadata)
+    try bundle.writeVMProcessRuntimeState(VMProcessRuntimeState(
+        role: .manager,
+        pid: getpid(),
+        startedAt: Date()
+    ))
+
+    let service = MacVMService(rootDirectory: rootURL)
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    #expect(throws: MacVMError.self) {
+        _ = try service.stopVM(vm)
+    }
+    do {
+        _ = try service.stopVM(vm)
+        Issue.record("Expected Manager owner refusal")
+    } catch {
+        #expect(error.localizedDescription.contains("Refusing to terminate MacVM Manager"))
+    }
+}
+
+@Test
+func stopVMRefusesManagerOwnerFromVNCSessionFallback() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("dev-01", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "dev-01",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeVNCSession(VNCSession(
+        port: 5901,
+        password: "secret42",
+        pid: getpid(),
+        startedAt: Date(),
+        ownerRole: .manager
+    ))
+
+    let service = MacVMService(rootDirectory: rootURL)
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    do {
+        _ = try service.stopVM(vm)
+        Issue.record("Expected Manager owner refusal")
+    } catch {
+        #expect(error.localizedDescription.contains("Refusing to terminate MacVM Manager"))
+    }
 }
 
 @Test

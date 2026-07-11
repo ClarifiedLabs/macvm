@@ -48,6 +48,18 @@ struct PendingPowerAction: Equatable {
     var name: String
 }
 
+enum VMAttachmentRoute: Equatable {
+    case nativeViewer
+    case vnc(String)
+    case unavailable(String)
+}
+
+enum VMShutdownRoute: Equatable {
+    case nativeViewer
+    case inProcessRunner
+    case ssh
+}
+
 /// Single source of truth for the manager window: the VM list, per-VM liveness,
 /// in-app operations (install / setup / viewer windows), the create-sheet draft,
 /// and the CLI-equivalent bar.
@@ -165,6 +177,18 @@ final class AppStore {
     }
 
     func refresh() {
+        // Terminal callbacks normally remove local owners immediately. This is
+        // a defensive reconciliation in case a callback was missed.
+        let finishedViewerNames = viewers.compactMap { $0.value.isFinished ? $0.key : nil }
+        for name in finishedViewerNames {
+            viewers[name] = nil
+        }
+        let finishedRunnerNames = headlessRunners.compactMap { $0.value.isFinished ? $0.key : nil }
+        for name in finishedRunnerNames {
+            headlessRunners[name] = nil
+            setups[name] = nil
+        }
+
         vms = (try? service.listVMs()) ?? []
 
         var processes: [String: VMProcessRuntimeState] = [:]
@@ -299,6 +323,53 @@ final class AppStore {
         lastCommand = CLIEquivalent.vnc(name, open: true)
     }
 
+    nonisolated static func attachmentRoute(
+        hasNativeViewer: Bool,
+        session: VNCSession?,
+        vmName: String
+    ) -> VMAttachmentRoute {
+        if hasNativeViewer {
+            return .nativeViewer
+        }
+        if let session {
+            return .vnc(session.vncURLString)
+        }
+        return .unavailable(
+            "\(vmName) is marked as running, but its owner has not published an attachable VNC session. Confirm the owner is still running, then restart the VM if needed."
+        )
+    }
+
+    nonisolated static func shutdownRoute(hasNativeViewer: Bool, hasInProcessRunner: Bool) -> VMShutdownRoute {
+        if hasNativeViewer {
+            return .nativeViewer
+        }
+        if hasInProcessRunner {
+            return .inProcessRunner
+        }
+        return .ssh
+    }
+
+    func attach(_ vm: ManagedVM) {
+        let name = vm.metadata.name
+        let route = Self.attachmentRoute(
+            hasNativeViewer: viewers[name] != nil,
+            session: liveSessions[name] ?? service.liveVNCSession(for: vm),
+            vmName: name
+        )
+        lastCommand = CLIEquivalent.attach(name)
+        switch route {
+        case .nativeViewer:
+            viewers[name]?.showWindow()
+        case .vnc(let vncURL):
+            guard let url = URL(string: vncURL), NSWorkspace.shared.open(url) else {
+                alertMessage = "Unable to open \(vncURL) with the system default handler."
+                return
+            }
+        case .unavailable(let message):
+            alertMessage = message
+        }
+    }
+
     // MARK: - Run / viewer / power
 
     func runViewer(_ vm: ManagedVM, recovery: Bool = false) {
@@ -308,8 +379,7 @@ final class AppStore {
             return
         }
         do {
-            let controller = VMViewerController(managedVM: vm)
-            controller.hidesWindowOnClose = true
+            let controller = VMViewerController(managedVM: vm, processRuntimeRole: .manager)
             controller.onStop = { [weak self] in
                 guard let self else { return }
                 self.viewers[name]?.window?.orderOut(nil)
@@ -441,6 +511,30 @@ final class AppStore {
     private func shutDown(_ vm: ManagedVM) {
         let name = vm.metadata.name
         lastCommand = CLIEquivalent.shutDown(name)
+
+        switch Self.shutdownRoute(
+            hasNativeViewer: viewers[name] != nil,
+            hasInProcessRunner: headlessRunners[name] != nil
+        ) {
+        case .nativeViewer:
+            guard let controller = viewers[name] else { return }
+            do {
+                try controller.requestGuestStop()
+            } catch {
+                alertMessage = "Failed to shut down \(name): \(error.localizedDescription)"
+            }
+            return
+        case .inProcessRunner:
+            guard let runner = headlessRunners[name] else { return }
+            do {
+                try runner.requestGuestStop()
+            } catch {
+                alertMessage = "Failed to shut down \(name): \(error.localizedDescription)"
+            }
+            return
+        case .ssh:
+            break
+        }
 
         let service = self.service
         Task { @MainActor in
@@ -679,8 +773,16 @@ final class AppStore {
             requestedPort: options.requestedVNCPort,
             forceSharedDirectory: true,
             nativeProvisioning: options,
-            installSignalHandlers: false
+            installSignalHandlers: false,
+            processRuntimeRole: .manager
         )
+
+        runner.onStop = { [weak self] in
+            guard let self else { return }
+            self.headlessRunners[name] = nil
+            self.setups[name] = nil
+            self.refresh()
+        }
 
         do {
             let session = try runner.start()

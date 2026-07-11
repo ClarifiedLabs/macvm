@@ -322,9 +322,9 @@ public final class MacVMService: Sendable {
         )
     }
 
-    // MARK: - VNC client primitives (attach to a live headless session)
+    // MARK: - VNC client primitives (attach to any live VM session)
 
-    /// The live VNC session for the VM, if a headless process is currently serving it.
+    /// The live VNC session for the VM, if its owner is currently serving it.
     public func liveVNCSession(for vm: ManagedVM) -> VNCSession? {
         VMBundle(url: vm.bundleURL).liveVNCSession()
     }
@@ -337,6 +337,15 @@ public final class MacVMService: Sendable {
     /// The live process that owns the VM, if it was launched as a single-VM owner.
     public func liveVMProcessRuntimeState(for vm: ManagedVM) -> VMProcessRuntimeState? {
         VMBundle(url: vm.bundleURL).liveVMProcessRuntimeState()
+    }
+
+    /// Whether any live runtime marker shows that a process currently owns the VM.
+    public func hasLiveRuntime(for vm: ManagedVM) -> Bool {
+        let bundle = VMBundle(url: vm.bundleURL)
+        return bundle.liveVMProcessRuntimeState() != nil
+            || bundle.liveVNCSession() != nil
+            || bundle.liveDisplayRuntimeState() != nil
+            || bundle.liveSetupRuntimeState() != nil
     }
 
     /// The live setup operation for the VM, if a setup driver is currently running.
@@ -356,6 +365,10 @@ public final class MacVMService: Sendable {
         let bundle = VMBundle(url: vm.bundleURL)
         guard let process = liveOwnerProcessRuntimeState(in: bundle) else {
             throw MacVMError.message("No live VM process for '\(vm.metadata.name)'.")
+        }
+
+        guard process.role != .manager else {
+            throw MacVMError.message("Refusing to terminate MacVM Manager for '\(vm.metadata.name)'. Stop this Manager-owned VM from MacVM Manager.")
         }
 
         guard process.pid != getpid() else {
@@ -393,7 +406,7 @@ public final class MacVMService: Sendable {
         }
 
         if let session = bundle.liveVNCSession() {
-            return VMProcessRuntimeState(role: .headless, pid: session.pid, startedAt: session.startedAt)
+            return VMProcessRuntimeState(role: session.ownerRole, pid: session.pid, startedAt: session.startedAt)
         }
 
         if let setup = bundle.liveSetupRuntimeState() {
@@ -424,10 +437,10 @@ public final class MacVMService: Sendable {
         )
     }
 
-    /// The `vnc://` URL for a live headless session, or a descriptive error if none.
+    /// The `vnc://` URL for any live VM session, or a descriptive error if none.
     public func vncURL(for vm: ManagedVM) throws -> String {
         guard let session = liveVNCSession(for: vm) else {
-            throw MacVMError.message("No live VNC session for '\(vm.metadata.name)'. Start one with: macvm run \(vm.metadata.name) --headless")
+            throw MacVMError.message("No attachable VNC session for '\(vm.metadata.name)'. Confirm the VM owner is still running, then restart the VM if needed.")
         }
         return session.vncURLString
     }

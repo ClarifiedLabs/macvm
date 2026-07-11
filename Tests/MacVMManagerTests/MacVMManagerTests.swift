@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 import Testing
@@ -13,6 +14,7 @@ func cliEquivalentRendersFixedActionCommands() {
     #expect(CLIEquivalent.run("dev") == "macvm run dev")
     #expect(CLIEquivalent.run("dev", recovery: true) == "macvm run dev --recovery")
     #expect(CLIEquivalent.stop("dev") == "macvm stop dev")
+    #expect(CLIEquivalent.attach("dev") == "macvm attach dev")
     #expect(CLIEquivalent.shutDown("dev") == "macvm shutdown dev")
     #expect(CLIEquivalent.ip("dev") == "macvm ip dev")
     #expect(CLIEquivalent.ssh("dev") == "macvm ssh dev")
@@ -24,6 +26,101 @@ func cliEquivalentRendersFixedActionCommands() {
     #expect(CLIEquivalent.autostartStatus("dev") == "macvm autostart status dev")
     #expect(CLIEquivalent.autostartEnable("dev") == "macvm autostart enable dev")
     #expect(CLIEquivalent.autostartDisable("dev") == "macvm autostart disable dev")
+}
+
+@Test
+func attachmentRoutingPrefersNativeViewerThenVNC() {
+    let session = VNCSession(port: 5901, password: "secret42", pid: getpid(), startedAt: Date())
+
+    #expect(
+        AppStore.attachmentRoute(hasNativeViewer: true, session: session, vmName: "dev")
+            == .nativeViewer
+    )
+    #expect(
+        AppStore.attachmentRoute(hasNativeViewer: false, session: session, vmName: "dev")
+            == .vnc(session.vncURLString)
+    )
+    let unavailable = AppStore.attachmentRoute(hasNativeViewer: false, session: nil, vmName: "dev")
+    guard case .unavailable(let message) = unavailable else {
+        Issue.record("Expected unavailable attachment route")
+        return
+    }
+    #expect(message.contains("marked as running"))
+    #expect(message.contains("restart the VM"))
+}
+
+@Test
+func shutdownRoutingUsesDirectOwnersBeforeSSH() {
+    #expect(AppStore.shutdownRoute(hasNativeViewer: true, hasInProcessRunner: true) == .nativeViewer)
+    #expect(AppStore.shutdownRoute(hasNativeViewer: false, hasInProcessRunner: true) == .inProcessRunner)
+    #expect(AppStore.shutdownRoute(hasNativeViewer: false, hasInProcessRunner: false) == .ssh)
+}
+
+@Test
+@MainActor
+func viewerCloseHidesWindowAndShowRestoresIt() throws {
+    _ = NSApplication.shared
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL.appendingPathComponent("dev.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "dev",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let controller = VMViewerController(managedVM: ManagedVM(bundleURL: bundleURL, metadata: metadata))
+    let window = try controller.makeWindow()
+    window.makeKeyAndOrderFront(nil)
+    #expect(window.isVisible)
+
+    #expect(controller.windowShouldClose(window) == false)
+    #expect(!window.isVisible)
+    #expect(!controller.isFinished)
+
+    controller.showWindow()
+    #expect(window.isVisible)
+    #expect(controller.window === window)
+    window.orderOut(nil)
+    controller.tearDown()
+}
+
+@Test
+@MainActor
+func viewerTeardownClearsPublishedVNCAndManagerRuntime() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL.appendingPathComponent("dev.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "dev",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeVNCSession(VNCSession(port: 5901, password: "secret42", pid: getpid(), startedAt: Date()))
+    try bundle.writeVMProcessRuntimeState(VMProcessRuntimeState(role: .manager, pid: getpid(), startedAt: Date()))
+
+    let controller = VMViewerController(
+        managedVM: ManagedVM(bundleURL: bundleURL, metadata: metadata),
+        processRuntimeRole: .manager
+    )
+    controller.tearDown()
+
+    #expect(bundle.readVNCSession() == nil)
+    #expect(bundle.readVMProcessRuntimeState() == nil)
 }
 
 @Test

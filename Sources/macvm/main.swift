@@ -316,6 +316,8 @@ enum VMOwnerProcessEnvironment {
             basename = "viewer.log"
         case .headless:
             basename = "headless.log"
+        case .manager:
+            basename = "manager.log"
         }
         return runtimeDirectory.appendingPathComponent(basename, isDirectory: false)
     }
@@ -355,6 +357,7 @@ struct MacVMCommand: AsyncParsableCommand {
             Create.self,
             Clone.self,
             Run.self,
+            Attach.self,
             Stop.self,
             Autostart.self,
             Shutdown.self,
@@ -740,7 +743,7 @@ extension MacVMCommand {
                 return
             }
 
-            if service.liveVMProcessRuntimeState(for: resolved) != nil {
+            if service.hasLiveRuntime(for: resolved) {
                 throw ValidationError("'\(resolved.metadata.name)' is already running. Stop it first with: macvm stop \(resolved.metadata.name)")
             }
 
@@ -783,7 +786,7 @@ extension MacVMCommand {
         }
 
         private func launchHeadlessOwner(service: MacVMService, virtualMachine: ManagedVM) async throws {
-            if service.liveVMProcessRuntimeState(for: virtualMachine) != nil {
+            if service.hasLiveRuntime(for: virtualMachine) {
                 throw ValidationError("'\(virtualMachine.metadata.name)' is already running. Stop it first with: macvm stop \(virtualMachine.metadata.name)")
             }
 
@@ -846,6 +849,36 @@ extension MacVMCommand {
             let virtualMachine = try service.resolveVM(identifier: identifier)
             let process = try service.stopVM(virtualMachine)
             print("Stopped \(virtualMachine.metadata.name) (pid \(process.pid)).")
+        }
+    }
+
+    struct Attach: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Open the display of a running VM in macOS Screen Sharing."
+        )
+
+        @OptionGroup var storage: StorageOptions
+        @OptionGroup var debugOptions: DebugOptions
+
+        @Argument(help: "VM name, bundle basename, or full bundle path.")
+        var identifier: String
+
+        func run() async throws {
+            debugOptions.apply()
+            let service = MacVMService(rootDirectory: storage.resolvedURL)
+            let virtualMachine = try service.resolveVM(identifier: identifier)
+            let vncURL = try service.vncURL(for: virtualMachine)
+            print(vncURL)
+
+            guard let url = URL(string: vncURL) else {
+                throw ValidationError("Invalid VNC URL: \(vncURL)")
+            }
+            let opened = await MainActor.run {
+                NSWorkspace.shared.open(url)
+            }
+            guard opened else {
+                throw ValidationError("Unable to open \(vncURL) with the system default handler.")
+            }
         }
     }
 
@@ -1137,7 +1170,7 @@ extension MacVMCommand {
     }
 
     struct VNC: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Print or open the VNC URL for a live headless session.")
+        static let configuration = CommandConfiguration(abstract: "Print or open the VNC URL for a running VM.")
 
         @OptionGroup var storage: StorageOptions
         @OptionGroup var debugOptions: DebugOptions
@@ -1175,7 +1208,7 @@ extension MacVMCommand {
     }
 
     struct Screenshot: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Capture the guest screen (PNG) from a live headless session.")
+        static let configuration = CommandConfiguration(abstract: "Capture the guest screen (PNG) from a live VNC session.")
 
         @OptionGroup var storage: StorageOptions
         @OptionGroup var debugOptions: DebugOptions

@@ -81,13 +81,13 @@ struct VMDetailView: View {
                 .tint(Theme.runGreen)
 
             case .running:
-                if store.hasViewer(forName: name) {
-                    Button("Open Viewer") {
-                        store.openViewer(vm)
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
+                Button {
+                    store.attach(vm)
+                } label: {
+                    Label("Attach", systemImage: "display")
                 }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
 
                 Button {
                     store.requestShutDown(vm)
@@ -108,6 +108,14 @@ struct VMDetailView: View {
                 .tint(Theme.stopRed)
 
             case .settingUp:
+                Button {
+                    store.attach(vm)
+                } label: {
+                    Label("Attach", systemImage: "display")
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+
                 Button {
                     store.requestShutDown(vm)
                 } label: {

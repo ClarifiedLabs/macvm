@@ -20,6 +20,10 @@ enum CLIEquivalent {
         "macvm stop \(name)"
     }
 
+    static func attach(_ name: String) -> String {
+        "macvm attach \(name)"
+    }
+
     static func shutDown(_ name: String) -> String {
         "macvm shutdown \(name)"
     }

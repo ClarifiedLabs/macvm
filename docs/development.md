@@ -63,8 +63,8 @@ The Xcode project owns the release version through `MARKETING_VERSION`.
 
 ## Runtime Ownership Invariants
 
-Only `run --headless` and `setup` own a `VZVirtualMachine`. Entitlement-free client commands such as `screenshot`, `type`, `keys`, `vnc`, `wait-text`, and `click-text` attach to the live `Runtime/vnc-session.json` over loopback RFB and should error if no session is live.
+`run`, `run --headless`, and `setup` own a `VZVirtualMachine`. Every owner publishes a password-protected `Runtime/vnc-session.json`. Entitlement-free client commands such as `attach`, `screenshot`, `type`, `keys`, `vnc`, `wait-text`, and `click-text` attach to that live session over loopback RFB and should error if no session is live. The private server itself binds beyond loopback, so the password is mandatory.
 
-`MacVM Manager` hosts VMs in-process through `VMViewerController`, `HeadlessRunner`, and `MacVMService.provisionSetup`. `VMViewer` remains the CLI child-process wrapper around `VMViewerController`; keep `macvm run` behavior identical when touching either.
+`MacVM Manager` hosts VMs in-process through `VMViewerController`, `HeadlessRunner`, and `MacVMService.provisionSetup`. These runtimes use the `manager` owner role so an external `macvm stop` never terminates the multi-VM app. Manager power actions call the specific in-process owner. `VMViewer` remains the CLI child-process wrapper around `VMViewerController`; keep `macvm run` behavior identical when touching either. Native display close requests always hide the window without ending the VM.
 
 All private Virtualization.framework symbols must stay isolated in `Sources/MacVMPrivateVZ/` and be resolved at runtime.
