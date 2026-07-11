@@ -138,10 +138,11 @@ struct CLIBadge: View {
 
 struct CLICommandText: View {
     let command: String
-    var lineLimit = 1
+    var lineLimit: Int? = 1
+    var formatsLongCommands = false
 
     var body: some View {
-        Text("$ \(command)")
+        Text("$ \(formatsLongCommands ? CLICommandFormatter.multiline(command) : command)")
             .font(.system(size: 11.5, design: .monospaced))
             .textSelection(.enabled)
             .lineLimit(lineLimit)
@@ -149,14 +150,46 @@ struct CLICommandText: View {
     }
 }
 
+/// Breaks long generated commands between option/value groups while leaving
+/// the original one-line command untouched for copying and execution.
+enum CLICommandFormatter {
+    static func multiline(_ command: String, maximumLineLength: Int = 100) -> String {
+        guard command.count > maximumLineLength else {
+            return command
+        }
+
+        let parts = command.components(separatedBy: " --")
+        guard parts.count > 1 else {
+            return command
+        }
+
+        var lines: [String] = []
+        var line = parts[0]
+        for part in parts.dropFirst() {
+            let option = "--\(part)"
+            if line.count + 1 + option.count <= maximumLineLength {
+                line += " \(option)"
+            } else {
+                lines.append("\(line) \\")
+                line = "  \(option)"
+            }
+        }
+        lines.append(line)
+        return lines.joined(separator: "\n")
+    }
+}
+
 struct CLICommandStrip: View {
     let command: String
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             CLIBadge()
-            CLICommandText(command: command, lineLimit: 1)
-            Spacer(minLength: 0)
+                .padding(.top, 1)
+            CLICommandText(command: command, lineLimit: nil, formatsLongCommands: true)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            CopyButton(key: "cli-command-\(command)", text: command)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -171,10 +204,12 @@ struct CLIBar: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             CLIBadge()
-            CLICommandText(command: store.lastCommand)
-            Spacer(minLength: 12)
+                .padding(.top, 1)
+            CLICommandText(command: store.lastCommand, lineLimit: nil, formatsLongCommands: true)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             CopyButton(key: "cli-bar", text: store.lastCommand)
         }
         .padding(.horizontal, 16)

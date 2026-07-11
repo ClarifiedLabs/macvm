@@ -47,6 +47,19 @@ func cliEquivalentRendersProvisioningProfilesAndInputs() {
 }
 
 @Test
+func longCLICommandsWrapBetweenOptionGroups() {
+    let command = "macvm create --name test1 --setup --xcode ~/VirtualMachines/MacVMHost/.xcode/Xcode_26.6_Apple_silicon.xip --profile apple-development --profile github-runner"
+    let expected = [
+        "macvm create --name test1 --setup \\",
+        "  --xcode ~/VirtualMachines/MacVMHost/.xcode/Xcode_26.6_Apple_silicon.xip \\",
+        "  --profile apple-development --profile github-runner",
+    ].joined(separator: "\n")
+
+    #expect(CLICommandFormatter.multiline(command, maximumLineLength: 80) == expected)
+    #expect(CLICommandFormatter.multiline("macvm clone dev --name copy", maximumLineLength: 80) == "macvm clone dev --name copy")
+}
+
+@Test
 func attachmentRoutingPrefersNativeViewerThenVNC() {
     let session = VNCSession(port: 5901, password: "secret42", pid: getpid(), startedAt: Date())
 

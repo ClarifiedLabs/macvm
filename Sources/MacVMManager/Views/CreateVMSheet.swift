@@ -143,15 +143,7 @@ struct CreateVMSheet: View {
                 }
             }
 
-            Text("$ \(store.createCommandPreview)")
-                .font(.system(size: 11.5, design: .monospaced))
-                .textSelection(.enabled)
-                .lineLimit(2)
-                .padding(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.cliBarBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.hairline))
+            CLICommandStrip(command: store.createCommandPreview)
 
             HStack {
                 Spacer()

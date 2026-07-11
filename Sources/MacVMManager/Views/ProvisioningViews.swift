@@ -209,6 +209,8 @@ struct ProvisioningSectionView: View {
                         .disabled(status != .running || store.provisioningStatus[vm.metadata.name] != nil)
                         .help(status == .running ? "Apply provisioning profiles" : "Start the VM before provisioning")
                 }
+                .padding(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
