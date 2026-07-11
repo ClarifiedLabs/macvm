@@ -146,6 +146,24 @@ func locationServicesPaneIsNotShadowedByItsConfirmationDialog() throws {
     ])
     let (modalDecision, _) = SetupPolicy.decide(target: accountTarget, screen: confirmation, state: SetupPolicy.PolicyState())
     #expect(actLadderKey(modalDecision) == "modal:Location Services confirmation")
+
+    let wrappedConfirmation = screen([
+        obs("Enable Location Services", 900, 300, 400, 36),
+        obs("Are you sure you don't want to", 1050, 600, 360, 26),
+        obs("Don't Use", 1180, 720, 110, 30),
+        obs("Use Location Services", 1330, 720, 180, 30),
+    ])
+    let (wrappedDecision, _) = SetupPolicy.decide(
+        target: accountTarget,
+        screen: wrappedConfirmation,
+        state: SetupPolicy.PolicyState()
+    )
+    #expect(actLadderKey(wrappedDecision) == "modal:Location Services confirmation")
+    guard case .clickMatch(let match) = try #require(actTactic(wrappedDecision)?.atoms.first) else {
+        Issue.record("expected the wrapped modal button to be pre-resolved, got \(wrappedDecision)")
+        return
+    }
+    #expect(match.text == "Don't Use")
 }
 
 @Test

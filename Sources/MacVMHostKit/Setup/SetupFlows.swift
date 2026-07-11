@@ -95,9 +95,6 @@ public enum SetupFlows {
         func firstIndex(_ action: SetupStep.Action, containing marker: String) -> Int? {
             steps.firstIndex { $0.action == action && ($0.text?.contains(marker) ?? false) }
         }
-        func firstIndex(_ action: SetupStep.Action, whenContaining marker: String) -> Int? {
-            steps.firstIndex { $0.action == action && ($0.whenText?.contains(marker) ?? false) }
-        }
         func lastIndex(_ action: SetupStep.Action, containing marker: String) -> Int? {
             steps.lastIndex { $0.action == action && ($0.text?.contains(marker) ?? false) }
         }
@@ -107,12 +104,18 @@ public enum SetupFlows {
             SetupPhase(id: 1, title: "Language and region", anchor: #"waitText "Language|Hello""#, firstStepIndex: steps.isEmpty ? nil : 0),
             SetupPhase(id: 2, title: "Setup Assistant panes before account", anchor: #"advanceUntilText "Create a.*Account""#, firstStepIndex: firstIndex(.advanceUntilText, containing: "Create a")),
             SetupPhase(id: 3, title: "Create admin account", anchor: #"clickText "Full Name""#, firstStepIndex: firstIndex(.waitText, containing: "Create a")),
-            SetupPhase(id: 4, title: "Handle FileVault prompt", anchor: #"FileVault -> "Not Now""#, firstStepIndex: firstIndex(.clickTextWhenText, whenContaining: "FileVault")),
-            SetupPhase(id: 5, title: "Finish Setup Assistant panes", anchor: #"advanceUntilText "Finder|Enter Password""#, firstStepIndex: firstIndex(.advanceUntilText, containing: "Enter Password")),
-            SetupPhase(id: 6, title: "Log in if required", anchor: #"whenText "Enter Password""#, firstStepIndex: firstIndex(.type, whenContaining: "Enter Password")),
-            SetupPhase(id: 7, title: "Reach the desktop", anchor: #"advanceUntilText "Finder""#, firstStepIndex: lastIndex(.advanceUntilText, containing: "Finder")),
-            SetupPhase(id: 8, title: "Enable SSH, install per-VM key", anchor: provisioningAnchor, firstStepIndex: nil),
-            SetupPhase(id: 9, title: "Wait for IP and SSH", anchor: sshReadyAnchor, firstStepIndex: nil),
+            SetupPhase(id: 4, title: "Finish Setup Assistant panes", anchor: #"advanceUntilText "Finder|Enter Password""#, firstStepIndex: firstIndex(.advanceUntilText, containing: "Enter Password")),
+            SetupPhase(
+                id: 5,
+                title: "Log in if required",
+                anchor: #"whenText "Enter Password""#,
+                firstStepIndex: steps.firstIndex {
+                    $0.action == .type && ($0.whenText?.contains("Enter Password") ?? false)
+                }
+            ),
+            SetupPhase(id: 6, title: "Reach the desktop", anchor: #"advanceUntilText "Finder""#, firstStepIndex: lastIndex(.advanceUntilText, containing: "Finder")),
+            SetupPhase(id: 7, title: "Enable SSH, install per-VM key", anchor: provisioningAnchor, firstStepIndex: nil),
+            SetupPhase(id: 8, title: "Wait for IP and SSH", anchor: sshReadyAnchor, firstStepIndex: nil),
         ]
 
         if includeXcodeInstall {
@@ -197,20 +200,16 @@ public enum SetupFlows {
             .repairAccountPasswordMismatch(options.password),
             .delay(4),
 
-            // 7. FileVault can appear between account creation and Apple Account.
-            //     Its confirmation dialog leaves background buttons visible to OCR,
-            //     so click these only when the FileVault prompt text is present.
-            .clickText("Not Now", whenText: "Your Mac is Ready for FileVault|FileVault", timeout: 25, optional: true),
-            .clickText("^Continue$", whenText: "Mac Data Will Not Be Securely Encrypted|Securely Encrypted", timeout: 20, optional: true),
-            .delay(3),
-
-            // 8. Late Setup Assistant panes drift the most across releases.
-            //     Instead of paying one timeout per possible pane, repeatedly OCR
-            //     the current screenshot and click the safest visible advancement
-            //     button until either the login window or Finder appears.
+            // 7. Late Setup Assistant panes drift and reorder the most across
+            //    releases. FileVault may appear before or after Apple Account,
+            //    so it belongs in this screenshot-driven dispatcher instead of
+            //    an ordered conditional step that waits for it prematurely.
+            //    Instead of paying one timeout per possible pane, repeatedly OCR
+            //    the current screenshot and click the safest visible advancement
+            //    button until either the login window or Finder appears.
             .advanceUntilText("Finder|\(loginWindowText)", timeout: 300),
 
-            // 9. Some builds land at the login window, while others auto-login
+            // 8. Some builds land at the login window, while others auto-login
             //     straight to Finder. Only type the password if a login window is
             //     actually visible.
             .clickText("Enter Password|Password", whenText: loginWindowText, timeout: 5, optional: true),
@@ -225,7 +224,7 @@ public enum SetupFlows {
             .keys(["return"], whenText: loginWindowText, timeout: 5, optional: true),
             .delay(8),
 
-            // 10. Per-user first-login setup can still insert panes after login.
+            // 9. Per-user first-login setup can still insert panes after login.
             //     Keep driving from screenshots until Finder is visible.
             // Plain substring (no ^$ anchors): Vision sometimes merges adjacent
             // menu-bar titles into one observation ("Finder File Edit …").

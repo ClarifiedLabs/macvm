@@ -239,7 +239,11 @@ enum SetupPolicy {
         ),
         ModalRule(
             title: "Location Services confirmation",
-            anchors: ["don.t want to use Location"],
+            // Tahoe frequently OCRs only the first wrapped title line
+            // ("Are you sure you don't want to") and drops the following
+            // "use Location Services?" line entirely. This phrase is unique
+            // to the confirmation and cannot shadow the underlying pane.
+            anchors: ["sure you don.t want to"],
             button: "Don.t Use"
         ),
         ModalRule(

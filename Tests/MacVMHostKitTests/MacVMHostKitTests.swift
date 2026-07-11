@@ -966,14 +966,13 @@ func setupFlowDrivesEarlyOnboardingPanesReactivelyBeforeAccountCreation() throws
 func setupPlanExposesPhasesWithAnchors() {
     let plan = SetupFlows.plan(forMacOSMajor: 26, options: SetupOptions())
 
-    #expect(plan.phases.count == 10)
-    #expect(plan.phases.map(\.id) == Array(0..<10))
+    #expect(plan.phases.count == 9)
+    #expect(plan.phases.map(\.id) == Array(0..<9))
     #expect(plan.phases.map(\.title) == [
         "Boot headless, connect RFB client",
         "Language and region",
         "Setup Assistant panes before account",
         "Create admin account",
-        "Handle FileVault prompt",
         "Finish Setup Assistant panes",
         "Log in if required",
         "Reach the desktop",
@@ -981,17 +980,16 @@ func setupPlanExposesPhasesWithAnchors() {
         "Wait for IP and SSH",
     ])
     #expect(plan.phases[2].anchor == #"advanceUntilText "Create a.*Account""#)
-    #expect(plan.phases[4].anchor == #"FileVault -> "Not Now""#)
-    #expect(plan.phases[5].anchor == #"advanceUntilText "Finder|Enter Password""#)
-    #expect(plan.phases[9].anchor == "dhcpd_leases")
+    #expect(plan.phases[4].anchor == #"advanceUntilText "Finder|Enter Password""#)
+    #expect(plan.phases[8].anchor == "dhcpd_leases")
 
     // Pipeline-owned phases carry no step index; OCR phases point into the flow
     // in step order.
     #expect(plan.phases[0].firstStepIndex == nil)
+    #expect(plan.phases[7].firstStepIndex == nil)
     #expect(plan.phases[8].firstStepIndex == nil)
-    #expect(plan.phases[9].firstStepIndex == nil)
     let stepIndexes = plan.phases.compactMap(\.firstStepIndex)
-    #expect(stepIndexes.count == 7)
+    #expect(stepIndexes.count == 6)
     #expect(stepIndexes == stepIndexes.sorted())
     #expect(stepIndexes.allSatisfy { $0 >= 0 && $0 < plan.steps.count })
 }
@@ -1016,7 +1014,7 @@ func setupPlanAddsXcodePhaseOnlyWhenRequested() {
 func setupPhasesForCustomFlowLeaveUnmatchedMarkersWithoutStepIndexes() {
     let phases = SetupFlows.phases(for: [.waitText("Custom"), .clickText("Go")])
 
-    #expect(phases.count == 10)
+    #expect(phases.count == 9)
     #expect(phases[1].firstStepIndex == 0)
     #expect(phases[2].firstStepIndex == nil)
     #expect(phases[4].firstStepIndex == nil)
@@ -1373,21 +1371,11 @@ func setupFlowAdvancesLatePanesAndLogsInOnlyWhenNeeded() throws {
 }
 
 @Test
-func setupFlowHandlesFileVaultBeforeScreenshotDrivenTail() throws {
+func setupFlowHandlesFileVaultInsideScreenshotDrivenTail() throws {
     let steps = SetupFlows.tahoe(options: SetupOptions())
 
     let account = try #require(steps.firstIndex {
         $0.action == .waitText && ($0.text ?? "").contains("Create a.*Account")
-    })
-    let fileVaultChoice = try #require(steps.firstIndex {
-        $0.action == .clickTextWhenText
-            && $0.text == "Not Now"
-            && ($0.whenText ?? "").contains("FileVault")
-    })
-    let fileVaultConfirmation = try #require(steps.firstIndex {
-        $0.action == .clickTextWhenText
-            && $0.text == "^Continue$"
-            && ($0.whenText ?? "").contains("Securely Encrypted")
     })
     let tail = try #require(steps.firstIndex {
         $0.action == .advanceUntilText
@@ -1395,11 +1383,10 @@ func setupFlowHandlesFileVaultBeforeScreenshotDrivenTail() throws {
             && ($0.text ?? "").contains("Finder")
     })
 
-    #expect(account < fileVaultChoice)
-    #expect(fileVaultChoice < fileVaultConfirmation)
-    #expect(fileVaultConfirmation < tail)
-    #expect(steps[fileVaultChoice].optional == true)
-    #expect(steps[fileVaultConfirmation].optional == true)
+    #expect(account < tail)
+    #expect(!steps.contains {
+        $0.action == .clickTextWhenText && ($0.whenText ?? "").contains("FileVault")
+    })
 }
 
 @Test
@@ -1413,14 +1400,14 @@ func setupFlowSlowsAccountPasswordTypingAndRepairsMismatchAlert() throws {
     let repair = try #require(steps.firstIndex {
         $0.action == .repairAccountPasswordMismatch
     })
-    let fileVaultChoice = try #require(steps.firstIndex {
-        $0.action == .clickTextWhenText
-            && $0.text == "Not Now"
-            && ($0.whenText ?? "").contains("FileVault")
+    let tail = try #require(steps.firstIndex {
+        $0.action == .advanceUntilText
+            && ($0.text ?? "").contains("Enter Password")
+            && ($0.text ?? "").contains("Finder")
     })
 
     #expect(account < repair)
-    #expect(repair < fileVaultChoice)
+    #expect(repair < tail)
     #expect(steps[repair].text == options.password)
     #expect(steps[repair].timeout == 5)
 
