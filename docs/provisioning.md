@@ -79,6 +79,11 @@ MacVM writes resolved variables to a mode-0600 temporary file and deletes it,
 but a local playbook can still expose its inputs and must use Ansible `no_log`
 for secret-bearing tasks.
 
+Provisioning runs without an SSH pseudo-terminal and cannot answer interactive
+prompts. Profiles must select noninteractive flags or environment variables for
+tools that can prompt; an unexpected prompt should fail instead of blocking the
+setup pipeline indefinitely.
+
 ## Security and State
 
 Local profiles are executable code. They can use `delegate_to: localhost` and

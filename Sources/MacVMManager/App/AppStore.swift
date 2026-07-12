@@ -32,10 +32,19 @@ struct SetupProgress {
     var currentPhaseID: Int?
     var vncURL: String
     var username: String
+    var ipAddress: String?
+    var sshReady: Bool
     var statusMessage: String?
     var logMessages: [String]
+    var activeLog: SetupLogArtifact?
+    var activeLogSnapshot: SetupLogSnapshot?
     var thumbnail: NSImage?
     var failureMessage: String?
+
+    var currentPhase: SetupPhase? {
+        guard let currentPhaseID else { return nil }
+        return phases.first { $0.id == currentPhaseID }
+    }
 }
 
 enum VMPowerActionKind: Equatable {
@@ -282,7 +291,7 @@ final class AppStore {
         for (name, state) in setupStates {
             guard let vm = vm(named: name) else { continue }
             let existing = setups[name]
-            let plan = SetupFlows.plan(
+            let fallbackPlan = SetupFlows.plan(
                 forMacOSMajor: hostMajor,
                 options: SetupOptions(
                     username: state.username,
@@ -290,6 +299,7 @@ final class AppStore {
                     xcodeXIPURL: state.installsXcode ? URL(fileURLWithPath: "Xcode.xip") : nil
                 )
             )
+            let phases = state.phases.isEmpty ? fallbackPlan.phases : state.phases
             let vncURL: String
             if let session = sessions[name] {
                 vncURL = session.vncURLString
@@ -298,15 +308,25 @@ final class AppStore {
             }
 
             setups[name] = SetupProgress(
-                phases: plan.phases,
+                phases: phases,
                 currentPhaseID: state.phaseIndex,
                 vncURL: vncURL,
                 username: state.username,
+                ipAddress: state.ipAddress,
+                sshReady: state.sshReady,
                 statusMessage: state.statusMessage,
                 logMessages: state.logMessages.isEmpty ? (existing?.logMessages ?? []) : state.logMessages,
+                activeLog: state.activeLog,
+                activeLogSnapshot: state.activeLog.flatMap {
+                    service.setupLogSnapshot(for: vm, artifact: $0)
+                },
                 thumbnail: existing?.thumbnail,
                 failureMessage: state.failureMessage
             )
+
+            if let ipAddress = state.ipAddress {
+                guestIPs[name] = ipAddress
+            }
 
             if existing == nil {
                 startThumbnailLoop(vm: vm)
@@ -363,6 +383,19 @@ final class AppStore {
         }
 
         lastCommand = CLIEquivalent.vnc(name, open: true)
+    }
+
+    func openSetupLog(_ url: URL) {
+        guard NSWorkspace.shared.open(url) else {
+            alertMessage = "Unable to open setup log at \(url.path)."
+            return
+        }
+    }
+
+    func revealSetupArtifacts(for vm: ManagedVM) {
+        let directory = service.setupArtifactsDirectory(for: vm)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([directory])
     }
 
     nonisolated static func attachmentRoute(
@@ -826,7 +859,7 @@ final class AppStore {
             installs[name]?.status = message
         case .progress(_, let fractionComplete):
             installs[name]?.fraction = fractionComplete
-        case .setupStep:
+        case .setupStep, .setupAccess, .setupLog:
             break
         }
     }
@@ -930,6 +963,14 @@ final class AppStore {
             return
         }
 
+        let plan: SetupPlan
+        do {
+            plan = try service.setupPlan(for: vm, options: options)
+        } catch {
+            alertMessage = "Unable to prepare setup for \(name): \(error.localizedDescription)"
+            return
+        }
+
         let runner = HeadlessRunner(
             managedVM: vm,
             requestedPort: options.requestedVNCPort,
@@ -950,15 +991,17 @@ final class AppStore {
             let session = try runner.start()
             headlessRunners[name] = runner
 
-            let hostMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-            let plan = SetupFlows.plan(forMacOSMajor: hostMajor, options: options)
             setups[name] = SetupProgress(
                 phases: plan.phases,
                 currentPhaseID: nil,
                 vncURL: session.vncURLString,
                 username: options.username,
+                ipAddress: nil,
+                sshReady: false,
                 statusMessage: "Booting \(name) headless",
                 logMessages: ["Booting \(name) headless"],
+                activeLog: nil,
+                activeLogSnapshot: nil,
                 thumbnail: nil,
                 failureMessage: nil
             )
@@ -996,6 +1039,8 @@ final class AppStore {
         case .setupStep(let step):
             setups[name]?.currentPhaseID = step.phaseIndex
             setups[name]?.statusMessage = step.title
+            setups[name]?.activeLog = nil
+            setups[name]?.activeLogSnapshot = nil
             appendSetupLog("Setup [\(step.phaseIndex + 1)/\(step.phaseCount)] \(step.title)", name: name)
         case .status(let message):
             setups[name]?.statusMessage = message
@@ -1003,6 +1048,15 @@ final class AppStore {
         case .progress(let label, _):
             setups[name]?.statusMessage = label
             appendSetupLog(label, name: name)
+        case .setupAccess(let access):
+            setups[name]?.ipAddress = access.ipAddress
+            setups[name]?.sshReady = access.sshReady
+            guestIPs[name] = access.ipAddress
+        case .setupLog(let artifact):
+            setups[name]?.activeLog = artifact
+            if let vm = vm(named: name) {
+                setups[name]?.activeLogSnapshot = service.setupLogSnapshot(for: vm, artifact: artifact)
+            }
         }
     }
 

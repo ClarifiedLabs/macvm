@@ -52,6 +52,69 @@ func setupProgressPhaseStateShowsFailureInsteadOfSpinner() {
 }
 
 @Test
+func setupProgressHeadingTracksTheCurrentPhase() {
+    let phase = SetupPhase(
+        id: 10,
+        title: "Provisioning: Codex",
+        anchor: "ansible-playbook codex",
+        firstStepIndex: nil
+    )
+    let setup = SetupProgress(
+        phases: [phase],
+        currentPhaseID: phase.id,
+        vncURL: "vnc://127.0.0.1:5900",
+        username: "admin",
+        ipAddress: "192.168.64.10",
+        sshReady: true,
+        statusMessage: "Running ansible-playbook for Codex",
+        logMessages: [],
+        activeLog: nil,
+        activeLogSnapshot: nil,
+        thumbnail: nil,
+        failureMessage: nil
+    )
+
+    #expect(SetupProgressCard.heading(for: setup) == "Provisioning: Codex")
+}
+
+@Test
+func setupAccessRowsAppearAsCapabilitiesBecomeUsable() {
+    #expect(AccessSectionView.capabilities(
+        status: .settingUp,
+        hasIP: false,
+        sshReady: false,
+        hasVNC: true
+    ) == AccessSectionView.Capabilities(
+        showsIP: false,
+        showsSSH: false,
+        showsInventory: false,
+        showsVNC: true
+    ))
+    #expect(AccessSectionView.capabilities(
+        status: .settingUp,
+        hasIP: true,
+        sshReady: false,
+        hasVNC: true
+    ) == AccessSectionView.Capabilities(
+        showsIP: true,
+        showsSSH: false,
+        showsInventory: false,
+        showsVNC: true
+    ))
+    #expect(AccessSectionView.capabilities(
+        status: .settingUp,
+        hasIP: true,
+        sshReady: true,
+        hasVNC: true
+    ) == AccessSectionView.Capabilities(
+        showsIP: true,
+        showsSSH: true,
+        showsInventory: true,
+        showsVNC: true
+    ))
+}
+
+@Test
 func cliEquivalentRendersProvisioningProfilesAndInputs() {
     let defaults = VMCreationDraft(
         name: "dev", cpuCount: 4, memoryGiB: 8, diskGiB: 80,
@@ -545,6 +608,7 @@ func managerReconstructsXcodeSetupProgressFromRuntimeState() throws {
         fullName: "Administrator",
         phaseIndex: xcodePhase.id,
         phaseCount: plan.phases.count,
+        phases: plan.phases,
         statusMessage: "Xcode: installing Xcode.xip in the guest",
         logMessages: ["Waiting for SSH", "Xcode: installing Xcode.xip in the guest"],
         installsXcode: true,

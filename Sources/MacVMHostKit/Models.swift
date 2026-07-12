@@ -265,10 +265,44 @@ public struct SetupStepProgress: Equatable, Sendable {
     }
 }
 
+public struct SetupAccessProgress: Codable, Equatable, Sendable {
+    public let ipAddress: String
+    public let sshReady: Bool
+
+    public init(ipAddress: String, sshReady: Bool) {
+        self.ipAddress = ipAddress
+        self.sshReady = sshReady
+    }
+}
+
+public struct SetupLogArtifact: Codable, Equatable, Sendable {
+    public let label: String
+    public let bundleRelativePath: String
+
+    public init(label: String, bundleRelativePath: String) {
+        self.label = label
+        self.bundleRelativePath = bundleRelativePath
+    }
+}
+
+public struct SetupLogSnapshot: Equatable, Sendable {
+    public let url: URL
+    public let tail: String?
+    public let modifiedAt: Date?
+
+    public init(url: URL, tail: String?, modifiedAt: Date?) {
+        self.url = url
+        self.tail = tail
+        self.modifiedAt = modifiedAt
+    }
+}
+
 public enum VMOperationEvent: Sendable {
     case status(String)
     case progress(label: String, fractionComplete: Double)
     case setupStep(SetupStepProgress)
+    case setupAccess(SetupAccessProgress)
+    case setupLog(SetupLogArtifact)
 }
 
 public typealias VMOperationHandler = @Sendable (VMOperationEvent) -> Void

@@ -5,10 +5,12 @@ enum SetupPhaseState: Equatable {
     case done, active, failed, pending
 }
 
-/// The "Driving Setup Assistant" card: live framebuffer thumbnail + vnc:// URL
-/// on the left, the OCR-anchored phase list on the right.
+/// Live setup progress: framebuffer thumbnail + vnc:// URL on the left, with
+/// the current activity, diagnostics, and full phase list on the right.
 struct SetupProgressCard: View {
+    @Environment(AppStore.self) private var store
     let setup: SetupProgress
+    let vm: ManagedVM
 
     @AppStorage("setupProgressPreviewWidth") private var previewWidth = 520.0
     @State private var resizeStartWidth: Double?
@@ -104,17 +106,15 @@ struct SetupProgressCard: View {
     private var phaseList: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Driving Setup Assistant")
+                Text(Self.heading(for: setup))
                     .font(.system(size: 13, weight: .semibold))
-                Text("OCR-anchored flow · creating account “\(setup.username)”")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            if let status = setup.statusMessage {
-                Text(status)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                if let status = setup.statusMessage,
+                   status != setup.currentPhase?.title {
+                    Text(status)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
             if let failure = setup.failureMessage {
                 Text("Setup failed: \(failure)")
@@ -131,12 +131,57 @@ struct SetupProgressCard: View {
                     }
                 }
             }
+            diagnostics
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(setup.phases) { phase in
                     phaseRow(phase)
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var diagnostics: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if let artifact = setup.activeLog {
+                    Text(artifact.label)
+                        .font(.system(size: 11, weight: .medium))
+                    if let modifiedAt = setup.activeLogSnapshot?.modifiedAt {
+                        Text("· output updated \(modifiedAt, style: .relative)")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                Spacer(minLength: 8)
+                if let url = setup.activeLogSnapshot?.url {
+                    Button("Open Log") {
+                        store.openSetupLog(url)
+                    }
+                    .controlSize(.small)
+                }
+                Button("Reveal Setup Folder") {
+                    store.revealSetupArtifacts(for: vm)
+                }
+                .controlSize(.small)
+            }
+
+            if setup.activeLog != nil {
+                Text(setup.activeLogSnapshot?.tail ?? "Waiting for log output…")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color(nsColor: .textBackgroundColor).opacity(0.35))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+
+    static func heading(for setup: SetupProgress) -> String {
+        setup.currentPhase?.title ?? "Starting setup"
     }
 
     static func phaseState(

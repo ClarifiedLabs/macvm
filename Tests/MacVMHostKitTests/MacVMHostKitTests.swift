@@ -91,6 +91,13 @@ func ansibleProvisionerUsesExecutableAndPersistsSuccessfulState() throws {
     #expect(AnsibleProvisioner.findExecutable(environment: ["MACVM_ANSIBLE_PLAYBOOK": fake.path]) == fake)
 
     let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    let events = OperationEventRecorder()
+    let phase = SetupStepProgress(
+        phaseIndex: 10,
+        phaseCount: 11,
+        title: "Provisioning: Test",
+        anchor: "ansible-playbook test-profile"
+    )
     try AnsibleProvisioner(
         vm: vm,
         host: "127.0.0.1",
@@ -99,12 +106,18 @@ func ansibleProvisionerUsesExecutableAndPersistsSuccessfulState() throws {
         profiles: [profile],
         inputs: [:],
         executableURL: fake,
-        progress: nil
+        progress: { events.record($0) },
+        profilePhases: ["test-profile": phase]
     ).run()
 
     let record = try #require(bundle.readProvisioningState()?.profiles["test-profile"])
     #expect(record.status == .succeeded)
     #expect(FileManager.default.fileExists(atPath: bundle.setupDirectoryURL.appendingPathComponent(record.logPath).path))
+    #expect(events.values == [
+        "phase:Provisioning: Test",
+        "status:Running ansible-playbook for Test",
+        "log:Setup/Provisioning/\(record.logPath.split(separator: "/").last!)",
+    ])
 }
 
 @Test
@@ -1055,6 +1068,31 @@ func setupPlanAddsXcodePhaseOnlyWhenRequested() {
     #expect(withXcode.phases.suffix(2).map(\.title) == ["Wait for IP and SSH", "Install Xcode"])
     #expect(withXcode.phases.last?.anchor == "bootstrap-tools --install-xcode")
     #expect(withXcode.phases.last?.firstStepIndex == nil)
+}
+
+@Test
+func setupPlanAddsResolvedProvisioningProfilesInExecutionOrder() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let profiles = try ProvisioningCatalog.load(rootDirectory: root).resolve(["codex"])
+    let plan = SetupFlows.plan(
+        forMacOSMajor: 26,
+        options: SetupOptions(
+            xcodeXIPURL: URL(fileURLWithPath: "/tmp/Xcode.xip"),
+            provisioningSelection: ProvisioningSelection(profileIDs: ["codex"])
+        ),
+        provisioningProfiles: profiles
+    )
+
+    #expect(plan.phases.map(\.id) == Array(0..<plan.phases.count))
+    #expect(plan.phases.suffix(3).map(\.title) == [
+        "Install Xcode",
+        "Provisioning: Homebrew",
+        "Provisioning: Codex",
+    ])
+    #expect(plan.phases.suffix(2).map(\.anchor) == [
+        "ansible-playbook homebrew",
+        "ansible-playbook codex",
+    ])
 }
 
 @Test
@@ -2103,8 +2141,12 @@ func setupRuntimeStateRoundTripsAndReportsLiveness() throws {
         fullName: "Administrator",
         phaseIndex: 6,
         phaseCount: 14,
+        phases: [SetupPhase(id: 6, title: "Reach the desktop", anchor: "desktop", firstStepIndex: 10)],
         statusMessage: "Waiting for Finder",
         logMessages: ["Waiting for Setup Assistant", "Waiting for Finder"],
+        ipAddress: "192.168.64.10",
+        sshReady: true,
+        activeLog: SetupLogArtifact(label: "Codex", bundleRelativePath: "Setup/Provisioning/codex.log"),
         installsXcode: true,
         pid: getpid(),
         startedAt: Date(),
@@ -2117,8 +2159,12 @@ func setupRuntimeStateRoundTripsAndReportsLiveness() throws {
     #expect(decoded.fullName == live.fullName)
     #expect(decoded.phaseIndex == live.phaseIndex)
     #expect(decoded.phaseCount == live.phaseCount)
+    #expect(decoded.phases == live.phases)
     #expect(decoded.statusMessage == live.statusMessage)
     #expect(decoded.logMessages == live.logMessages)
+    #expect(decoded.ipAddress == live.ipAddress)
+    #expect(decoded.sshReady)
+    #expect(decoded.activeLog == live.activeLog)
     #expect(decoded.installsXcode == live.installsXcode)
     #expect(decoded.pid == live.pid)
     #expect(abs(decoded.startedAt.timeIntervalSince(live.startedAt)) < 1)
@@ -2323,9 +2369,50 @@ func ansibleInventoryRendersConnectionVars() {
     #expect(withKey.contains("ansible_host=192.168.64.10"))
     #expect(withKey.contains("ansible_user=admin"))
     #expect(withKey.contains("ansible_ssh_private_key_file=/keys/id_ed25519"))
+    #expect(withKey.contains("ansible_ssh_use_tty=false"))
 
     let withoutKey = AnsibleInventory.render(name: "myvm", host: "h", user: "admin", identityFile: nil)
     #expect(!withoutKey.contains("ansible_ssh_private_key_file"))
+}
+
+@Test
+func setupLogSnapshotTailsOnlyBundleContainedLogs() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let bundleURL = root.appendingPathComponent("test.macvm")
+    let logURL = bundleURL.appendingPathComponent("Setup/Provisioning/test.log")
+    try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try (1...20).map { "line \($0)" }.joined(separator: "\n").write(
+        to: logURL,
+        atomically: true,
+        encoding: .utf8
+    )
+    let vm = ManagedVM(
+        bundleURL: bundleURL,
+        metadata: VMMetadata(
+            name: "test",
+            cpuCount: 2,
+            memorySizeBytes: 4 * oneGiB,
+            diskSizeBytes: 40 * oneGiB,
+            displayWidth: 1280,
+            displayHeight: 720,
+            bootstrapShareEnabled: false
+        )
+    )
+    let service = MacVMService(rootDirectory: root)
+    let snapshot = try #require(service.setupLogSnapshot(
+        for: vm,
+        artifact: SetupLogArtifact(label: "Test", bundleRelativePath: "Setup/Provisioning/test.log")
+    ))
+
+    #expect(snapshot.url == logURL)
+    #expect(snapshot.tail?.split(separator: "\n").count == 12)
+    #expect(snapshot.tail?.contains("line 20") == true)
+    #expect(snapshot.modifiedAt != nil)
+    #expect(service.setupLogSnapshot(
+        for: vm,
+        artifact: SetupLogArtifact(label: "Escape", bundleRelativePath: "../outside.log")
+    ) == nil)
 }
 
 @Test
@@ -2513,6 +2600,32 @@ func rfbClientClipboardWaitTimesOut() async throws {
     }
 
     #expect(didThrow)
+}
+
+private final class OperationEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    var values: [String] {
+        lock.withLock { storage }
+    }
+
+    func record(_ event: VMOperationEvent) {
+        let value: String
+        switch event {
+        case .status(let message):
+            value = "status:\(message)"
+        case .progress(let label, _):
+            value = "progress:\(label)"
+        case .setupStep(let step):
+            value = "phase:\(step.title)"
+        case .setupAccess(let access):
+            value = "access:\(access.ipAddress):\(access.sshReady)"
+        case .setupLog(let artifact):
+            value = "log:\(artifact.bundleRelativePath)"
+        }
+        lock.withLock { storage.append(value) }
+    }
 }
 
 private final class RFBEventRecorder: @unchecked Sendable {

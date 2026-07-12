@@ -13,6 +13,7 @@ enum AnsibleInventory {
         if let identityFile {
             fields.append("ansible_ssh_private_key_file=\(identityFile.path)")
         }
+        fields.append("ansible_ssh_use_tty=false")
         fields.append(
             "ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null'"
         )

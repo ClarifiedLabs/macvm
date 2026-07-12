@@ -32,6 +32,7 @@ private final class SetupRuntimePublisher: @unchecked Sendable {
                 state.phaseCount = step.phaseCount
                 state.statusMessage = step.title
                 state.failureMessage = nil
+                state.activeLog = nil
                 Self.appendLog("Setup [\(step.phaseIndex + 1)/\(step.phaseCount)] \(step.title)", to: &state)
             }
         case .status(let message):
@@ -43,6 +44,15 @@ private final class SetupRuntimePublisher: @unchecked Sendable {
             update { state in
                 state.statusMessage = label
                 Self.appendLog(label, to: &state)
+            }
+        case .setupAccess(let access):
+            update { state in
+                state.ipAddress = access.ipAddress
+                state.sshReady = access.sshReady
+            }
+        case .setupLog(let artifact):
+            update { state in
+                state.activeLog = artifact
             }
         }
         progress?(event)
@@ -129,6 +139,44 @@ public final class MacVMService: Sendable {
         VMBundle(url: vm.bundleURL).readProvisioningState()
     }
 
+    public func setupPlan(for vm: ManagedVM, options: SetupOptions) throws -> SetupPlan {
+        let profiles = try provisioningCatalog(for: vm).validate(options.provisioningSelection)
+        return try SetupFlows.resolvePlan(
+            bundle: VMBundle(url: vm.bundleURL),
+            options: options,
+            hostMajor: Self.hostMacOSMajor(),
+            provisioningProfiles: profiles
+        )
+    }
+
+    public func setupArtifactsDirectory(for vm: ManagedVM) -> URL {
+        vm.bundleURL.appendingPathComponent("Setup", isDirectory: true)
+    }
+
+    public func setupLogSnapshot(
+        for vm: ManagedVM,
+        artifact: SetupLogArtifact,
+        maxBytes: Int = 16_384,
+        maxLines: Int = 12
+    ) -> SetupLogSnapshot? {
+        let bundleRoot = vm.bundleURL.resolvingSymlinksInPath().standardizedFileURL
+        let candidate = vm.bundleURL
+            .appendingPathComponent(artifact.bundleRelativePath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let bundlePrefix = bundleRoot.path.hasSuffix("/") ? bundleRoot.path : bundleRoot.path + "/"
+        guard candidate.path.hasPrefix(bundlePrefix) else {
+            return nil
+        }
+
+        let attributes = try? FileManager.default.attributesOfItem(atPath: candidate.path)
+        return SetupLogSnapshot(
+            url: candidate,
+            tail: Self.logTail(from: candidate, maxBytes: maxBytes, maxLines: maxLines),
+            modifiedAt: attributes?[.modificationDate] as? Date
+        )
+    }
+
     public func preflightProvisioning(
         selection: ProvisioningSelection,
         xcodeXIPURL: URL? = nil,
@@ -154,11 +202,29 @@ public final class MacVMService: Sendable {
         progress: VMOperationHandler? = nil
     ) async throws {
         guard !selection.profileIDs.isEmpty else { return }
+        let catalog = provisioningCatalog(for: vm)
+        let profiles = try catalog.validate(selection)
+        try await runProvisioner(
+            vm,
+            selection: selection,
+            profiles: profiles,
+            user: user,
+            progress: progress
+        )
+    }
+
+    private func runProvisioner(
+        _ vm: ManagedVM,
+        selection: ProvisioningSelection,
+        profiles: [ProvisioningProfile],
+        user: String?,
+        progress: VMOperationHandler?,
+        profilePhases: [String: SetupStepProgress] = [:]
+    ) async throws {
+        guard !profiles.isEmpty else { return }
         guard let executable = AnsibleProvisioner.findExecutable() else {
             throw MacVMError.message("ansible-playbook was not found on this host. Install it with: brew install ansible")
         }
-        let catalog = provisioningCatalog(for: vm)
-        let profiles = try catalog.validate(selection)
         let host = try resolveGuestIP(vm)
         guard let identity = guestIdentityFile(for: vm) else {
             throw MacVMError.message("No setup SSH key exists for '\(vm.metadata.name)'. Run macvm setup first.")
@@ -172,7 +238,8 @@ public final class MacVMService: Sendable {
             profiles: profiles,
             inputs: selection.inputs,
             executableURL: executable,
-            progress: progress
+            progress: progress,
+            profilePhases: profilePhases
         )
         try await Task.detached(priority: .userInitiated) {
             try provisioner.run()
@@ -732,13 +799,20 @@ public final class MacVMService: Sendable {
             _ = try Self.normalizedXcodeXIPURL(xcodeXIPURL)
         }
         let bundle = VMBundle(url: vm.bundleURL)
-        let plan = try SetupFlows.resolvePlan(bundle: bundle, options: options, hostMajor: Self.hostMacOSMajor())
+        let profiles = try provisioningCatalog(for: vm).validate(options.provisioningSelection)
+        let plan = try SetupFlows.resolvePlan(
+            bundle: bundle,
+            options: options,
+            hostMajor: Self.hostMacOSMajor(),
+            provisioningProfiles: profiles
+        )
         let runtimePublisher = SetupRuntimePublisher(
             bundle: bundle,
             state: VMSetupRuntimeState(
                 username: options.username,
                 fullName: options.fullName,
                 phaseCount: plan.phases.count,
+                phases: plan.phases,
                 installsXcode: options.xcodeXIPURL != nil,
                 pid: session.pid,
                 startedAt: Date(),
@@ -805,11 +879,26 @@ public final class MacVMService: Sendable {
             metadata.setupCompletedAt = Date()
             try bundle.writeMetadata(metadata)
 
-            try await provision(
+            let profilePhases: [String: SetupStepProgress] = Dictionary(
+                uniqueKeysWithValues: profiles.compactMap { profile in
+                    guard let phase = plan.phases.first(where: {
+                        $0.anchor == SetupFlows.profileAnchor(profile.id)
+                    }) else { return nil }
+                    return (profile.id, SetupStepProgress(
+                        phaseIndex: phase.id,
+                        phaseCount: plan.phases.count,
+                        title: phase.title,
+                        anchor: phase.anchor
+                    ))
+                }
+            )
+            try await runProvisioner(
                 vm,
                 selection: options.provisioningSelection,
+                profiles: profiles,
                 user: options.username,
-                progress: setupProgress
+                progress: setupProgress,
+                profilePhases: profilePhases
             )
             runtimePublisher.clear()
 
@@ -925,6 +1014,10 @@ public final class MacVMService: Sendable {
         progress?(.status("Xcode: installing \(sourceURL.lastPathComponent) in the guest"))
         let ssh = GuestSSH(host: ipAddress, user: options.username, identityFile: guestIdentityFile(for: vm))
         let logURL = bundle.setupDirectoryURL.appendingPathComponent("xcode-install.log")
+        progress?(.setupLog(SetupLogArtifact(
+            label: "Xcode installation",
+            bundleRelativePath: "Setup/xcode-install.log"
+        )))
         let status = try ssh.runLogged(remoteCommand: [command], logFile: logURL)
         guard status == 0 else {
             let tail = Self.logTail(from: logURL)
@@ -1010,11 +1103,13 @@ public final class MacVMService: Sendable {
                 ipAddress = try? resolveGuestIP(vm)
                 if let ipAddress {
                     progress?(.status("Guest IP: \(ipAddress)"))
+                    progress?(.setupAccess(SetupAccessProgress(ipAddress: ipAddress, sshReady: false)))
                 }
             }
             if let ipAddress {
                 let ssh = GuestSSH(host: ipAddress, user: options.username, identityFile: identity)
                 if ssh.waitForSSH(timeout: 0) {
+                    progress?(.setupAccess(SetupAccessProgress(ipAddress: ipAddress, sshReady: true)))
                     return SetupResult(
                         username: options.username,
                         ipAddress: ipAddress,

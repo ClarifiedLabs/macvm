@@ -62,7 +62,7 @@ struct GuestHardener {
     var timing = GuestHardenerTiming()
 
     func harden() async throws {
-        progress?(.status("Provisioning: staging setup script"))
+        progress?(.status("Guest configuration: staging setup script"))
         let publicKey = try SSHKeyManager.ensureKeyPair(in: bundle)
         try bundle.ensureTransfersDirectory()
 
@@ -94,14 +94,14 @@ struct GuestHardener {
         // Owner-only: the script embeds authorized keys and account details.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: scriptURL.path)
 
-        progress?(.status("Provisioning: opening Terminal with Spotlight"))
+        progress?(.status("Guest configuration: opening Terminal with Spotlight"))
         try await activateFinder()
         try await openTerminalWithSpotlight()
         if try await runProvisioningScript(statusFileURL: statusFileURL) {
             return
         }
 
-        progress?(.status("Provisioning: opening Terminal from Finder Utilities"))
+        progress?(.status("Guest configuration: opening Terminal from Finder Utilities"))
         try await activateFinder()
         try await openTerminalFromFinderUtilities()
         if try await runProvisioningScript(statusFileURL: statusFileURL) {
@@ -110,7 +110,7 @@ struct GuestHardener {
 
         DebugLog.log("Provisioning: keyboard launch paths did not start the script; falling back to Apps.")
         for _ in 0..<2 {
-            progress?(.status("Provisioning: opening Terminal from Apps"))
+            progress?(.status("Guest configuration: opening Terminal from Apps"))
             try await activateFinder()
             try await openTerminalFromLaunchpad()
             if try await runProvisioningScript(statusFileURL: statusFileURL) {
@@ -143,7 +143,7 @@ struct GuestHardener {
     }
 
     private func runProvisioningScript(statusFileURL: URL) async throws -> Bool {
-        progress?(.status("Provisioning: starting setup script in the guest"))
+        progress?(.status("Guest configuration: starting setup script in the guest"))
         try await client.typeText(
             "bash '\(Self.guestTransfersPath)/provision.sh'",
             holdDelay: 35_000_000,
@@ -157,10 +157,10 @@ struct GuestHardener {
             case .absent, .unknown:
                 await sleep(timing.statusPollDelay)
             case .running:
-                progress?(.status("Provisioning: setup script is running"))
+                progress?(.status("Guest configuration: setup script is running"))
                 return try await waitForProvisioningCompletion(statusFileURL: statusFileURL)
             case .done:
-                progress?(.status("Provisioning: setup script completed"))
+                progress?(.status("Guest configuration: setup script completed"))
                 return true
             case .failed(let code):
                 throw MacVMError.message("Guest provisioning script failed with exit code \(code).")
@@ -174,7 +174,7 @@ struct GuestHardener {
         while Date() <= deadline {
             switch GuestProvisioningStatus.read(from: statusFileURL) {
             case .done:
-                progress?(.status("Provisioning: setup script completed"))
+                progress?(.status("Guest configuration: setup script completed"))
                 return true
             case .failed(let code):
                 throw MacVMError.message("Guest provisioning script failed with exit code \(code).")

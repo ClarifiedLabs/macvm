@@ -137,6 +137,12 @@ final class CLIReporter: @unchecked Sendable {
             }
 
             print("Setup [\(step.phaseIndex + 1)/\(step.phaseCount)] \(step.title)")
+
+        case .setupAccess:
+            break
+
+        case .setupLog(let artifact):
+            print("Log: \(artifact.bundleRelativePath)")
         }
     }
 }

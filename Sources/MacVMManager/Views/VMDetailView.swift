@@ -14,7 +14,9 @@ struct VMDetailView: View {
                 header(vm: vm, status: status)
 
                 if status == .settingUp, let setup = store.setups[name] {
-                    SetupProgressCard(setup: setup)
+                    if let vm {
+                        SetupProgressCard(setup: setup, vm: vm)
+                    }
                 }
                 if status == .installing, let install = store.installs[name] {
                     InstallingCard(install: install)
@@ -43,7 +45,7 @@ struct VMDetailView: View {
                     .font(.system(size: 22, weight: .semibold))
                 HStack(spacing: 6) {
                     StatusDot(status: status)
-                    Text(status.headerLabel)
+                    Text(headerStatus(status: status))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -53,6 +55,14 @@ struct VMDetailView: View {
                 actionButtons(vm: vm, status: status)
             }
         }
+    }
+
+    private func headerStatus(status: VMStatus) -> String {
+        guard status == .settingUp,
+              let phase = store.setups[name]?.currentPhase else {
+            return status.headerLabel
+        }
+        return "Setting up — \(phase.title)"
     }
 
     @ViewBuilder
@@ -251,6 +261,17 @@ private struct SpecCard: View {
 }
 
 struct AccessSectionView: View {
+    struct Capabilities: Equatable {
+        var showsIP: Bool
+        var showsSSH: Bool
+        var showsInventory: Bool
+        var showsVNC: Bool
+
+        var hasRows: Bool {
+            showsIP || showsSSH || showsInventory || showsVNC
+        }
+    }
+
     @Environment(AppStore.self) private var store
     let vm: ManagedVM
     let status: VMStatus
@@ -259,34 +280,13 @@ struct AccessSectionView: View {
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader(title: "Access")
             Card {
-                if status == .running {
-                    runningRows
+                if capabilities.hasRows {
+                    accessRows
                 } else {
                     HStack(spacing: 6) {
                         Text(placeholderText)
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
-                        if status == .settingUp, let vncURL = setupVNCURL {
-                            Button {
-                                store.copy(vncURL, key: "access-vnc", command: CLIEquivalent.vnc(vm.metadata.name))
-                            } label: {
-                                Image(systemName: store.copiedKey == "access-vnc" ? "checkmark" : "doc.on.doc")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(store.copiedKey == "access-vnc" ? .green : .secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Copy vnc:// URL")
-
-                            Button {
-                                store.openVNCURL(vncURL, name: vm.metadata.name)
-                            } label: {
-                                Image(systemName: "arrow.up.forward.app")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Open vnc:// URL")
-                        }
                         Spacer(minLength: 0)
                     }
                     .padding(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
@@ -297,38 +297,52 @@ struct AccessSectionView: View {
     }
 
     @ViewBuilder
-    private var runningRows: some View {
+    private var accessRows: some View {
         let name = vm.metadata.name
-        let user = store.service.guestUser(for: vm, override: nil)
-        let ip = store.guestIPs[name]
+        let setup = store.setups[name]
+        let user = setup?.username ?? store.service.guestUser(for: vm, override: nil)
+        let ip = setup?.ipAddress ?? store.guestIPs[name]
+        let vncURL = liveVNCURL
 
         VStack(spacing: 0) {
-            InfoRow(label: "IP address", value: ip ?? "Resolving…") {
-                if let ip {
-                    CopyButton(key: "access-ip", text: ip, command: CLIEquivalent.ip(name))
+            if capabilities.showsIP {
+                InfoRow(label: "IP address", value: ip ?? "Resolving…") {
+                    if let ip {
+                        CopyButton(key: "access-ip", text: ip, command: CLIEquivalent.ip(name))
+                    }
                 }
             }
-            Divider().overlay(Theme.hairline)
-            InfoRow(label: "SSH", value: ip.map { "ssh \(user)@\($0)" } ?? "Waiting for IP…") {
-                if let ip {
-                    CopyButton(key: "access-ssh", text: "ssh \(user)@\(ip)", command: CLIEquivalent.ssh(name))
+            if capabilities.showsSSH {
+                if capabilities.showsIP {
+                    Divider().overlay(Theme.hairline)
+                }
+                InfoRow(label: "SSH", value: ip.map { "ssh \(user)@\($0)" } ?? "Waiting for IP…") {
+                    if let ip {
+                        CopyButton(key: "access-ssh", text: "ssh \(user)@\(ip)", command: CLIEquivalent.ssh(name))
+                    }
                 }
             }
-            Divider().overlay(Theme.hairline)
-            InfoRow(
-                label: "Ansible inventory",
-                value: ip.map { store.service.inventoryLine(vm, host: $0, user: nil) } ?? "Waiting for IP…"
-            ) {
-                if let ip {
-                    CopyButton(
-                        key: "access-inventory",
-                        text: store.service.inventoryLine(vm, host: ip, user: nil),
-                        command: CLIEquivalent.inventory(name)
-                    )
+            if capabilities.showsInventory {
+                if capabilities.showsIP || capabilities.showsSSH {
+                    Divider().overlay(Theme.hairline)
+                }
+                InfoRow(
+                    label: "Ansible inventory",
+                    value: ip.map { store.service.inventoryLine(vm, host: $0, user: user) } ?? "Waiting for IP…"
+                ) {
+                    if let ip {
+                        CopyButton(
+                            key: "access-inventory",
+                            text: store.service.inventoryLine(vm, host: ip, user: user),
+                            command: CLIEquivalent.inventory(name)
+                        )
+                    }
                 }
             }
-            if let vncURL = runningVNCURL {
-                Divider().overlay(Theme.hairline)
+            if capabilities.showsVNC, let vncURL {
+                if capabilities.showsIP || capabilities.showsSSH || capabilities.showsInventory {
+                    Divider().overlay(Theme.hairline)
+                }
                 InfoRow(label: "VNC", value: vncURL) {
                     HStack(spacing: 6) {
                         CopyButton(key: "access-vnc", text: vncURL, command: CLIEquivalent.vnc(name))
@@ -346,12 +360,43 @@ struct AccessSectionView: View {
         }
     }
 
-    private var runningVNCURL: String? {
-        store.liveSessions[vm.metadata.name]?.vncURLString
+    private var capabilities: Capabilities {
+        Self.capabilities(
+            status: status,
+            hasIP: (store.setups[vm.metadata.name]?.ipAddress ?? store.guestIPs[vm.metadata.name]) != nil,
+            sshReady: store.setups[vm.metadata.name]?.sshReady == true,
+            hasVNC: liveVNCURL != nil
+        )
     }
 
-    private var setupVNCURL: String? {
-        store.setups[vm.metadata.name]?.vncURL ?? (try? store.service.vncURL(for: vm))
+    static func capabilities(
+        status: VMStatus,
+        hasIP: Bool,
+        sshReady: Bool,
+        hasVNC: Bool
+    ) -> Capabilities {
+        switch status {
+        case .running:
+            Capabilities(showsIP: true, showsSSH: true, showsInventory: true, showsVNC: hasVNC)
+        case .settingUp:
+            Capabilities(
+                showsIP: hasIP,
+                showsSSH: hasIP && sshReady,
+                showsInventory: hasIP && sshReady,
+                showsVNC: hasVNC
+            )
+        case .stopped, .cloning, .installing:
+            Capabilities(showsIP: false, showsSSH: false, showsInventory: false, showsVNC: false)
+        }
+    }
+
+    private var liveVNCURL: String? {
+        if let liveURL = store.liveSessions[vm.metadata.name]?.vncURLString {
+            return liveURL
+        }
+        guard let setupURL = store.setups[vm.metadata.name]?.vncURL,
+              !setupURL.isEmpty else { return nil }
+        return setupURL
     }
 
     private var placeholderText: String {
@@ -361,7 +406,7 @@ struct AccessSectionView: View {
         case .cloning:
             "Access remains unavailable while the stopped VM is being cloned."
         case .settingUp:
-            "SSH becomes available when setup finishes. Attach to the live session via its vnc:// URL."
+            "Waiting for live access information…"
         case .installing:
             "Access appears after installation and first boot."
         case .running:

@@ -2,7 +2,7 @@ import Foundation
 
 /// One display row in the setup progress UI: a human-readable pane grouping over
 /// the fine-grained `SetupStep` flow, plus the OCR anchor that identifies it.
-public struct SetupPhase: Identifiable, Equatable, Sendable {
+public struct SetupPhase: Codable, Identifiable, Equatable, Sendable {
     public let id: Int
     public let title: String
     /// The mono anchor label shown next to the phase (e.g. `clickText "Continue"`).
@@ -43,6 +43,10 @@ public enum SetupFlows {
     static let sshReadyAnchor = "dhcpd_leases"
     static let xcodeInstallAnchor = "bootstrap-tools --install-xcode"
 
+    static func profileAnchor(_ profileID: String) -> String {
+        "ansible-playbook \(profileID)"
+    }
+
     /// Choose the built-in flow for a macOS major version.
     public static func builtIn(forMacOSMajor major: Int, options: SetupOptions) -> [SetupStep] {
         // The OCR dispatcher handles the Setup Assistant pane families covered by
@@ -59,22 +63,39 @@ public enum SetupFlows {
     }
 
     /// The built-in flow plus its display phases for a macOS major version.
-    public static func plan(forMacOSMajor major: Int, options: SetupOptions) -> SetupPlan {
+    public static func plan(
+        forMacOSMajor major: Int,
+        options: SetupOptions,
+        provisioningProfiles: [ProvisioningProfile] = []
+    ) -> SetupPlan {
         let steps = builtIn(forMacOSMajor: major, options: options)
         return SetupPlan(
             steps: steps,
-            phases: phases(for: steps, includeXcodeInstall: options.xcodeXIPURL != nil)
+            phases: phases(
+                for: steps,
+                includeXcodeInstall: options.xcodeXIPURL != nil,
+                provisioningProfiles: provisioningProfiles
+            )
         )
     }
 
     /// Resolve the flow to run: a CLI override, else a bundled `Setup/steps.json`,
     /// else the built-in flow for the host major version.
-    static func resolvePlan(bundle: VMBundle, options: SetupOptions, hostMajor: Int) throws -> SetupPlan {
+    static func resolvePlan(
+        bundle: VMBundle,
+        options: SetupOptions,
+        hostMajor: Int,
+        provisioningProfiles: [ProvisioningProfile] = []
+    ) throws -> SetupPlan {
         if let override = options.scriptOverride {
             let steps = try load(from: override)
             return SetupPlan(
                 steps: steps,
-                phases: phases(for: steps, includeXcodeInstall: options.xcodeXIPURL != nil)
+                phases: phases(
+                    for: steps,
+                    includeXcodeInstall: options.xcodeXIPURL != nil,
+                    provisioningProfiles: provisioningProfiles
+                )
             )
         }
         let bundleSteps = bundle.setupDirectoryURL.appendingPathComponent("steps.json")
@@ -82,16 +103,28 @@ public enum SetupFlows {
             let steps = try load(from: bundleSteps)
             return SetupPlan(
                 steps: steps,
-                phases: phases(for: steps, includeXcodeInstall: options.xcodeXIPURL != nil)
+                phases: phases(
+                    for: steps,
+                    includeXcodeInstall: options.xcodeXIPURL != nil,
+                    provisioningProfiles: provisioningProfiles
+                )
             )
         }
-        return plan(forMacOSMajor: hostMajor, options: options)
+        return plan(
+            forMacOSMajor: hostMajor,
+            options: options,
+            provisioningProfiles: provisioningProfiles
+        )
     }
 
     /// Group a step flow into the display phases shown by setup UIs. Boundaries
     /// are located by their OCR markers so the grouping survives flow edits; a
     /// marker missing from a custom flow leaves that phase without a step index.
-    public static func phases(for steps: [SetupStep], includeXcodeInstall: Bool = false) -> [SetupPhase] {
+    public static func phases(
+        for steps: [SetupStep],
+        includeXcodeInstall: Bool = false,
+        provisioningProfiles: [ProvisioningProfile] = []
+    ) -> [SetupPhase] {
         func firstIndex(_ action: SetupStep.Action, containing marker: String) -> Int? {
             steps.firstIndex { $0.action == action && ($0.text?.contains(marker) ?? false) }
         }
@@ -121,6 +154,15 @@ public enum SetupFlows {
                 id: phases.count,
                 title: "Install Xcode",
                 anchor: xcodeInstallAnchor,
+                firstStepIndex: nil
+            ))
+        }
+
+        for profile in provisioningProfiles {
+            phases.append(SetupPhase(
+                id: phases.count,
+                title: "Provisioning: \(profile.manifest.name)",
+                anchor: profileAnchor(profile.id),
                 firstStepIndex: nil
             ))
         }

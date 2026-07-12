@@ -460,6 +460,7 @@ struct AnsibleProvisioner {
     let inputs: [String: [String: String]]
     let executableURL: URL
     let progress: VMOperationHandler?
+    var profilePhases: [String: SetupStepProgress] = [:]
 
     static func findExecutable(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
         let fileManager = FileManager.default
@@ -482,10 +483,17 @@ struct AnsibleProvisioner {
 
         for profile in profiles {
             let startedAt = Date()
-            progress?(.status("Provisioning: \(profile.manifest.name)"))
+            if let phase = profilePhases[profile.id] {
+                progress?(.setupStep(phase))
+            }
+            progress?(.status("Running ansible-playbook for \(profile.manifest.name)"))
             let stamp = Self.timestamp(startedAt)
             let logName = "\(stamp)-\(profile.id).log"
             let logURL = bundle.provisioningLogsDirectoryURL.appendingPathComponent(logName)
+            progress?(.setupLog(SetupLogArtifact(
+                label: "\(profile.manifest.name) provisioning",
+                bundleRelativePath: "Setup/Provisioning/\(logName)"
+            )))
             do {
                 try run(profile, logURL: logURL)
                 state.profiles[profile.id] = record(
