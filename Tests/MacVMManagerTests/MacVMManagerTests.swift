@@ -6,6 +6,21 @@ import Testing
 @testable import MacVMHostKit
 @testable import MacVMManager
 
+@Test
+func localNetworkOnboardingIsAcknowledgedPersistently() throws {
+    let suiteName = "dev.macvm.macvm.tests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let initialState = LocalNetworkOnboardingState(defaults: defaults)
+    #expect(initialState.shouldPresent)
+
+    initialState.acknowledge()
+
+    let subsequentState = LocalNetworkOnboardingState(defaults: defaults)
+    #expect(!subsequentState.shouldPresent)
+}
+
 // MARK: - CLIEquivalent
 
 @Test

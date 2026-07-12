@@ -851,6 +851,7 @@
 				INFOPLIST_KEY_CFBundleName = macvm;
 				INFOPLIST_KEY_CFBundleShortVersionString = "$(MARKETING_VERSION)";
 				INFOPLIST_KEY_CFBundleVersion = "$(CURRENT_PROJECT_VERSION)";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "MacVM uses the local network to connect to virtual machines for setup, SSH, and management.";
 				MARKETING_VERSION = 0.0.4;
 				OTHER_SWIFT_FLAGS = "$(inherited) -parse-as-library";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm.cli;
@@ -876,6 +877,7 @@
 				INFOPLIST_KEY_CFBundleName = macvm;
 				INFOPLIST_KEY_CFBundleShortVersionString = "$(MARKETING_VERSION)";
 				INFOPLIST_KEY_CFBundleVersion = "$(CURRENT_PROJECT_VERSION)";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "MacVM uses the local network to connect to virtual machines for setup, SSH, and management.";
 				MARKETING_VERSION = 0.0.4;
 				OTHER_SWIFT_FLAGS = "$(inherited) -parse-as-library";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm.cli;

@@ -14,6 +14,7 @@ public struct VMLaunchOnBootStatus: Equatable, Sendable {
 
 struct VMLaunchOnBootController: Sendable {
     private static let labelPrefix = "dev.macvm.macvm.launch-on-boot."
+    private static let responsibleBundleIdentifier = "dev.macvm.macvm.cli"
 
     let launchAgentsDirectory: URL
     let executableURL: URL
@@ -71,6 +72,7 @@ struct VMLaunchOnBootController: Sendable {
         let label = self.label(for: vm.metadata)
         let plistURL = self.plistURL(forLabel: label)
         let plist: [String: Any] = [
+            "AssociatedBundleIdentifiers": Self.responsibleBundleIdentifier,
             "Label": label,
             "ProgramArguments": programArguments(for: vm),
             "RunAtLoad": true,
@@ -118,6 +120,7 @@ struct VMLaunchOnBootController: Sendable {
 
     private func plistMatchesExpectedConfiguration(at url: URL, for vm: ManagedVM, label: String) -> Bool {
         guard let plist = plistDictionary(at: url),
+              plist["AssociatedBundleIdentifiers"] as? String == Self.responsibleBundleIdentifier,
               plist["Label"] as? String == label,
               plist["RunAtLoad"] as? Bool == true,
               plist["ProgramArguments"] as? [String] == programArguments(for: vm) else {

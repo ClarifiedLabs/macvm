@@ -28,6 +28,12 @@ struct ManagerWindow: View {
             }
         }
         .frame(minWidth: 960, minHeight: 620)
+        .sheet(isPresented: $store.localNetworkOnboardingPresented) {
+            LocalNetworkOnboardingView {
+                store.acknowledgeLocalNetworkOnboarding()
+            }
+            .interactiveDismissDisabled()
+        }
         .sheet(isPresented: $store.sheetPresented) {
             CreateVMSheet()
         }
@@ -152,5 +158,30 @@ struct ManagerWindow: View {
                 description: Text("Select a virtual machine or create one with New VM.")
             )
         }
+    }
+}
+
+private struct LocalNetworkOnboardingView: View {
+    let continueAction: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "network")
+                .font(.system(size: 48))
+                .foregroundStyle(.tint)
+
+            Text("Local Network Access")
+                .font(.title2.bold())
+
+            Text("MacVM Manager connects to your virtual machines over a private virtual network for setup, SSH, and management. macOS will ask for Local Network access when the first virtual machine needs it.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+
+            Button("Continue", action: continueAction)
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(32)
+        .frame(width: 460)
     }
 }

@@ -24,5 +24,7 @@
     <string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>MacVM uses the local network to connect to virtual machines for setup, SSH, and management.</string>
 </dict>
 </plist>

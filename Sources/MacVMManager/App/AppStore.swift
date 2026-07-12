@@ -60,6 +60,24 @@ enum VMShutdownRoute: Equatable {
     case ssh
 }
 
+struct LocalNetworkOnboardingState {
+    private static let acknowledgmentKey = "local-network-onboarding-acknowledged-v1"
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    var shouldPresent: Bool {
+        !defaults.bool(forKey: Self.acknowledgmentKey)
+    }
+
+    func acknowledge() {
+        defaults.set(true, forKey: Self.acknowledgmentKey)
+    }
+}
+
 /// Single source of truth for the manager window: the VM list, per-VM liveness,
 /// in-app operations (install / setup / viewer windows), the create-sheet draft,
 /// and the CLI-equivalent bar.
@@ -69,6 +87,7 @@ final class AppStore {
     private static let maxSetupLogMessages = 10
 
     let service: MacVMService
+    private let localNetworkOnboardingState: LocalNetworkOnboardingState
 
     private(set) var vms: [ManagedVM] = []
     var selection: SidebarItem?
@@ -87,6 +106,7 @@ final class AppStore {
     private(set) var copiedKey: String?
     var alertMessage: String?
     var pendingPowerAction: PendingPowerAction?
+    var localNetworkOnboardingPresented: Bool
 
     private(set) var installs: [String: InstallProgress] = [:]
     private(set) var clones: [String: CloneProgress] = [:]
@@ -114,8 +134,11 @@ final class AppStore {
     private var refreshTimer: Timer?
     private var copyResetTask: Task<Void, Never>?
 
-    init(service: MacVMService = MacVMService()) {
+    init(service: MacVMService = MacVMService(), userDefaults: UserDefaults = .standard) {
         self.service = service
+        let localNetworkOnboardingState = LocalNetworkOnboardingState(defaults: userDefaults)
+        self.localNetworkOnboardingState = localNetworkOnboardingState
+        self.localNetworkOnboardingPresented = localNetworkOnboardingState.shouldPresent
         self.draft = service.defaultDraft()
         self.profileCatalog = service.provisioningCatalog()
         setenv("MACVM_MANAGER_PROCESS", "1", 1)
@@ -123,6 +146,11 @@ final class AppStore {
         selection = vms.first.map { .vm($0.metadata.name) } ?? .images
         updateCommandForSelection()
         startRefreshTimer()
+    }
+
+    func acknowledgeLocalNetworkOnboarding() {
+        localNetworkOnboardingState.acknowledge()
+        localNetworkOnboardingPresented = false
     }
 
     // MARK: - Derived state

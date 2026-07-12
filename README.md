@@ -181,7 +181,7 @@ macvm create --name dev-03 --launch-on-boot
 macvm autostart enable dev-02
 ```
 
-Launch-on-boot is per user and starts at login, not before login. It uses the same headless/VNC access path as `macvm run --headless`.
+Launch-on-boot is per user and starts at login, not before login. It uses the same headless/VNC access path as `macvm run --headless`. The first login after enabling it may ask for Local Network access; allow `macvm` so the guest can use its virtual network. You can change this later in **System Settings > Privacy & Security > Local Network**.
 
 ## Shared Files
 

@@ -519,6 +519,7 @@ func launchOnBootWritesExpectedLaunchAgentAndCanDisable() throws {
     #expect(FileManager.default.fileExists(atPath: enabled.plistURL.path))
 
     let plist = try readPropertyListDictionary(at: enabled.plistURL)
+    #expect(plist["AssociatedBundleIdentifiers"] as? String == "dev.macvm.macvm.cli")
     #expect(plist["Label"] as? String == enabled.label)
     #expect(plist["RunAtLoad"] as? Bool == true)
     #expect(plist["ProgramArguments"] as? [String] == [
@@ -538,6 +539,49 @@ func launchOnBootWritesExpectedLaunchAgentAndCanDisable() throws {
 
     try service.setLaunchOnBoot(false, for: vm)
     #expect(FileManager.default.fileExists(atPath: enabled.plistURL.path) == false)
+    #expect(service.launchOnBootStatus(for: vm).enabled == false)
+}
+
+@Test
+func launchOnBootRejectsLaunchAgentWithInvalidResponsibleBundleIdentifier() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let launchAgentsURL = rootURL.appendingPathComponent("LaunchAgents", isDirectory: true)
+    let executableURL = rootURL.appendingPathComponent("bin/macvm", isDirectory: false)
+    let bundleURL = rootURL
+        .appendingPathComponent("dev-01", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+        name: "dev-01",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    let service = MacVMService(
+        rootDirectory: rootURL,
+        launchAgentsDirectory: launchAgentsURL,
+        executableURL: executableURL
+    )
+
+    try service.setLaunchOnBoot(true, for: vm)
+    let status = service.launchOnBootStatus(for: vm)
+    var plist = try readPropertyListDictionary(at: status.plistURL)
+    plist["AssociatedBundleIdentifiers"] = "dev.macvm.wrong"
+    var data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+    try data.write(to: status.plistURL, options: .atomic)
+    #expect(service.launchOnBootStatus(for: vm).enabled == false)
+
+    plist.removeValue(forKey: "AssociatedBundleIdentifiers")
+    data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+    try data.write(to: status.plistURL, options: .atomic)
     #expect(service.launchOnBootStatus(for: vm).enabled == false)
 }
 
