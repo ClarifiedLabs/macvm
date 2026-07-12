@@ -2402,6 +2402,52 @@ func rfbActionFramebufferNegotiatesDesktopSizeBeforePointerInputAndTracesGeometr
 }
 
 @Test
+func rfbFramebufferCaptureTimesOutAndRecordsTrace() async throws {
+    let server = try MinimalRFBServer(maxConnections: 1, mode: .partialFramebufferThenIdle)
+    let events = RFBEventRecorder()
+    server.start()
+    defer { server.stop() }
+
+    let startedAt = Date()
+    do {
+        _ = try await RFBClient.captureOnce(
+            port: server.port,
+            password: nil,
+            timeout: 0.05,
+            purpose: "timeout-regression",
+            trace: { events.append($0) }
+        )
+        Issue.record("Expected framebuffer capture to time out")
+    } catch RFBError.framebufferTimeout {
+        // Expected.
+    } catch {
+        Issue.record("Expected framebuffer timeout, got \(error)")
+    }
+
+    #expect(Date().timeIntervalSince(startedAt) < 0.25)
+    #expect(events.values.contains { $0.kind == "framebuffer_timeout" })
+}
+
+@Test
+func rfbFramebufferTimeoutRecoversOnFreshConnection() async throws {
+    let server = try MinimalRFBServer(maxConnections: 2, mode: .stallFirstFramebufferRequestThenCapture)
+    server.start()
+    defer { server.stop() }
+
+    do {
+        _ = try await RFBClient.captureOnce(port: server.port, password: nil, timeout: 0.05)
+        Issue.record("Expected first framebuffer capture to time out")
+    } catch RFBError.framebufferTimeout {
+        // Expected.
+    }
+
+    let recovered = try await RFBClient.captureOnce(port: server.port, password: nil, timeout: 1)
+    #expect(recovered.pixels == [0, 255, 0, 0])
+    #expect(server.connectionCount == 2)
+    #expect(server.waitUntilStopped(timeout: 2))
+}
+
+@Test
 func setupRFBConnectionRetriesDroppedInitialFramebufferRequest() async throws {
     let server = try MinimalRFBServer(maxConnections: 2, mode: .dropFirstFramebufferRequestThenCapture)
     server.start()
@@ -2489,8 +2535,10 @@ private final class RFBEventRecorder: @unchecked Sendable {
 private enum MinimalRFBServerMode {
     case framebufferCaptures
     case dropFirstFramebufferRequestThenCapture
+    case stallFirstFramebufferRequestThenCapture
     case captureClickAndVerify
     case pointSizedThenDesktopSizeAndClick
+    case partialFramebufferThenIdle
     case captureClientCutText
     case sendServerCutText(String)
     case idleAfterHandshake
@@ -2657,10 +2705,19 @@ private final class MinimalRFBServer: @unchecked Sendable {
                 return
             }
             try serveFramebufferCapture(clientFD: clientFD, connectionIndex: connectionIndex)
+        case .stallFirstFramebufferRequestThenCapture:
+            if connectionIndex == 1 {
+                _ = try readExactly(10, from: clientFD) // FramebufferUpdateRequest.
+                usleep(300 * 1000)
+                return
+            }
+            try serveFramebufferCapture(clientFD: clientFD, connectionIndex: connectionIndex)
         case .captureClickAndVerify:
             try captureClickAndVerify(clientFD: clientFD)
         case .pointSizedThenDesktopSizeAndClick:
             try pointSizedThenDesktopSizeAndClick(clientFD: clientFD)
+        case .partialFramebufferThenIdle:
+            try partialFramebufferThenIdle(clientFD: clientFD)
         case .captureClientCutText:
             try captureClientCutText(clientFD: clientFD)
         case .sendServerCutText(let text):
@@ -2719,6 +2776,20 @@ private final class MinimalRFBServer: @unchecked Sendable {
             }
             recordPointer(pointer)
         }
+    }
+
+    private func partialFramebufferThenIdle(clientFD: Int32) throws {
+        _ = try readExactly(10, from: clientFD) // FramebufferUpdateRequest.
+        var update: [UInt8] = [RFB.framebufferUpdateType, 0]
+        update.appendBigEndian(UInt16(1))
+        update.appendBigEndian(UInt16(0))
+        update.appendBigEndian(UInt16(0))
+        update.appendBigEndian(UInt16(1))
+        update.appendBigEndian(UInt16(1))
+        update.appendBigEndian(UInt32(bitPattern: RFB.rawEncoding))
+        update.append(contentsOf: [0, 0]) // Half of the required BGRA pixel.
+        try writeAll(update, to: clientFD)
+        usleep(300 * 1000)
     }
 
     private func readUntilFramebufferRequest(from clientFD: Int32) throws {

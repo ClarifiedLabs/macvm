@@ -416,9 +416,17 @@ public struct SetupStep: Codable, Equatable, Sendable {
     public static let wake = SetupStep(action: .wake)
 }
 
+private enum TacticExecutionResult {
+    case completed(SetupPolicy.Screen)
+    case abandoned(SetupPolicy.Screen)
+}
+
 /// Executes a `[SetupStep]` against a connected RFB client, OCR-anchoring each
 /// wait/click and dumping a screenshot on failure so a stuck pane is debuggable.
 struct SetupStepRunner {
+    static let framebufferTimeout: TimeInterval = 10
+    static let laterClickCaptureAttempts = 3
+
     let client: RFBClient
     let bundle: VMBundle
     let defaultTimeout: TimeInterval
@@ -454,6 +462,22 @@ struct SetupStepRunner {
 
     static func paneRule(in observations: [TextObservation]) -> SetupPolicy.PaneRule? {
         SetupPolicy.paneRule(in: observations)
+    }
+
+    static func resolveLaterClick(
+        query: String,
+        initialScreen: SetupPolicy.Screen,
+        maxAttempts: Int = laterClickCaptureAttempts,
+        capture: () async throws -> SetupPolicy.Screen
+    ) async throws -> (match: GuestTextMatch?, screen: SetupPolicy.Screen) {
+        var latest = initialScreen
+        for _ in 0..<max(1, maxAttempts) {
+            latest = try await capture()
+            if let match = OCRService.match(query, in: latest.observations) {
+                return (match, latest)
+            }
+        }
+        return (nil, latest)
     }
 
     static let accountPasswordMismatchQuery = "passwords don.t match"
@@ -689,7 +713,13 @@ struct SetupStepRunner {
 
             let submissionStartedAt = Date()
             while Date() < deadline {
-                let screen = try await captureScreen()
+                let screen: SetupPolicy.Screen
+                do {
+                    screen = try await captureScreen()
+                } catch RFBError.framebufferTimeout {
+                    reportStatus("Setup: framebuffer capture stalled during account creation; reconnecting")
+                    continue
+                }
                 if screen.observations.isEmpty {
                     try? await Task.sleep(nanoseconds: 700_000_000)
                     continue
@@ -839,65 +869,72 @@ struct SetupStepRunner {
         repeat {
             let attempt: OCRActionAttemptResult<T>
             if let session = bundle.liveVNCSession() {
-                attempt = try await RFBClient.withActionFramebuffer(
-                    port: session.port,
-                    password: session.password,
-                    purpose: purpose,
-                    trace: diagnostics.rfbTraceSink
-                ) { actionClient, framebuffer in
-                    let identity = await actionClient.traceIdentity
-                    publishPreview(
-                        framebuffer,
-                        connectionID: identity.connectionID,
-                        purpose: identity.purpose,
-                        pinned: true
-                    )
-                    var screen = SetupPolicy.Screen(
-                        observations: OCRService.observations(in: framebuffer),
-                        size: CGSize(width: framebuffer.width, height: framebuffer.height)
-                    )
-                    if screen.observations.isEmpty {
-                        screen = try await captureScreen(using: actionClient, pinned: true)
-                    }
-                    if detectAccountInterruptions,
-                       let interruption = Self.accountInterruption(in: screen.observations) {
-                        diagnostics.record("account_interruption", fields: [
+                do {
+                    attempt = try await RFBClient.withActionFramebuffer(
+                        port: session.port,
+                        password: session.password,
+                        framebufferTimeout: Self.framebufferTimeout,
+                        purpose: purpose,
+                        trace: diagnostics.rfbTraceSink
+                    ) { actionClient, framebuffer in
+                        let identity = await actionClient.traceIdentity
+                        publishPreview(
+                            framebuffer,
+                            connectionID: identity.connectionID,
+                            purpose: identity.purpose,
+                            pinned: true
+                        )
+                        var screen = SetupPolicy.Screen(
+                            observations: OCRService.observations(in: framebuffer),
+                            size: CGSize(width: framebuffer.width, height: framebuffer.height)
+                        )
+                        if screen.observations.isEmpty {
+                            screen = try await captureScreen(using: actionClient, pinned: true)
+                        }
+                        if detectAccountInterruptions,
+                           let interruption = Self.accountInterruption(in: screen.observations) {
+                            diagnostics.record("account_interruption", fields: [
+                                "connectionID": identity.connectionID,
+                                "purpose": purpose,
+                                "interruption": String(describing: interruption),
+                                "framebuffer": ["width": screen.size.width, "height": screen.size.height],
+                            ])
+                            throw interruption
+                        }
+                        guard let match = OCRService.match(query, in: screen.observations, occurrence: occurrence) else {
+                            return .targetMissing(Self.visibleTextSummary(screen.observations))
+                        }
+                        let redactsVisibleText = purpose.hasPrefix("account-") || purpose.hasPrefix("repair-")
+                        diagnostics.record("ocr_action_match", screen: redactsVisibleText ? nil : screen, fields: [
                             "connectionID": identity.connectionID,
                             "purpose": purpose,
-                            "interruption": String(describing: interruption),
-                            "framebuffer": ["width": screen.size.width, "height": screen.size.height],
+                            "query": query,
+                            "match": match.text,
+                            "x": match.x,
+                            "y": match.y,
                         ])
-                        throw interruption
+                        let result = try await action(actionClient, match)
+                        try? await Task.sleep(nanoseconds: 400_000_000)
+                        let after = try? await captureScreen(using: actionClient, pinned: true)
+                        var completionFields: [String: Any] = [
+                            "connectionID": identity.connectionID,
+                            "purpose": purpose,
+                            "query": query,
+                        ]
+                        if let after {
+                            completionFields["framebuffer"] = ["width": after.size.width, "height": after.size.height]
+                        }
+                        diagnostics.record(
+                            "ocr_action_complete",
+                            screen: redactsVisibleText ? nil : after,
+                            fields: completionFields
+                        )
+                        return .value(result)
                     }
-                    guard let match = OCRService.match(query, in: screen.observations, occurrence: occurrence) else {
-                        return .targetMissing(Self.visibleTextSummary(screen.observations))
-                    }
-                    let redactsVisibleText = purpose.hasPrefix("account-") || purpose.hasPrefix("repair-")
-                    diagnostics.record("ocr_action_match", screen: redactsVisibleText ? nil : screen, fields: [
-                        "connectionID": identity.connectionID,
-                        "purpose": purpose,
-                        "query": query,
-                        "match": match.text,
-                        "x": match.x,
-                        "y": match.y,
-                    ])
-                    let result = try await action(actionClient, match)
+                } catch RFBError.framebufferTimeout {
+                    reportStatus("Setup: framebuffer capture stalled during \(purpose); reconnecting")
                     try? await Task.sleep(nanoseconds: 400_000_000)
-                    let after = try? await captureScreen(using: actionClient, pinned: true)
-                    var completionFields: [String: Any] = [
-                        "connectionID": identity.connectionID,
-                        "purpose": purpose,
-                        "query": query,
-                    ]
-                    if let after {
-                        completionFields["framebuffer"] = ["width": after.size.width, "height": after.size.height]
-                    }
-                    diagnostics.record(
-                        "ocr_action_complete",
-                        screen: redactsVisibleText ? nil : after,
-                        fields: completionFields
-                    )
-                    return .value(result)
+                    continue
                 }
             } else {
                 let screen = try await captureScreen(using: client)
@@ -1048,7 +1085,7 @@ struct SetupStepRunner {
         let startedAt = Date()
         var nextStatusAt = startedAt.addingTimeInterval(Self.pollStatusInterval)
         var state = SetupPolicy.PolicyState()
-        var screen = try await captureScreen()
+        var screen = try await captureScreen(retryingUntil: deadline)
 
         repeat {
             if let match = screenGoal?.match(in: screen) {
@@ -1078,12 +1115,23 @@ struct SetupStepRunner {
                     nextStatusAt = now.addingTimeInterval(Self.pollStatusInterval)
                 }
                 try? await Task.sleep(nanoseconds: Self.nanoseconds(from: seconds))
-                screen = try await captureScreen()
+                screen = try await captureScreen(retryingUntil: deadline)
 
             case .act(let tactic, let ladderKey, let rationale):
                 reportStatus("Setup: \(rationale)")
                 let before = screen
-                let outcome = try await performAndVerify(tactic, from: screen, ladderKey: ladderKey)
+                let outcome: (advanced: Bool, screen: SetupPolicy.Screen)
+                do {
+                    outcome = try await performAndVerify(tactic, from: screen, ladderKey: ladderKey)
+                } catch RFBError.framebufferTimeout {
+                    reportStatus("Setup: framebuffer capture stalled during pane action; reconnecting")
+                    diagnostics.record("setup pane action framebuffer timeout", fields: [
+                        "ladderKey": ladderKey,
+                    ])
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    screen = try await captureScreen(retryingUntil: deadline)
+                    continue
+                }
                 state.lastActionAdvanced = outcome.advanced
                 screen = outcome.screen
                 if !outcome.advanced {
@@ -1118,13 +1166,21 @@ struct SetupStepRunner {
                 if SetupPolicy.didAdvance(from: fallbackScreen, to: current, anchor: anchor) {
                     return (true, current)
                 }
-                try await perform(tactic, on: current, using: actionClient)
-                return try await awaitScreenChange(from: current, anchor: anchor, using: actionClient)
+                switch try await perform(tactic, on: current, using: actionClient) {
+                case .completed(let latest):
+                    return try await awaitScreenChange(from: latest, anchor: anchor, using: actionClient)
+                case .abandoned(let latest):
+                    return (false, latest)
+                }
             }
         }
 
-        try await perform(tactic, on: fallbackScreen, using: client)
-        return try await awaitScreenChange(from: fallbackScreen, anchor: anchor, using: client)
+        switch try await perform(tactic, on: fallbackScreen, using: client) {
+        case .completed(let latest):
+            return try await awaitScreenChange(from: latest, anchor: anchor, using: client)
+        case .abandoned(let latest):
+            return (false, latest)
+        }
     }
 
     /// Nudge the display awake, let it settle, then capture and OCR one frame.
@@ -1142,6 +1198,18 @@ struct SetupStepRunner {
             screen = try await captureScreenOnce()
         }
         return screen
+    }
+
+    private func captureScreen(retryingUntil deadline: Date) async throws -> SetupPolicy.Screen {
+        repeat {
+            do {
+                return try await captureScreen()
+            } catch RFBError.framebufferTimeout {
+                reportStatus("Setup: framebuffer capture stalled; reconnecting")
+                try? await Task.sleep(nanoseconds: 400_000_000)
+            }
+        } while Date() < deadline
+        throw RFBError.framebufferTimeout
     }
 
     private func captureScreen(using captureClient: RFBClient, pinned: Bool = false) async throws -> SetupPolicy.Screen {
@@ -1168,7 +1236,7 @@ struct SetupStepRunner {
     private func captureScreenOnce(using captureClient: RFBClient, pinned: Bool = false) async throws -> SetupPolicy.Screen {
         try? await captureClient.nudgePointer()
         try? await Task.sleep(nanoseconds: 400_000_000)
-        let framebuffer = try await captureClient.captureFramebuffer()
+        let framebuffer = try await captureClient.captureFramebuffer(timeout: Self.framebufferTimeout)
         let identity = await captureClient.traceIdentity
         publishPreview(
             framebuffer,
@@ -1183,39 +1251,45 @@ struct SetupStepRunner {
     }
 
     /// Execute a tactic's atoms in order. Clicks after the first re-resolve
-    /// against a fresh capture because earlier atoms may have moved the layout;
-    /// a query that no longer matches abandons the tactic — the verify step
-    /// then reports "did not advance" and the policy escalates.
+    /// against fresh captures because earlier atoms may have moved the layout.
+    /// A transient OCR miss gets a small retry budget; an exhausted later click
+    /// returns its latest perception without paying a separate verification loop.
     private func perform(
         _ tactic: SetupPolicy.Tactic,
         on screen: SetupPolicy.Screen,
         using actionClient: RFBClient
-    ) async throws {
+    ) async throws -> TacticExecutionResult {
         // Input sent to an asleep display is consumed as a wake event and the
         // click never lands. Wake it just before acting, not only at capture
         // time — an aggressive guest can blank in the gap between the two.
         try? await actionClient.nudgePointer()
         try? await Task.sleep(nanoseconds: 250_000_000)
 
-        var observations = screen.observations
+        var latest = screen
         for (index, atom) in tactic.atoms.enumerated() {
             switch atom {
             case .click(let query):
+                let match: GuestTextMatch?
                 if index > 0 {
-                    try? await Task.sleep(nanoseconds: 400_000_000)
-                    if let framebuffer = try? await actionClient.captureFramebuffer() {
-                        publishPreview(framebuffer)
-                        observations = OCRService.observations(in: framebuffer)
+                    let resolution = try await Self.resolveLaterClick(
+                        query: query,
+                        initialScreen: latest
+                    ) {
+                        try await captureScreen(using: actionClient)
                     }
+                    latest = resolution.screen
+                    match = resolution.match
+                } else {
+                    match = OCRService.match(query, in: latest.observations)
                 }
-                guard let match = OCRService.match(query, in: observations) else {
+                guard let match else {
                     reportStatus("Setup: “\(query)” is not on screen mid-tactic; abandoning this attempt")
-                    return
+                    return .abandoned(latest)
                 }
                 try await actionClient.click(x: match.x, y: match.y)
 
             case .clickMatch(let match):
-                let refreshed = SetupPolicy.detectModal(in: screen)?.button ?? match
+                let refreshed = SetupPolicy.detectModal(in: latest)?.button ?? match
                 try await actionClient.click(x: refreshed.x, y: refreshed.y)
 
             case .keys(let keys):
@@ -1228,6 +1302,7 @@ struct SetupStepRunner {
                 try await Task.sleep(nanoseconds: Self.nanoseconds(from: seconds))
             }
         }
+        return .completed(latest)
     }
 
     /// Give the guest a moment to transition, then poll for a visible change.
@@ -1298,7 +1373,13 @@ struct SetupStepRunner {
             // guest dims its screen and an immediate capture can still be blank.
             try? await nudgeDisplay()
             try? await Task.sleep(nanoseconds: 400_000_000)
-            let framebuffer = try await captureFramebufferForOCR()
+            let framebuffer: Framebuffer
+            do {
+                framebuffer = try await captureFramebufferForOCR()
+            } catch RFBError.framebufferTimeout {
+                reportStatus("Setup: framebuffer capture stalled while waiting for “\(text)”; reconnecting")
+                continue
+            }
             let observations = OCRService.observations(in: framebuffer)
             lastVisibleSummary = Self.visibleTextSummary(observations)
             if let match = OCRService.match(text, in: observations, occurrence: occurrence) {
@@ -1323,6 +1404,7 @@ struct SetupStepRunner {
                 framebuffer = try await RFBClient.captureOnce(
                     port: session.port,
                     password: session.password,
+                    timeout: Self.framebufferTimeout,
                     purpose: "setup-ocr-poll",
                     trace: diagnostics.rfbTraceSink
                 )
@@ -1333,7 +1415,7 @@ struct SetupStepRunner {
             }
         }
 
-        framebuffer = try await client.captureFramebuffer()
+        framebuffer = try await client.captureFramebuffer(timeout: Self.framebufferTimeout)
         publishPreview(framebuffer)
         return framebuffer
     }

@@ -62,9 +62,9 @@ enum SetupPolicy {
         }
 
         /// Applicable iff `requires` matches and, when the first atom is a
-        /// click, its query has a match. Later clicks resolve against fresh
-        /// observations at execution time; a miss abandons the tactic and is
-        /// reported as "did not advance", which escalates to the next rung.
+        /// click, its query has a match. Later clicks resolve against a short
+        /// series of fresh observations at execution time; exhausted misses
+        /// abandon the tactic and escalate from the latest perceived screen.
         func isApplicable(in screen: Screen) -> Bool {
             if let requires, OCRService.match(requires, in: screen.observations) == nil {
                 return false
@@ -322,7 +322,7 @@ enum SetupPolicy {
         // tactic: opening the menu barely changes the OCR token set (reads as
         // "did not advance"), and any later rung's click lands outside the
         // menu and dismisses it — escalation would close the menu it just
-        // opened, forever. The second click re-resolves on a fresh capture
+        // opened, forever. The second click re-resolves on fresh captures
         // (the item OCRs with a leading icon glyph, e.g. "@ Sign in Later in
         // Settings", which the substring tier tolerates).
         PaneRule(

@@ -531,6 +531,50 @@ func postAccountAppleSignInPaneOpensMenuAndPicksItemInOneTactic() throws {
 }
 
 @Test
+func laterTacticClickRetriesTransientOCRMiss() async throws {
+    let initial = screen([obs("Other Sign-In Options", 610, 710, 150, 28)])
+    let missed = screen([obs("Other Sign-In Options", 610, 710, 150, 28)])
+    let revealed = screen([
+        obs("Other Sign-In Options", 610, 710, 150, 28),
+        obs("@ Sign in Later in Settings", 625, 765, 190, 24),
+    ])
+    var captures = [missed, revealed]
+    var captureCount = 0
+
+    let resolution = try await SetupStepRunner.resolveLaterClick(
+        query: "Sign in Later in Settings",
+        initialScreen: initial
+    ) {
+        captureCount += 1
+        return captures.removeFirst()
+    }
+
+    #expect(captureCount == 2)
+    #expect(resolution.match?.text == "@ Sign in Later in Settings")
+    #expect(resolution.screen == revealed)
+}
+
+@Test
+func laterTacticClickReturnsLatestScreenWhenRetriesAreExhausted() async throws {
+    let initial = screen([obs("Other Sign-In Options", 610, 710, 150, 28)])
+    let latest = screen([obs("Sign In to Your Apple Account", 650, 320, 350, 35)])
+    var captureCount = 0
+
+    let resolution = try await SetupStepRunner.resolveLaterClick(
+        query: "Sign in Later in Settings",
+        initialScreen: initial,
+        maxAttempts: 3
+    ) {
+        captureCount += 1
+        return latest
+    }
+
+    #expect(captureCount == 3)
+    #expect(resolution.match == nil)
+    #expect(resolution.screen == latest)
+}
+
+@Test
 func appleAccountSkipConfirmationMatchesMergedOCRRuns() throws {
     // Vision merged the dialog body with background text and dropped the
     // leading "Are" (observed live): the anchor must still match.

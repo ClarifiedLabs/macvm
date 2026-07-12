@@ -15,6 +15,7 @@ enum RFBError: LocalizedError {
     case noSupportedSecurityType
     case passwordRequired
     case notConnected
+    case framebufferTimeout
     case clipboardTimeout
     case invalidClipboardText
     case unsupportedEncoding(Int32)
@@ -34,6 +35,8 @@ enum RFBError: LocalizedError {
             return "The VNC server requires a password but none was provided."
         case .notConnected:
             return "The VNC client is not connected."
+        case .framebufferTimeout:
+            return "Timed out waiting for a VNC framebuffer update."
         case .clipboardTimeout:
             return "Timed out waiting for the VM pasteboard to publish text."
         case .invalidClipboardText:
@@ -85,6 +88,7 @@ actor RFBClient {
         host: String = "127.0.0.1",
         port: Int,
         password: String?,
+        timeout: TimeInterval? = nil,
         purpose: String = "capture",
         trace: (@Sendable (RFBTraceEvent) -> Void)? = nil
     ) async throws -> Framebuffer {
@@ -95,7 +99,7 @@ actor RFBClient {
             purpose: purpose,
             trace: trace
         ) { client in
-            try await client.captureFramebuffer()
+            try await client.captureFramebuffer(timeout: timeout)
         }
     }
 
@@ -128,6 +132,7 @@ actor RFBClient {
         host: String = "127.0.0.1",
         port: Int,
         password: String?,
+        framebufferTimeout: TimeInterval? = nil,
         purpose: String,
         trace: (@Sendable (RFBTraceEvent) -> Void)? = nil,
         _ body: (RFBClient, Framebuffer) async throws -> T
@@ -141,7 +146,7 @@ actor RFBClient {
         ) { client in
             try? await client.nudgePointer()
             try? await Task.sleep(nanoseconds: 400_000_000)
-            let framebuffer = try await client.captureFramebuffer()
+            let framebuffer = try await client.captureFramebuffer(timeout: framebufferTimeout)
             return try await body(client, framebuffer)
         }
     }
@@ -213,33 +218,49 @@ actor RFBClient {
     /// may answer an initial request with only a DesktopSize rect (announcing the
     /// real dimensions) and no pixels, so retry until Raw pixels actually arrive.
     func captureFramebuffer() async throws -> Framebuffer {
+        try await captureFramebuffer(timeout: nil)
+    }
+
+    func captureFramebuffer(timeout: TimeInterval?) async throws -> Framebuffer {
         guard let width = framebufferWidth, let height = framebufferHeight else {
             throw RFBError.notConnected
         }
 
+        let startedAt = Date()
+        let deadline = timeout.map { startedAt.addingTimeInterval($0) }
         var framebuffer = Framebuffer(width: width, height: height)
-        for attempt in 1...6 {
-            let requestWidth = UInt16(framebufferWidth ?? width)
-            let requestHeight = UInt16(framebufferHeight ?? height)
-            emit("framebuffer_request", fields: [
-                "attempt": String(attempt),
-                "width": String(requestWidth),
-                "height": String(requestHeight),
-            ])
-            try await send(RFBMessage.framebufferUpdateRequest(
-                incremental: false, x: 0, y: 0, width: requestWidth, height: requestHeight
-            ))
-            if try await readOneUpdate(into: &framebuffer) {
-                lastCaptureSize = (framebuffer.width, framebuffer.height)
-                lastCaptureHadPixels = true
-                emit("framebuffer_result", fields: [
-                    "width": String(framebuffer.width),
-                    "height": String(framebuffer.height),
-                    "hasRawPixels": "true",
+        do {
+            for attempt in 1...6 {
+                let requestWidth = UInt16(framebufferWidth ?? width)
+                let requestHeight = UInt16(framebufferHeight ?? height)
+                emit("framebuffer_request", fields: [
+                    "attempt": String(attempt),
+                    "width": String(requestWidth),
+                    "height": String(requestHeight),
                 ])
-                return framebuffer
+                try await send(RFBMessage.framebufferUpdateRequest(
+                    incremental: false, x: 0, y: 0, width: requestWidth, height: requestHeight
+                ))
+                let gotPixels = try await readOneUpdate(into: &framebuffer, deadline: deadline)
+                if gotPixels {
+                    lastCaptureSize = (framebuffer.width, framebuffer.height)
+                    lastCaptureHadPixels = true
+                    emit("framebuffer_result", fields: [
+                        "width": String(framebuffer.width),
+                        "height": String(framebuffer.height),
+                        "hasRawPixels": "true",
+                    ])
+                    return framebuffer
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
             }
-            try? await Task.sleep(nanoseconds: 100_000_000)
+        } catch RFBError.framebufferTimeout {
+            emit("framebuffer_timeout", fields: [
+                "elapsedMilliseconds": String(Int(Date().timeIntervalSince(startedAt) * 1_000)),
+                "width": String(framebufferWidth ?? width),
+                "height": String(framebufferHeight ?? height),
+            ])
+            throw RFBError.framebufferTimeout
         }
         lastCaptureSize = (framebuffer.width, framebuffer.height)
         lastCaptureHadPixels = false
@@ -253,25 +274,25 @@ actor RFBClient {
 
     /// Read server messages until one FramebufferUpdate is consumed. Returns whether
     /// any Raw pixels were written (false if the update carried only pseudo-encodings).
-    private func readOneUpdate(into framebuffer: inout Framebuffer) async throws -> Bool {
+    private func readOneUpdate(into framebuffer: inout Framebuffer, deadline: Date?) async throws -> Bool {
         while true {
-            let messageType = try await receive(exactly: 1)[0]
+            let messageType = try await receiveFramebuffer(exactly: 1, deadline: deadline)[0]
             switch messageType {
             case RFB.framebufferUpdateType:
-                return try await readRectangles(into: &framebuffer)
+                return try await readRectangles(into: &framebuffer, deadline: deadline)
 
             case RFB.setColourMapEntriesType:
-                _ = try await receive(exactly: 3) // padding + first-colour high byte
-                let colourCount = Int(try await readUInt16())
-                _ = try await receive(exactly: colourCount * 6)
+                _ = try await receiveFramebuffer(exactly: 3, deadline: deadline)
+                let colourCount = Int(try await readFramebufferUInt16(deadline: deadline))
+                _ = try await receiveFramebuffer(exactly: colourCount * 6, deadline: deadline)
 
             case RFB.bellType:
                 break
 
             case RFB.serverCutTextType:
-                _ = try await receive(exactly: 3) // padding
-                let length = Int(try await readUInt32())
-                _ = try await receive(exactly: length)
+                _ = try await receiveFramebuffer(exactly: 3, deadline: deadline)
+                let length = Int(try await readFramebufferUInt32(deadline: deadline))
+                _ = try await receiveFramebuffer(exactly: length, deadline: deadline)
 
             default:
                 throw RFBError.unexpectedMessage(messageType)
@@ -279,16 +300,19 @@ actor RFBClient {
         }
     }
 
-    private func readRectangles(into framebuffer: inout Framebuffer) async throws -> Bool {
-        _ = try await receive(exactly: 1) // padding
-        let rectangleCount = Int(try await readUInt16())
+    private func readRectangles(into framebuffer: inout Framebuffer, deadline: Date?) async throws -> Bool {
+        _ = try await receiveFramebuffer(exactly: 1, deadline: deadline)
+        let rectangleCount = Int(try await readFramebufferUInt16(deadline: deadline))
         // 0xffff means "unknown count, read until a LastRect pseudo-encoding".
         let readUntilLastRect = rectangleCount == 0xffff
         var index = 0
         var gotPixels = false
 
         while readUntilLastRect || index < rectangleCount {
-            guard let rectangle = RFBRectangleHeader(bytes: try await receive(exactly: 12)) else {
+            guard let rectangle = RFBRectangleHeader(bytes: try await receiveFramebuffer(
+                exactly: 12,
+                deadline: deadline
+            )) else {
                 throw RFBError.connectionClosed
             }
             index += 1
@@ -296,7 +320,7 @@ actor RFBClient {
             switch rectangle.encoding {
             case RFB.rawEncoding:
                 let byteCount = Int(rectangle.width) * Int(rectangle.height) * 4
-                let pixels = try await receive(exactly: byteCount)
+                let pixels = try await receiveFramebuffer(exactly: byteCount, deadline: deadline)
                 framebuffer.blit(
                     pixels,
                     x: Int(rectangle.x), y: Int(rectangle.y),
@@ -308,7 +332,7 @@ actor RFBClient {
                 // Cursor bitmap + 1bpp mask; x/y are the hotspot, not a screen position.
                 let pixelBytes = Int(rectangle.width) * Int(rectangle.height) * 4
                 let maskBytes = ((Int(rectangle.width) + 7) / 8) * Int(rectangle.height)
-                _ = try await receive(exactly: pixelBytes + maskBytes)
+                _ = try await receiveFramebuffer(exactly: pixelBytes + maskBytes, deadline: deadline)
 
             case RFB.desktopSizeEncoding:
                 // No pixel data; w/h are the new framebuffer dimensions.
@@ -333,6 +357,23 @@ actor RFBClient {
         }
 
         return gotPixels
+    }
+
+    private func receiveFramebuffer(exactly count: Int, deadline: Date?) async throws -> [UInt8] {
+        if let deadline {
+            return try await receive(exactly: count, deadline: deadline, timeoutError: .framebufferTimeout)
+        }
+        return try await receive(exactly: count)
+    }
+
+    private func readFramebufferUInt16(deadline: Date?) async throws -> UInt16 {
+        let bytes = try await receiveFramebuffer(exactly: 2, deadline: deadline)
+        return UInt16(bytes[0]) << 8 | UInt16(bytes[1])
+    }
+
+    private func readFramebufferUInt32(deadline: Date?) async throws -> UInt32 {
+        let bytes = try await receiveFramebuffer(exactly: 4, deadline: deadline)
+        return UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8 | UInt32(bytes[3])
     }
 
     func sendKey(keysym: UInt32, down: Bool) async throws {
@@ -514,14 +555,19 @@ actor RFBClient {
         return result
     }
 
-    private func receive(exactly count: Int, deadline: Date) async throws -> [UInt8] {
+    private func receive(
+        exactly count: Int,
+        deadline: Date,
+        timeoutError: RFBError = .clipboardTimeout
+    ) async throws -> [UInt8] {
         if count == 0 { return [] }
         var result = [UInt8]()
         result.reserveCapacity(count)
         while result.count < count {
             let chunk = try await receiveChunk(
                 maximum: count - result.count,
-                timeout: deadline.timeIntervalSinceNow
+                timeout: deadline.timeIntervalSinceNow,
+                timeoutError: timeoutError
             )
             if chunk.isEmpty { throw RFBError.connectionClosed }
             result.append(contentsOf: chunk)
@@ -541,9 +587,13 @@ actor RFBClient {
         }
     }
 
-    private func receiveChunk(maximum: Int, timeout: TimeInterval) async throws -> [UInt8] {
+    private func receiveChunk(
+        maximum: Int,
+        timeout: TimeInterval,
+        timeoutError: RFBError
+    ) async throws -> [UInt8] {
         guard timeout > 0 else {
-            throw RFBError.clipboardTimeout
+            throw timeoutError
         }
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[UInt8], Error>) in
@@ -556,7 +606,7 @@ actor RFBClient {
                 }
             }
             queue.asyncAfter(deadline: .now() + timeout) {
-                if resumed.fire() { continuation.resume(throwing: RFBError.clipboardTimeout) }
+                if resumed.fire() { continuation.resume(throwing: timeoutError) }
             }
         }
     }
@@ -571,13 +621,19 @@ actor RFBClient {
         return UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8 | UInt32(bytes[3])
     }
 
-    private func readUInt16(deadline: Date) async throws -> UInt16 {
-        let bytes = try await receive(exactly: 2, deadline: deadline)
+    private func readUInt16(
+        deadline: Date,
+        timeoutError: RFBError = .clipboardTimeout
+    ) async throws -> UInt16 {
+        let bytes = try await receive(exactly: 2, deadline: deadline, timeoutError: timeoutError)
         return UInt16(bytes[0]) << 8 | UInt16(bytes[1])
     }
 
-    private func readUInt32(deadline: Date) async throws -> UInt32 {
-        let bytes = try await receive(exactly: 4, deadline: deadline)
+    private func readUInt32(
+        deadline: Date,
+        timeoutError: RFBError = .clipboardTimeout
+    ) async throws -> UInt32 {
+        let bytes = try await receive(exactly: 4, deadline: deadline, timeoutError: timeoutError)
         return UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8 | UInt32(bytes[3])
     }
 

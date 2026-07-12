@@ -887,7 +887,8 @@ public final class MacVMService: Sendable {
             switch error {
             case .authenticationFailed, .passwordRequired, .noSupportedSecurityType, .unsupportedEncoding, .unexpectedMessage:
                 return false
-            case .connectionClosed, .handshakeFailed, .notConnected, .clipboardTimeout, .invalidClipboardText:
+            case .connectionClosed, .handshakeFailed, .notConnected, .framebufferTimeout,
+                 .clipboardTimeout, .invalidClipboardText:
                 return true
             }
         }
