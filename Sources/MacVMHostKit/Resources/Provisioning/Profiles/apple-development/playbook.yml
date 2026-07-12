@@ -3,8 +3,20 @@
   hosts: macvm
   gather_facts: false
   tasks:
-    - name: Verify Xcode is configured
-      ansible.builtin.raw: xcode-select -p && xcodebuild -version
+    - name: Ensure Xcode is selected, then verify
+      ansible.builtin.raw: |
+        set -e
+        if ! xcodebuild -version >/dev/null 2>&1; then
+          developer_dir=/Applications/Xcode.app/Contents/Developer
+          if [[ ! -d "$developer_dir" ]]; then
+            xcode_app="$(find /Applications -maxdepth 1 -name 'Xcode*.app' 2>/dev/null | sort -V | tail -n 1)"
+            developer_dir="$xcode_app/Contents/Developer"
+          fi
+          if [[ -d "$developer_dir" ]]; then
+            sudo /usr/bin/xcode-select --switch "$developer_dir"
+          fi
+        fi
+        xcode-select -p && xcodebuild -version
       changed_when: false
 
     - name: Install Swift development utilities

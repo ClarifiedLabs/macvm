@@ -6,8 +6,15 @@
     - name: Install Homebrew when absent
       ansible.builtin.raw: |
         set -e
+        xcode_dir_before="$(xcode-select -p 2>/dev/null || true)"
         if [[ ! -x /opt/homebrew/bin/brew ]]; then
           NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        fi
+        # The Homebrew installer switches the active developer directory to the
+        # Command Line Tools when it installs them; restore the prior selection.
+        xcode_dir_after="$(xcode-select -p 2>/dev/null || true)"
+        if [[ -n "$xcode_dir_before" && "$xcode_dir_before" != "$xcode_dir_after" && -d "$xcode_dir_before" ]]; then
+          sudo /usr/bin/xcode-select --switch "$xcode_dir_before"
         fi
       changed_when: false
 

@@ -311,6 +311,30 @@ func bootstrapScriptIncludesXcodeAutomationHooks() throws {
 }
 
 @Test
+func homebrewPlaybookRestoresXcodeSelectionAroundInstaller() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let catalog = ProvisioningCatalog.load(rootDirectory: root)
+    let profile = try #require(catalog.profile(id: "homebrew"))
+    let playbook = try String(contentsOf: profile.playbookURL, encoding: .utf8)
+
+    #expect(playbook.contains("xcode_dir_before=\"$(xcode-select -p"))
+    #expect(playbook.contains("xcode_dir_after=\"$(xcode-select -p"))
+    #expect(playbook.contains("sudo /usr/bin/xcode-select --switch \"$xcode_dir_before\""))
+}
+
+@Test
+func appleDevelopmentPlaybookReselectsXcodeBeforeVerifying() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let catalog = ProvisioningCatalog.load(rootDirectory: root)
+    let profile = try #require(catalog.profile(id: "apple-development"))
+    let playbook = try String(contentsOf: profile.playbookURL, encoding: .utf8)
+
+    #expect(playbook.contains("if ! xcodebuild -version"))
+    #expect(playbook.contains("sudo /usr/bin/xcode-select --switch"))
+    #expect(playbook.contains("xcode-select -p && xcodebuild -version"))
+}
+
+@Test
 func fileStagerCopiesWithoutChangingSource() throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
