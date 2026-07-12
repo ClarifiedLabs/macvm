@@ -1,19 +1,123 @@
+import AppKit
 import MacVMHostKit
 import SwiftUI
+import Virtualization
 
 enum SetupPhaseState: Equatable {
     case done, active, failed, pending
 }
 
-/// Live setup progress: framebuffer thumbnail + vnc:// URL on the left, with
-/// the current activity, diagnostics, and full phase list on the right.
+enum SetupPreviewMode: String, CaseIterable, Identifiable {
+    case live
+    case analyzed
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .live: "Live"
+        case .analyzed: "Analyzed Frame"
+        }
+    }
+
+    static func resolved(_ requested: Self, hasLiveDisplay: Bool) -> Self {
+        hasLiveDisplay ? requested : .analyzed
+    }
+}
+
+enum SetupInputDecision: Equatable {
+    case disable
+    case enable
+    case confirm
+}
+
+enum SetupInputPolicy {
+    static func decision(requested: Bool, warningAcknowledged: Bool) -> SetupInputDecision {
+        guard requested else { return .disable }
+        return warningAcknowledged ? .enable : .confirm
+    }
+}
+
+/// Hosts Virtualization.framework's native display while preventing it from
+/// receiving mouse or keyboard input until the user explicitly opts in.
+@MainActor
+final class SetupVirtualMachineDisplayView: NSView {
+    let displayView = VZVirtualMachineView()
+    private(set) var allowsGuestInput = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        displayView.translatesAutoresizingMaskIntoConstraints = false
+        displayView.automaticallyReconfiguresDisplay = false
+        displayView.capturesSystemKeys = false
+        addSubview(displayView)
+        NSLayoutConstraint.activate([
+            displayView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            displayView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            displayView.topAnchor.constraint(equalTo: topAnchor),
+            displayView.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func setAllowsGuestInput(_ allowed: Bool) {
+        guard allowsGuestInput != allowed else { return }
+        allowsGuestInput = allowed
+        displayView.capturesSystemKeys = allowed
+
+        if !allowed,
+           let firstResponder = window?.firstResponder as? NSView,
+           firstResponder === displayView || firstResponder.isDescendant(of: displayView) {
+            window?.makeFirstResponder(nil)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard allowsGuestInput else { return nil }
+        return super.hitTest(point)
+    }
+}
+
+struct SetupLiveDisplay: NSViewRepresentable {
+    let virtualMachine: VZVirtualMachine
+    let allowsInput: Bool
+
+    func makeNSView(context: Context) -> SetupVirtualMachineDisplayView {
+        let view = SetupVirtualMachineDisplayView()
+        view.displayView.virtualMachine = virtualMachine
+        view.setAllowsGuestInput(allowsInput)
+        return view
+    }
+
+    func updateNSView(_ view: SetupVirtualMachineDisplayView, context: Context) {
+        if view.displayView.virtualMachine !== virtualMachine {
+            view.displayView.virtualMachine = virtualMachine
+        }
+        view.setAllowsGuestInput(allowsInput)
+    }
+
+    static func dismantleNSView(_ view: SetupVirtualMachineDisplayView, coordinator: ()) {
+        view.setAllowsGuestInput(false)
+        view.displayView.virtualMachine = nil
+    }
+}
+
+/// Live setup progress: native guest display + analyzed framebuffer on the left,
+/// with the current activity, diagnostics, and full phase list on the right.
 struct SetupProgressCard: View {
     @Environment(AppStore.self) private var store
     let setup: SetupProgress
     let vm: ManagedVM
 
     @AppStorage("setupProgressPreviewWidth") private var previewWidth = 520.0
+    @AppStorage("setupInteractionWarningAcknowledged-v1") private var interactionWarningAcknowledged = false
     @State private var resizeStartWidth: Double?
+    @State private var requestedPreviewMode = SetupPreviewMode.live
+    @State private var allowsGuestInput = false
+    @State private var presentsInputWarning = false
 
     private static let minPreviewWidth = 420.0
     private static let maxPreviewWidth = 900.0
@@ -34,11 +138,25 @@ struct SetupProgressCard: View {
             }
             .padding(16)
         }
+        .confirmationDialog(
+            "Allow Input During Automated Setup?",
+            isPresented: $presentsInputWarning,
+            titleVisibility: .visible
+        ) {
+            Button("Allow Input") {
+                interactionWarningAcknowledged = true
+                allowsGuestInput = true
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("MacVM is still sending input to the guest. Your clicks and keystrokes can change the active screen and cause automated setup to fail.")
+        }
     }
 
     private var previewColumn: some View {
         VStack(alignment: .leading, spacing: 8) {
-            thumbnail
+            previewControls
+            preview
             Text(setup.vncURL)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.tertiary)
@@ -49,27 +167,117 @@ struct SetupProgressCard: View {
         }
     }
 
-    private var thumbnail: some View {
+    private var liveVirtualMachine: VZVirtualMachine? {
+        store.setupVirtualMachine(forName: vm.metadata.name)
+    }
+
+    private var effectivePreviewMode: SetupPreviewMode {
+        SetupPreviewMode.resolved(
+            requestedPreviewMode,
+            hasLiveDisplay: liveVirtualMachine != nil
+        )
+    }
+
+    private var previewMode: Binding<SetupPreviewMode> {
+        Binding(
+            get: { effectivePreviewMode },
+            set: { mode in
+                requestedPreviewMode = mode
+                if mode != .live {
+                    allowsGuestInput = false
+                }
+            }
+        )
+    }
+
+    private var inputToggle: Binding<Bool> {
+        Binding(
+            get: { allowsGuestInput },
+            set: { enabled in
+                switch SetupInputPolicy.decision(
+                    requested: enabled,
+                    warningAcknowledged: interactionWarningAcknowledged
+                ) {
+                case .disable:
+                    allowsGuestInput = false
+                case .enable:
+                    allowsGuestInput = true
+                case .confirm:
+                    presentsInputWarning = true
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var previewControls: some View {
+        HStack(spacing: 10) {
+            if liveVirtualMachine != nil {
+                Picker("Setup preview", selection: previewMode) {
+                    ForEach(SetupPreviewMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 210)
+
+                if effectivePreviewMode == .live {
+                    Toggle("Allow Input", isOn: inputToggle)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .help("Enable mouse and keyboard input for manual setup recovery")
+                }
+            } else {
+                Text(SetupPreviewMode.analyzed.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: CGFloat(previewWidth), alignment: .leading)
+    }
+
+    private var preview: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: .quaternarySystemFill))
-            if let image = setup.thumbnail {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
+
+            switch effectivePreviewMode {
+            case .live:
+                if let liveVirtualMachine {
+                    SetupLiveDisplay(
+                        virtualMachine: liveVirtualMachine,
+                        allowsInput: allowsGuestInput
+                    )
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else {
-                VStack(spacing: 2) {
-                    Text("live framebuffer")
-                    Text("connecting · RFB")
                 }
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.tertiary)
+            case .analyzed:
+                if let image = setup.thumbnail {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    VStack(spacing: 2) {
+                        Text("analyzed frame")
+                        Text("waiting for setup capture")
+                    }
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                }
             }
             resizeHandle
         }
-        .frame(width: CGFloat(previewWidth), height: CGFloat(previewWidth * 9 / 16))
+        .frame(width: CGFloat(previewWidth), height: previewHeight)
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.hairline))
+    }
+
+    private var previewHeight: CGFloat {
+        guard vm.metadata.displayWidth > 0, vm.metadata.displayHeight > 0 else {
+            return CGFloat(previewWidth * 9 / 16)
+        }
+        return CGFloat(previewWidth) * CGFloat(vm.metadata.displayHeight) / CGFloat(vm.metadata.displayWidth)
     }
 
     private var resizeHandle: some View {

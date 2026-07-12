@@ -137,6 +137,40 @@ func setupProgressHeadingTracksTheCurrentPhase() {
 }
 
 @Test
+func setupPreviewDefaultsToAnalyzedFrameWithoutAnInProcessDisplay() {
+    #expect(SetupPreviewMode.resolved(.live, hasLiveDisplay: true) == .live)
+    #expect(SetupPreviewMode.resolved(.analyzed, hasLiveDisplay: true) == .analyzed)
+    #expect(SetupPreviewMode.resolved(.live, hasLiveDisplay: false) == .analyzed)
+}
+
+@Test
+func setupGuestInputRequiresAcknowledgementBeforeEnabling() {
+    #expect(SetupInputPolicy.decision(requested: false, warningAcknowledged: false) == .disable)
+    #expect(SetupInputPolicy.decision(requested: true, warningAcknowledged: false) == .confirm)
+    #expect(SetupInputPolicy.decision(requested: true, warningAcknowledged: true) == .enable)
+}
+
+@Test
+@MainActor
+func setupLiveDisplayIsReadOnlyAndDoesNotResizeTheGuestByDefault() {
+    let view = SetupVirtualMachineDisplayView(frame: NSRect(x: 0, y: 0, width: 520, height: 292.5))
+
+    #expect(!view.allowsGuestInput)
+    #expect(!view.displayView.capturesSystemKeys)
+    #expect(!view.displayView.automaticallyReconfiguresDisplay)
+    #expect(view.hitTest(NSPoint(x: 100, y: 100)) == nil)
+
+    view.setAllowsGuestInput(true)
+
+    #expect(view.allowsGuestInput)
+    #expect(view.displayView.capturesSystemKeys)
+    #expect(view.hitTest(NSPoint(x: 100, y: 100)) != nil)
+
+    view.setAllowsGuestInput(false)
+    #expect(view.hitTest(NSPoint(x: 100, y: 100)) == nil)
+}
+
+@Test
 func setupAccessRowsAppearAsCapabilitiesBecomeUsable() {
     #expect(AccessSectionView.capabilities(
         status: .settingUp,

@@ -223,6 +223,12 @@ final class AppStore {
         viewers[name] != nil
     }
 
+    /// The VM instance owned by an in-process setup runner. Setup UI can attach
+    /// a native display view to this instance without opening another VNC client.
+    func setupVirtualMachine(forName name: String) -> VZVirtualMachine? {
+        headlessRunners[name]?.runningVirtualMachine
+    }
+
     // MARK: - Refresh loop
 
     private func startRefreshTimer() {
