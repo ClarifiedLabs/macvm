@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
-from _checks import REPO_ROOT, read, require_absent, require_contains
+from _checks import REPO_ROOT, read, require_absent, require_contains, require_count
 
 
 def main() -> None:
     test_workflow = read(REPO_ROOT / ".github/workflows/test.yml")
     release_workflow = read(REPO_ROOT / ".github/workflows/release.yml")
     makefile = read(REPO_ROOT / "Makefile")
+    manager_scheme = read(
+        REPO_ROOT / "macvm.xcodeproj/xcshareddata/xcschemes/MacVM Manager.xcscheme"
+    )
 
     for needle in (
         "name: test",
@@ -83,6 +86,17 @@ def main() -> None:
         require_contains(makefile, needle, "Makefile")
 
     require_absent(makefile, "dev-app", "Makefile")
+    require_count(
+        manager_scheme,
+        'parallelizable = "NO"',
+        2,
+        "MacVM Manager.xcscheme",
+    )
+    require_absent(
+        manager_scheme,
+        'parallelizable = "YES"',
+        "MacVM Manager.xcscheme",
+    )
 
     for forbidden in (
         "draft: true",
