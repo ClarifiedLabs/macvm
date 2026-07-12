@@ -1472,6 +1472,209 @@ func setupFlowAcceptsObservedAgeRangeOCRVariant() throws {
     #expect(OCRService.queryMatches(query, candidate: "Acult"))
 }
 
+private actor GuestHardenerMockClient: GuestHardenerClient {
+    let framebufferSize: (width: Int, height: Int)? = (2560, 1440)
+    private let statusFileURL: URL
+    private let statusValue: String
+    private let statusAfterCommandCount: Int?
+    private var lastTypedText = ""
+    private var typedTexts: [String] = []
+    private var provisionCommandCount = 0
+
+    init(statusFileURL: URL, statusValue: String, statusAfterCommandCount: Int?) {
+        self.statusFileURL = statusFileURL
+        self.statusValue = statusValue
+        self.statusAfterCommandCount = statusAfterCommandCount
+    }
+
+    func nudgePointer() async throws {}
+
+    func pressKey(_ keysym: UInt32, modifiers: [UInt32]) async throws {
+        if keysym == Keysym.returnKey, lastTypedText.hasPrefix("bash ") {
+            provisionCommandCount += 1
+            if provisionCommandCount == statusAfterCommandCount {
+                try statusValue.write(to: statusFileURL, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+
+    func typeText(_ text: String, holdDelay: UInt64, gapDelay: UInt64) async throws {
+        lastTypedText = text
+        typedTexts.append(text)
+    }
+
+    func click(x: Int, y: Int, button: UInt8) async throws {}
+
+    func captureFramebuffer() async throws -> Framebuffer {
+        Framebuffer(width: 2560, height: 1440)
+    }
+
+    func recordedTypedTexts() -> [String] {
+        typedTexts
+    }
+}
+
+private func makeGuestHardenerTestFixture(
+    statusValue: String,
+    statusAfterCommandCount: Int? = 1,
+    startTimeout: TimeInterval = 0.02,
+    completionTimeout: TimeInterval = 0.02
+) throws -> (
+    root: URL,
+    hardener: GuestHardener,
+    client: GuestHardenerMockClient
+) {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let bundle = VMBundle(url: root.appendingPathComponent("test.macvm", isDirectory: true))
+    try bundle.createDirectory()
+    let runID = UUID(uuidString: "00000000-0000-0000-0000-000000000042")!
+    let statusURL = bundle.transfersDirectoryURL.appendingPathComponent(GuestHardener.statusFileName(for: runID))
+    let client = GuestHardenerMockClient(
+        statusFileURL: statusURL,
+        statusValue: statusValue,
+        statusAfterCommandCount: statusAfterCommandCount
+    )
+    let timing = GuestHardenerTiming(
+        spotlightDelay: 0,
+        appLaunchDelay: 0,
+        finderDelay: 0,
+        shortDelay: 0,
+        statusPollDelay: 1_000_000,
+        startTimeout: startTimeout,
+        completionTimeout: completionTimeout
+    )
+    return (
+        root,
+        GuestHardener(
+            client: client,
+            bundle: bundle,
+            options: SetupOptions(),
+            progress: nil,
+            runID: runID,
+            timing: timing
+        ),
+        client
+    )
+}
+
+@Test
+func guestHardenerUsesSharedStatusWhenFramebufferIsUnreadable() async throws {
+    let fixture = try makeGuestHardenerTestFixture(statusValue: "done\n")
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    try await fixture.hardener.harden()
+
+    let typedTexts = await fixture.client.recordedTypedTexts()
+    #expect(typedTexts.contains("Terminal"))
+    #expect(typedTexts.contains("bash '/Volumes/My Shared Files/Transfers/provision.sh'"))
+}
+
+@Test
+func guestHardenerReportsGuestScriptFailureFromSharedStatus() async throws {
+    let fixture = try makeGuestHardenerTestFixture(statusValue: "failed:17\n")
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    do {
+        try await fixture.hardener.harden()
+        Issue.record("Expected guest provisioning failure")
+    } catch {
+        #expect(error.localizedDescription == "Guest provisioning script failed with exit code 17.")
+    }
+}
+
+@Test
+func guestHardenerFallsBackWhenSpotlightDoesNotStartTheScript() async throws {
+    let fixture = try makeGuestHardenerTestFixture(statusValue: "done\n", statusAfterCommandCount: 2)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    try await fixture.hardener.harden()
+
+    let typedTexts = await fixture.client.recordedTypedTexts()
+    #expect(typedTexts.filter { $0.hasPrefix("bash ") }.count == 2)
+    #expect(typedTexts.filter { $0 == "Terminal" }.count == 2)
+}
+
+@Test
+func guestHardenerReportsMissingProvisioningStatusAfterAllLaunchers() async throws {
+    let fixture = try makeGuestHardenerTestFixture(statusValue: "", statusAfterCommandCount: nil)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    do {
+        try await fixture.hardener.harden()
+        Issue.record("Expected provisioning launch failure")
+    } catch {
+        #expect(error.localizedDescription == "Couldn't start the provisioning script in the guest.")
+    }
+}
+
+@Test
+func guestHardenerReportsProvisioningCompletionTimeout() async throws {
+    let fixture = try makeGuestHardenerTestFixture(
+        statusValue: "running\n",
+        completionTimeout: 0.01
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    do {
+        try await fixture.hardener.harden()
+        Issue.record("Expected provisioning completion timeout")
+    } catch {
+        #expect(error.localizedDescription.contains("started but did not complete"))
+    }
+}
+
+@Test
+func guestProvisioningStatusParsesSharedFileStates() throws {
+    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    #expect(GuestProvisioningStatus.read(from: url) == .absent)
+    try "running\n".write(to: url, atomically: true, encoding: .utf8)
+    #expect(GuestProvisioningStatus.read(from: url) == .running)
+    try "done\n".write(to: url, atomically: true, encoding: .utf8)
+    #expect(GuestProvisioningStatus.read(from: url) == .done)
+    try "failed:23\n".write(to: url, atomically: true, encoding: .utf8)
+    #expect(GuestProvisioningStatus.read(from: url) == .failed(23))
+}
+
+@Test
+func setupSSHWaitTimeoutIsAFailure() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("test.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let vm = ManagedVM(
+        bundleURL: bundleURL,
+        metadata: VMMetadata(
+            name: "test",
+            cpuCount: 2,
+            memorySizeBytes: 4 * oneGiB,
+            diskSizeBytes: 40 * oneGiB,
+            displayWidth: 1280,
+            displayHeight: 720,
+            bootstrapShareEnabled: true,
+            macAddress: "02:00:00:ff:ff:fe"
+        )
+    )
+    let service = MacVMService(rootDirectory: root)
+
+    do {
+        _ = try await service.waitForSSHReady(
+            vm,
+            options: SetupOptions(),
+            timeout: 0,
+            progress: nil
+        )
+        Issue.record("Expected SSH readiness timeout")
+    } catch {
+        #expect(error.localizedDescription.contains("Timed out after 0 seconds waiting for SSH"))
+    }
+}
+
 @Test
 func provisioningScriptContainsExpectedCommands() {
     let script = GuestProvisioningScript.build(GuestProvisioningInputs(
@@ -1480,7 +1683,8 @@ func provisioningScriptContainsExpectedCommands() {
         authorizedKey: "ssh-ed25519 AAAATESTKEY macvm-test",
         extraAuthorizedKey: nil,
         enableAutoLogin: true,
-        passwordFilePath: "/Volumes/My Shared Files/Transfers/.macvm-pw"
+        passwordFilePath: "/Volumes/My Shared Files/Transfers/.macvm-pw",
+        statusFilePath: "/Volumes/My Shared Files/Transfers/.macvm-status"
     ))
 
     #expect(script.contains("launchctl load -w /System/Library/LaunchDaemons/ssh.plist"))
@@ -1491,12 +1695,16 @@ func provisioningScriptContainsExpectedCommands() {
     #expect(script.contains("defaults write com.apple.loginwindow LoginwindowLaunchesRelaunchApps -bool false"))
     #expect(script.contains("pmset -a sleep 0"))
     #expect(script.contains(GuestProvisioningScript.doneMarker))
+    #expect(script.contains("printf 'running\\n' > \"$STATUS_FILE\""))
+    #expect(script.contains("printf 'done\\n' > \"$STATUS_FILE\""))
+    #expect(script.contains("failed:%s\\n"))
+    #expect(script.contains("'/Volumes/My Shared Files/Transfers/.macvm-status'"))
 
     // Auto-login off removes the sysadminctl line.
     let noAutoLogin = GuestProvisioningScript.build(GuestProvisioningInputs(
         username: "admin", password: "admin", authorizedKey: "k",
         extraAuthorizedKey: nil, enableAutoLogin: false,
-        passwordFilePath: "/tmp/pw"
+        passwordFilePath: "/tmp/pw", statusFilePath: "/tmp/status"
     ))
     #expect(!noAutoLogin.contains("sysadminctl -autologin set"))
     #expect(noAutoLogin.contains("defaults write com.apple.loginwindow LoginwindowLaunchesRelaunchApps -bool false"))

@@ -1,6 +1,10 @@
 import MacVMHostKit
 import SwiftUI
 
+enum SetupPhaseState: Equatable {
+    case done, active, failed, pending
+}
+
 /// The "Driving Setup Assistant" card: live framebuffer thumbnail + vnc:// URL
 /// on the left, the OCR-anchored phase list on the right.
 struct SetupProgressCard: View {
@@ -135,19 +139,24 @@ struct SetupProgressCard: View {
         }
     }
 
-    private enum PhaseState {
-        case done, active, pending
+    static func phaseState(
+        phaseID: Int,
+        currentPhaseID: Int?,
+        failureMessage: String?
+    ) -> SetupPhaseState {
+        let current = currentPhaseID ?? 0
+        if phaseID < current { return .done }
+        if phaseID == current && failureMessage != nil { return .failed }
+        if phaseID == current { return .active }
+        return .pending
     }
 
-    private func state(of phase: SetupPhase) -> PhaseState {
-        let current = setup.currentPhaseID ?? 0
-        if phase.id < current {
-            return .done
-        }
-        if phase.id == current {
-            return .active
-        }
-        return .pending
+    private func state(of phase: SetupPhase) -> SetupPhaseState {
+        Self.phaseState(
+            phaseID: phase.id,
+            currentPhaseID: setup.currentPhaseID,
+            failureMessage: setup.failureMessage
+        )
     }
 
     private func phaseRow(_ phase: SetupPhase) -> some View {
@@ -162,6 +171,10 @@ struct SetupProgressCard: View {
                 case .active:
                     ProgressView()
                         .controlSize(.mini)
+                case .failed:
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color(nsColor: .systemRed))
                 case .pending:
                     Image(systemName: "circle")
                         .font(.system(size: 13))

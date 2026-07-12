@@ -12,6 +12,8 @@ struct GuestProvisioningInputs {
     /// Path, inside the guest, of the file holding the account password (so it isn't
     /// passed on the command line / visible in `ps`). The script reads and deletes it.
     var passwordFilePath: String
+    /// Path in the shared folder used to report running/done/failed status to the host.
+    var statusFilePath: String
 }
 
 /// Builds the shell script that runs inside the guest to make it Ansible-ready.
@@ -51,8 +53,13 @@ enum GuestProvisioningScript {
         return """
         #!/bin/zsh
         set -euo pipefail
+        umask 077
 
         PW_FILE=\(shellQuote(inputs.passwordFilePath))
+        STATUS_FILE=\(shellQuote(inputs.statusFilePath))
+        printf 'running\\n' > "$STATUS_FILE"
+        trap 'status=$?; if (( status != 0 )); then printf "failed:%s\\n" "$status" > "$STATUS_FILE"; fi' EXIT
+
         PW="$(cat "$PW_FILE")"
         rm -f "$PW_FILE"
 
@@ -87,6 +94,7 @@ enum GuestProvisioningScript {
         echo "$PW" | sudo -S pmset -a sleep 0 displaysleep 0 disksleep 0 2>/dev/null || true
         defaults -currentHost write com.apple.screensaver idleTime 0 2>/dev/null || true
 
+        printf 'done\\n' > "$STATUS_FILE"
         echo "\(doneMarker)"
         """
     }

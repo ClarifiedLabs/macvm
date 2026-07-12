@@ -29,6 +29,14 @@ func cliEquivalentRendersFixedActionCommands() {
 }
 
 @Test
+func setupProgressPhaseStateShowsFailureInsteadOfSpinner() {
+    #expect(SetupProgressCard.phaseState(phaseID: 2, currentPhaseID: 3, failureMessage: "failed") == .done)
+    #expect(SetupProgressCard.phaseState(phaseID: 3, currentPhaseID: 3, failureMessage: nil) == .active)
+    #expect(SetupProgressCard.phaseState(phaseID: 3, currentPhaseID: 3, failureMessage: "failed") == .failed)
+    #expect(SetupProgressCard.phaseState(phaseID: 4, currentPhaseID: 3, failureMessage: "failed") == .pending)
+}
+
+@Test
 func cliEquivalentRendersProvisioningProfilesAndInputs() {
     let defaults = VMCreationDraft(
         name: "dev", cpuCount: 4, memoryGiB: 8, diskGiB: 80,

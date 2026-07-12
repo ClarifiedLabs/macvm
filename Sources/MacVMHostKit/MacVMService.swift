@@ -994,7 +994,7 @@ public final class MacVMService: Sendable {
         return normalizedURL
     }
 
-    private func waitForSSHReady(
+    func waitForSSHReady(
         _ vm: ManagedVM,
         options: SetupOptions,
         timeout: TimeInterval = 300,
@@ -1022,15 +1022,15 @@ public final class MacVMService: Sendable {
                     )
                 }
             }
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining > 0 {
+                let delay = min(5, remaining)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
         } while Date() < deadline
 
-        return SetupResult(
-            username: options.username,
-            ipAddress: ipAddress,
-            sshReady: false,
-            inventoryLine: ipAddress.map { inventoryLine(vm, host: $0, user: options.username) }
-        )
+        let detail = ipAddress.map { " Guest IP: \($0)." } ?? " No guest IP was discovered."
+        throw MacVMError.message("Timed out after \(Int(timeout)) seconds waiting for SSH.\(detail)")
     }
 
     private static func hostMacOSMajor() -> Int {
