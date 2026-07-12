@@ -21,6 +21,65 @@ func localNetworkOnboardingIsAcknowledgedPersistently() throws {
     #expect(!subsequentState.shouldPresent)
 }
 
+@Test
+@MainActor
+func failedCreationOffersRemovalForNewIncompleteBundle() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("failed", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let store = AppStore(service: MacVMService(rootDirectory: rootURL))
+    let error = NSError(
+        domain: "VZErrorDomain",
+        code: 10007,
+        userInfo: [NSLocalizedDescriptionKey: "Detailed installation failure"]
+    )
+
+    store.presentCreationFailure(
+        name: "failed",
+        error: error,
+        bundleExistedBeforeCreation: false
+    )
+
+    #expect(store.alertMessage?.contains("Failed to create failed") == true)
+    #expect(store.alertMessage?.contains("Detailed installation failure") == true)
+    #expect(store.alertRemovalCandidate == "failed")
+
+    store.requestAlertRemoval()
+    #expect(store.alertMessage == nil)
+    #expect(store.alertRemovalCandidate == nil)
+    #expect(store.pendingRemoval == "failed")
+
+    store.confirmRemove()
+    #expect(!FileManager.default.fileExists(atPath: bundleURL.path))
+}
+
+@Test
+@MainActor
+func failedCreationNeverOffersRemovalForPreexistingBundle() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("existing", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let store = AppStore(service: MacVMService(rootDirectory: rootURL))
+    store.presentCreationFailure(
+        name: "existing",
+        error: NSError(domain: "VZErrorDomain", code: 10007),
+        bundleExistedBeforeCreation: true
+    )
+
+    #expect(store.alertRemovalCandidate == nil)
+    #expect(FileManager.default.fileExists(atPath: bundleURL.path))
+}
+
 // MARK: - CLIEquivalent
 
 @Test

@@ -127,6 +127,97 @@ func sanitizedBundleNameDropsInvalidCharacters() {
 }
 
 @Test
+func installationErrorDiagnosticsIncludeUnderlyingErrorChain() {
+    let underlying = NSError(
+        domain: "com.apple.MobileDevice.MobileRestore",
+        code: -1,
+        userInfo: [
+            NSLocalizedDescriptionKey: "AMRestorePerformRestoreModeRestoreWithError failed with error: 11",
+            NSLocalizedFailureReasonErrorKey: "An unknown error occurred during installation.",
+        ]
+    )
+    let error = NSError(
+        domain: "VZErrorDomain",
+        code: 10007,
+        userInfo: [
+            NSLocalizedDescriptionKey: "Installation failed.",
+            NSLocalizedFailureReasonErrorKey: "An error occurred during installation.",
+            NSUnderlyingErrorKey: underlying,
+        ]
+    )
+
+    let details = InstallationErrorDiagnostics.technicalDetails(for: error)
+    #expect(details.contains("VZErrorDomain (10007): Installation failed."))
+    #expect(details.contains("Reason: An error occurred during installation."))
+    #expect(details.contains("com.apple.MobileDevice.MobileRestore (-1)"))
+    #expect(details.contains("AMRestorePerformRestoreModeRestoreWithError failed with error: 11"))
+    #expect(details.contains("Reason: An unknown error occurred during installation."))
+}
+
+@Test
+func installationErrorDiagnosticsRecognizeMacOS26DeviceSupportFailure() {
+    let underlying = NSError(
+        domain: "com.apple.MobileDevice.MobileRestore",
+        code: -1,
+        userInfo: [
+            NSLocalizedDescriptionKey: "AMRestorePerformRestoreModeRestoreWithError failed with error: 11",
+        ]
+    )
+    let error = NSError(
+        domain: "VZErrorDomain",
+        code: 10007,
+        userInfo: [NSUnderlyingErrorKey: underlying]
+    )
+
+    let affectedHostMessage = InstallationErrorDiagnostics.message(
+        for: error,
+        hostVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 5, patchVersion: 2)
+    )
+    #expect(affectedHostMessage.contains("known incompatibility"))
+    #expect(affectedHostMessage.contains("25G5052e"))
+    #expect(affectedHostMessage.contains("Technical details:"))
+
+    let fixedHostMessage = InstallationErrorDiagnostics.message(
+        for: error,
+        hostVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 6, patchVersion: 0)
+    )
+    #expect(!fixedHostMessage.contains("known incompatibility"))
+    #expect(fixedHostMessage.contains("Technical details:"))
+}
+
+@Test
+func installationErrorDiagnosticsDoNotMisclassifyOtherFailures() {
+    let error = NSError(
+        domain: "VZErrorDomain",
+        code: 10007,
+        userInfo: [NSLocalizedDescriptionKey: "Installation failed for another reason."]
+    )
+
+    let message = InstallationErrorDiagnostics.message(
+        for: error,
+        hostVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 5, patchVersion: 2)
+    )
+    #expect(!message.contains("Device Support for macOS 27"))
+    #expect(message.contains("VZErrorDomain (10007)"))
+}
+
+@Test
+func installationErrorDiagnosticsLimitPathologicalErrorDepth() {
+    var error = NSError(domain: "InstallDepth", code: 12)
+    for code in (0..<12).reversed() {
+        error = NSError(
+            domain: "InstallDepth",
+            code: code,
+            userInfo: [NSUnderlyingErrorKey: error]
+        )
+    }
+
+    let details = InstallationErrorDiagnostics.technicalDetails(for: error)
+    #expect(details.contains("InstallDepth (0)"))
+    #expect(details.contains("Additional underlying errors omitted."))
+}
+
+@Test
 func displayParserAcceptsWidthByHeight() throws {
     let size = try parseDisplaySize("2560x1440")
     #expect(size.width == 2560)

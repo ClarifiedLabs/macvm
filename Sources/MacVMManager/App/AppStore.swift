@@ -114,6 +114,7 @@ final class AppStore {
     private(set) var lastCommand = CLIEquivalent.list()
     private(set) var copiedKey: String?
     var alertMessage: String?
+    private(set) var alertRemovalCandidate: String?
     var pendingPowerAction: PendingPowerAction?
     var localNetworkOnboardingPresented: Bool
 
@@ -160,6 +161,17 @@ final class AppStore {
     func acknowledgeLocalNetworkOnboarding() {
         localNetworkOnboardingState.acknowledge()
         localNetworkOnboardingPresented = false
+    }
+
+    func dismissAlert() {
+        alertMessage = nil
+        alertRemovalCandidate = nil
+    }
+
+    func requestAlertRemoval() {
+        guard let name = alertRemovalCandidate else { return }
+        dismissAlert()
+        requestRemove(name)
     }
 
     // MARK: - Derived state
@@ -809,6 +821,7 @@ final class AppStore {
         let runSetupAfter = shouldSetup
         let setupXcodeXIPURL = shouldSetup ? selectedXcodeXIPURL : nil
         let setupSelection = provisioningSelection
+        let bundleExistedBeforeCreation = (try? service.resolveRemovalTarget(identifier: name)) != nil
         Task { @MainActor in
             do {
                 let vm = try await service.createVM(from: draft) { [weak self] event in
@@ -848,9 +861,23 @@ final class AppStore {
             } catch {
                 installs[name] = nil
                 refresh()
-                alertMessage = "Failed to create \(name): \(error.localizedDescription)"
+                presentCreationFailure(
+                    name: name,
+                    error: error,
+                    bundleExistedBeforeCreation: bundleExistedBeforeCreation
+                )
             }
         }
+    }
+
+    func presentCreationFailure(
+        name: String,
+        error: Error,
+        bundleExistedBeforeCreation: Bool
+    ) {
+        alertMessage = "Failed to create \(name):\n\n\(error.localizedDescription)"
+        let bundleExistsNow = (try? service.resolveRemovalTarget(identifier: name)) != nil
+        alertRemovalCandidate = !bundleExistedBeforeCreation && bundleExistsNow ? name : nil
     }
 
     private func applyInstallEvent(_ event: VMOperationEvent, name: String) {

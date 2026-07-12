@@ -1274,7 +1274,13 @@ public final class MacVMService: Sendable {
 
         progress?(.status("Installing macOS. This can take a while..."))
         DebugLog.log("Starting macOS installation for \(draft.name)")
-        try await VirtualizationAsync.install(installer)
+        do {
+            try await VirtualizationAsync.install(installer)
+        } catch {
+            let message = InstallationErrorDiagnostics.message(for: error)
+            DebugLog.log("macOS installation failed for \(draft.name): \(message)")
+            throw MacVMError.message(message)
+        }
         DebugLog.log("macOS installation finished for \(draft.name)")
         progress?(.status("Installation complete. Use `macvm run \(draft.name)` for first boot."))
 

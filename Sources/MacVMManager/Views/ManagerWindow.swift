@@ -57,10 +57,17 @@ struct ManagerWindow: View {
             "MacVM Manager",
             isPresented: Binding(
                 get: { store.alertMessage != nil },
-                set: { if !$0 { store.alertMessage = nil } }
+                set: { if !$0 { store.dismissAlert() } }
             )
         ) {
-            Button("OK", role: .cancel) {}
+            if store.alertRemovalCandidate != nil {
+                Button("Remove Incomplete VM", role: .destructive) {
+                    store.requestAlertRemoval()
+                }
+            }
+            Button("OK", role: .cancel) {
+                store.dismissAlert()
+            }
         } message: {
             Text(store.alertMessage ?? "")
         }
