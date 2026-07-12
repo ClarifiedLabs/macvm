@@ -118,6 +118,8 @@ macvm inventory dev-02 > dev-02.inventory
 ansible -i dev-02.inventory all -m raw -a true
 ```
 
+Setup uses a verified OCR policy and keeps redacted decision traces under each VM bundle's `Setup/diagnostics/`. Contributors can run `make test-setup-e2e` to soak Setup Assistant against three fresh clones of one installed macOS seed; set `MACVM_E2E_IPSW` to avoid downloading a restore image.
+
 By default setup creates an `admin` account with password `admin`. Override it when creating or setting up a VM:
 
 ```bash

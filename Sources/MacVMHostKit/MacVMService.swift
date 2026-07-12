@@ -543,6 +543,13 @@ public final class MacVMService: Sendable {
         }
     }
 
+    /// The latest framebuffer published by the setup runner. Reading this file
+    /// keeps Manager previews from opening a competing VNC client while setup
+    /// owns input routing.
+    public func setupPreviewPNG(for vm: ManagedVM) -> Data? {
+        try? Data(contentsOf: VMBundle(url: vm.bundleURL).setupPreviewURL)
+    }
+
     /// Type literal text into the guest over VNC.
     public func sendText(_ vm: ManagedVM, text: String) async throws {
         try await withRFBClient(vm) { client, _ in

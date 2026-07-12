@@ -249,6 +249,10 @@ struct VMBundle {
         runtimeDirectoryURL.appendingPathComponent("setup-state.json")
     }
 
+    var setupPreviewURL: URL {
+        runtimeDirectoryURL.appendingPathComponent("setup-preview.png")
+    }
+
     var provisioningStateURL: URL {
         setupDirectoryURL.appendingPathComponent("provisioning-state.json")
     }
@@ -444,6 +448,7 @@ struct VMBundle {
 
     func clearSetupRuntimeState() {
         try? FileManager.default.removeItem(at: setupRuntimeStateURL)
+        try? FileManager.default.removeItem(at: setupPreviewURL)
     }
 
     /// The live setup operation for this bundle, or nil if setup is not running.

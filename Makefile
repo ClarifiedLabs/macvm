@@ -14,7 +14,7 @@ XCODE_RESULT_BUNDLE ?=
 XCODE_COMMON_FLAGS = -clonedSourcePackagesDirPath "$(XCODE_SOURCE_PACKAGES)" -skipPackagePluginValidation -skipMacroValidation
 XCODE_RESULT_BUNDLE_FLAGS = $(if $(XCODE_RESULT_BUNDLE),-resultBundlePath "$(XCODE_RESULT_BUNDLE)",)
 
-.PHONY: all build build-cli build-app test test-provisioning test-provisioning-e2e dist dist-cli dist-app package release release-list test-release clean help
+.PHONY: all build build-cli build-app test test-provisioning test-provisioning-e2e test-setup-e2e dist dist-cli dist-app package release release-list test-release clean help
 
 all: dist
 
@@ -27,6 +27,7 @@ help:
 		'make test          Run the Xcode test suite' \
 		'make test-provisioning  Syntax-check bundled and example Ansible playbooks' \
 		'make test-provisioning-e2e  Create a real VM and smoke-test provisioning' \
+		'make test-setup-e2e  Install one seed and soak Setup Assistant on three APFS clones' \
 		'make dist          Run tests and build the signed CLI and app in dist/' \
 		'make dist-cli      Run tests and build the signed dist/macvm binary' \
 		'make dist-app      Run tests and build the signed "dist/MacVM Manager.app"' \
@@ -52,6 +53,9 @@ test-provisioning:
 
 test-provisioning-e2e: build-cli
 	@MACVM_E2E_BINARY="$(abspath $(XCODE_DERIVED_DATA))/Build/Products/Debug/macvm" ./scripts/test-provisioning-e2e.sh
+
+test-setup-e2e: build-cli
+	@MACVM_E2E_BINARY="$(abspath $(XCODE_DERIVED_DATA))/Build/Products/Debug/macvm" ./scripts/test-setup-e2e.sh
 
 dist: dist-cli dist-app
 

@@ -1534,7 +1534,7 @@ private func performSetup(service: MacVMService, virtualMachine: ManagedVM, opti
         ) { event in reporter.handle(event) }
     } catch {
         print("Setup failed: \(error.localizedDescription)")
-        print("The VM is still running — inspect it at \(session.vncURLString) (screenshots in the bundle's Setup/screenshots).")
+        print("The VM is still running — inspect it at \(session.vncURLString) (trace and recent frames are in Setup/diagnostics).")
         print("Press Ctrl+C to stop it.")
         fflush(stdout)
         try await runner.waitUntilStopped()
@@ -1549,7 +1549,7 @@ private func performSetup(service: MacVMService, virtualMachine: ManagedVM, opti
         print("SSH: macvm ssh \(virtualMachine.metadata.name)")
     } else {
         print("Setup ran, but SSH did not come up\(result.ipAddress.map { " (guest IP \($0))" } ?? "").")
-        print("Inspect the guest via \(session.vncURLString) or the Setup/screenshots in the bundle.")
+        print("Inspect the guest via \(session.vncURLString) or the Setup/diagnostics directory in the bundle.")
     }
 
     if options.shutdownAfter {

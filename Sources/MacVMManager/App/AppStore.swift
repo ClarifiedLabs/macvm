@@ -992,7 +992,7 @@ final class AppStore {
         Task { @MainActor [weak self] in
             while true {
                 guard let store = self, store.setups[name] != nil else { return }
-                if let data = try? await store.service.captureScreenshot(vm),
+                if let data = store.service.setupPreviewPNG(for: vm),
                    let image = NSImage(data: data) {
                     store.setups[name]?.thumbnail = image
                 }

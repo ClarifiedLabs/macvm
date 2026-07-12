@@ -41,6 +41,58 @@ private func containsKeysAtom(_ decisions: [SetupPolicy.Decision]) -> Bool {
     }
 }
 
+// MARK: - Account creation and typed login goals
+
+@Test
+func accountFormIdentityDoesNotSatisfyLoginWindowGoal() {
+    let form = screen([
+        obs("Create a Mac Account", 900, 260, 420, 40),
+        obs("admin", 900, 470, 180, 24),
+        obs("Administrator", 900, 510, 220, 24),
+        obs("Password", 900, 590, 160, 24),
+    ])
+
+    #expect(SetupStep.ScreenGoal.loginWindowOrDesktop.match(in: form) == nil)
+
+    let login = screen([
+        obs("Administrator", 1120, 500, 240, 32),
+        obs("Enter Password", 1100, 600, 280, 30),
+    ])
+    #expect(SetupStep.ScreenGoal.loginWindowOrDesktop.match(in: login) != nil)
+
+    let setupTouchID = screen([
+        obs("Touch ID", 1100, 300, 240, 36),
+        obs("Set Up Later", 1050, 1200, 220, 30),
+    ])
+    #expect(SetupStep.ScreenGoal.loginWindowOrDesktop.match(in: setupTouchID) == nil)
+
+    let bodyMention = screen([
+        obs("Open Finder after setup", 900, 500, 420, 30),
+    ])
+    #expect(SetupStep.ScreenGoal.desktop.match(in: bodyMention) == nil)
+}
+
+@Test
+func creatingAccountIsPassiveAndNeverRescueClicked() {
+    let creating = screen([
+        obs("Create a Mac Account", 900, 260, 420, 40),
+        obs("admin", 900, 470, 180, 24),
+        obs("Creating account...", 800, 1300, 260, 28),
+        obs("Continue", 2200, 1300, 140, 30),
+    ])
+    let decisions = runPolicy(
+        target: SetupStep.ScreenGoal.loginWindowOrDesktop.query,
+        screens: [creating],
+        maxSteps: 8
+    )
+
+    #expect(decisions.count == 8)
+    #expect(decisions.allSatisfy { decision in
+        if case .wait = decision { return true }
+        return false
+    })
+}
+
 // MARK: - The reported failure (Transfer pane, macOS 26)
 
 @Test

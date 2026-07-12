@@ -1,14 +1,152 @@
 import CoreGraphics
 import Foundation
 
+private final class SetupDiagnostics: @unchecked Sendable {
+    private static let retainedFrameCount = 20
+
+    let directory: URL
+    private let lock = NSLock()
+    private var frameNames: [String] = []
+    private var sequence = 0
+
+    init(bundle: VMBundle) {
+        let formatter = ISO8601DateFormatter()
+        let timestamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        directory = bundle.setupDirectoryURL
+            .appendingPathComponent("diagnostics", isDirectory: true)
+            .appendingPathComponent("\(timestamp)-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    func record(_ event: String, screen: SetupPolicy.Screen? = nil) {
+        let payload: [String: Any] = lock.withLock {
+            sequence += 1
+            var value: [String: Any] = [
+                "sequence": sequence,
+                "timestamp": ISO8601DateFormatter().string(from: Date()),
+                "event": event,
+            ]
+            if let screen {
+                value["framebuffer"] = ["width": screen.size.width, "height": screen.size.height]
+                value["visibleText"] = SetupStepRunner.visibleTextSummary(screen.observations, limit: 20)
+                value["signature"] = String(SetupPolicy.signature(of: screen.observations).hash)
+            }
+            return value
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              var line = String(data: data, encoding: .utf8) else { return }
+        line.append("\n")
+        let url = directory.appendingPathComponent("trace.jsonl")
+        guard let bytes = line.data(using: .utf8) else { return }
+        if FileManager.default.fileExists(atPath: url.path),
+           let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: bytes)
+        } else {
+            try? bytes.write(to: url, options: .atomic)
+        }
+    }
+
+    func recordFrame(png: Data, observations: [TextObservation], width: Int, height: Int) {
+        let frameName: String = lock.withLock {
+            sequence += 1
+            return String(format: "frame-%05d", sequence)
+        }
+        let pngURL = directory.appendingPathComponent("\(frameName).png")
+        let textURL = directory.appendingPathComponent("\(frameName).txt")
+        try? png.write(to: pngURL, options: .atomic)
+        let lines = observations.map { observation in
+            String(
+                format: "%.2f  %d,%d %dx%d  %@",
+                observation.confidence,
+                Int(observation.rectInPixels.minX),
+                Int(observation.rectInPixels.minY),
+                Int(observation.rectInPixels.width),
+                Int(observation.rectInPixels.height),
+                observation.string
+            )
+        }
+        let header = "confidence  x,y wxh  text (framebuffer \(width)x\(height))"
+        try? ([header] + lines).joined(separator: "\n").write(to: textURL, atomically: true, encoding: .utf8)
+
+        let expired: [String] = lock.withLock {
+            frameNames.append(frameName)
+            guard frameNames.count > Self.retainedFrameCount else { return [] }
+            let count = frameNames.count - Self.retainedFrameCount
+            let removed = Array(frameNames.prefix(count))
+            frameNames.removeFirst(count)
+            return removed
+        }
+        for name in expired {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(name).png"))
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(name).txt"))
+        }
+    }
+
+    func finishSuccessfully() {
+        let names = lock.withLock { frameNames }
+        for name in names {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(name).png"))
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(name).txt"))
+        }
+        record("setup assistant completed")
+    }
+}
+
 /// One step in a Setup Assistant flow. A flat, Codable shape so flows can ship as
 /// data and be overridden by a user-supplied JSON file.
 public struct SetupStep: Codable, Equatable, Sendable {
+    public enum ScreenGoal: String, Codable, Sendable {
+        case loginWindowOrDesktop
+        case desktop
+
+        var query: String {
+            switch self {
+            case .loginWindowOrDesktop:
+                return "Finder|Enter Password"
+            case .desktop:
+                return "Finder"
+            }
+        }
+
+        func match(in screen: SetupPolicy.Screen) -> GuestTextMatch? {
+            if self == .loginWindowOrDesktop,
+               let password = OCRService.match("Enter Password", in: screen.observations) {
+                return password
+            }
+
+            guard screen.size.height > 0 else { return nil }
+            let menuBarLimit = screen.size.height * 0.12
+            guard let finder = OCRService.findAll("Finder", in: screen.observations).first(where: {
+                $0.center.y <= menuBarLimit
+            }) else { return nil }
+            return GuestTextMatch(
+                text: finder.string,
+                x: Int(finder.center.x.rounded()),
+                y: Int(finder.center.y.rounded()),
+                confidence: finder.confidence
+            )
+        }
+    }
+
+    public struct Account: Codable, Equatable, Sendable {
+        public var username: String
+        public var password: String
+
+        public init(username: String, password: String) {
+            self.username = username
+            self.password = password
+        }
+    }
+
     public enum Action: String, Codable, Sendable {
         case waitText   // wait until `text` appears via OCR
         case clickText  // wait for `text`, then click it
         case clickTextWhenText // wait for `whenText`, then click `text`
         case advanceUntilText // click known setup buttons until `text` appears
+        case advanceUntilScreen // drive panes until a typed screen goal is reached
+        case createAccount // fill, submit, and wait for creation of the setup account
         case type       // type `text` literally
         case repairAccountPasswordMismatch // recover from Setup Assistant's password mismatch alert
         case keys       // press each chord in `keys` (e.g. "return", "cmd+space")
@@ -18,6 +156,8 @@ public struct SetupStep: Codable, Equatable, Sendable {
     }
 
     public var action: Action
+    public var screenGoal: ScreenGoal?
+    public var account: Account?
     public var text: String?
     public var whenText: String?
     public var keys: [String]?
@@ -35,6 +175,8 @@ public struct SetupStep: Codable, Equatable, Sendable {
 
     public init(
         action: Action,
+        screenGoal: ScreenGoal? = nil,
+        account: Account? = nil,
         text: String? = nil,
         whenText: String? = nil,
         keys: [String]? = nil,
@@ -46,6 +188,8 @@ public struct SetupStep: Codable, Equatable, Sendable {
         optional: Bool? = nil
     ) {
         self.action = action
+        self.screenGoal = screenGoal
+        self.account = account
         self.text = text
         self.whenText = whenText
         self.keys = keys
@@ -71,6 +215,18 @@ public struct SetupStep: Codable, Equatable, Sendable {
 
     public static func advanceUntilText(_ text: String, timeout: TimeInterval = 90, optional: Bool = false) -> SetupStep {
         SetupStep(action: .advanceUntilText, text: text, timeout: timeout, optional: optional)
+    }
+
+    public static func advanceUntilScreen(_ goal: ScreenGoal, timeout: TimeInterval = 90) -> SetupStep {
+        SetupStep(action: .advanceUntilScreen, screenGoal: goal, timeout: timeout)
+    }
+
+    public static func createAccount(username: String, password: String, timeout: TimeInterval = 600) -> SetupStep {
+        SetupStep(
+            action: .createAccount,
+            account: Account(username: username, password: password),
+            timeout: timeout
+        )
     }
 
     public static func type(
@@ -133,6 +289,22 @@ struct SetupStepRunner {
     /// Display phases over the flow; entering a phase's first step emits a
     /// structured `.setupStep` event for UIs.
     var phases: [SetupPhase] = []
+    private let diagnostics: SetupDiagnostics
+
+    init(
+        client: RFBClient,
+        bundle: VMBundle,
+        defaultTimeout: TimeInterval,
+        progress: VMOperationHandler?,
+        phases: [SetupPhase] = []
+    ) {
+        self.client = client
+        self.bundle = bundle
+        self.defaultTimeout = defaultTimeout
+        self.progress = progress
+        self.phases = phases
+        diagnostics = SetupDiagnostics(bundle: bundle)
+    }
 
     /// The pane/modal knowledge and every advancement decision live in
     /// `SetupPolicy`, which is pure and unit-testable. These shims keep the
@@ -168,13 +340,18 @@ struct SetupStepRunner {
                 )))
             }
             do {
+                diagnostics.record("step \(index) \(step.action.rawValue)")
                 try await execute(step)
             } catch {
                 await dumpScreenshot(label: "failure-\(index)-\(step.action.rawValue)")
                 DebugLog.log("Setup step \(index) (\(step.action.rawValue)) failed: \(error.localizedDescription)")
-                throw error
+                diagnostics.record("failed: \(error.localizedDescription)")
+                throw MacVMError.message(
+                    "\(error.localizedDescription) Diagnostics: \(diagnostics.directory.path)"
+                )
             }
         }
+        diagnostics.finishSuccessfully()
     }
 
     private func execute(_ step: SetupStep) async throws {
@@ -235,6 +412,19 @@ struct SetupStepRunner {
                 }
             }
 
+        case .advanceUntilScreen:
+            guard let goal = step.screenGoal else {
+                throw MacVMError.message("Setup screen-goal step is missing its goal.")
+            }
+            progress?(.status("Setup: advancing until \(goal.rawValue)"))
+            _ = try await advanceUntilText(goal.query, timeout: step.timeout ?? defaultTimeout, screenGoal: goal)
+
+        case .createAccount:
+            guard let account = step.account else {
+                throw MacVMError.message("Setup account-creation step is missing account inputs.")
+            }
+            try await createAccount(account, timeout: step.timeout ?? 600)
+
         case .type:
             guard try await shouldRunConditionalStep(step) else {
                 return
@@ -277,6 +467,98 @@ struct SetupStepRunner {
         case .wake:
             try? await nudgeDisplay()
         }
+    }
+
+    private func createAccount(_ account: SetupStep.Account, timeout: TimeInterval) async throws {
+        progress?(.status("Setup: creating account “\(account.username)”"))
+        _ = try await poll(text: "Create a.*Account|Create a Computer Account|Full Name", timeout: 30, occurrence: 0)
+
+        if let fullName = try? await poll(text: "Full Name", timeout: 5, occurrence: 0) {
+            try await click(fullName)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            try await clearFocusedText(maxCharacters: max(34, account.username.count + 4))
+        }
+        try await withInputClient { inputClient in
+            try await inputClient.typeText(account.username)
+        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        try await enterAccountPassword(account.password, field: "^Password$")
+        try await enterAccountPassword(account.password, field: "Verify Password")
+        try await submitAccountForm()
+
+        let deadline = Date().addingTimeInterval(timeout)
+        let startedAt = Date()
+        var nextStatusAt = startedAt
+        var submitRetries = 0
+
+        while Date() < deadline {
+            if await visibleText(Self.accountPasswordMismatchQuery, timeout: 1) != nil {
+                try await repairAccountPasswordMismatch(password: account.password, timeout: 5)
+                continue
+            }
+
+            let screen = try await captureScreen()
+            if screen.observations.isEmpty {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                continue
+            }
+
+            let isAccountForm = OCRService.match(
+                "Create a.*Account|Create a Computer Account|Full Name|Hint \\(Optional\\)",
+                in: screen.observations
+            ) != nil
+            let isCreating = OCRService.match("Creating account", in: screen.observations) != nil
+
+            if !isAccountForm && !isCreating {
+                return
+            }
+
+            let now = Date()
+            if now >= nextStatusAt {
+                let elapsed = Int(now.timeIntervalSince(startedAt))
+                let state = isCreating ? "macOS is creating the account" : "waiting for account submission"
+                reportStatus("Setup: \(state) (\(elapsed)s); no unrelated input will be sent")
+                nextStatusAt = now.addingTimeInterval(Self.pollStatusInterval)
+            }
+
+            if !isCreating, submitRetries < 3,
+               let continueButton = OCRService.match("^Continue$", in: screen.observations) {
+                submitRetries += 1
+                reportStatus("Setup: account form did not begin creating; retrying Continue (\(submitRetries)/3)")
+                try await click(continueButton)
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                continue
+            }
+
+            try? await Task.sleep(nanoseconds: 700_000_000)
+        }
+
+        await dumpScreenshot(label: "account-creation-timeout")
+        throw MacVMError.message(
+            "Timed out after \(Int(timeout))s waiting for macOS to create account ‘\(account.username)’."
+        )
+    }
+
+    private func enterAccountPassword(_ password: String, field: String) async throws {
+        let match = try await poll(text: field, timeout: 15, occurrence: 0)
+        try await click(match)
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        try await clearFocusedText(maxCharacters: max(12, password.count + 2))
+        try await withInputClient { inputClient in
+            try await inputClient.typeText(
+                password,
+                holdDelay: Self.nanoseconds(from: Self.setupPasswordHoldDelay),
+                gapDelay: Self.nanoseconds(from: Self.setupPasswordGapDelay)
+            )
+        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+
+    private func submitAccountForm() async throws {
+        let continueButton = try await poll(text: "^Continue$", timeout: 20, occurrence: 0)
+        try await click(continueButton)
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
     }
 
     private func repairAccountPasswordMismatch(password: String, timeout: TimeInterval) async throws {
@@ -360,6 +642,18 @@ struct SetupStepRunner {
 
     func visibleText(_ text: String, timeout: TimeInterval) async -> GuestTextMatch? {
         try? await poll(text: text, timeout: timeout, occurrence: 0)
+    }
+
+    func visibleScreen(_ goal: SetupStep.ScreenGoal, timeout: TimeInterval) async -> GuestTextMatch? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            guard let screen = try? await captureScreen() else { return nil }
+            if let match = goal.match(in: screen) {
+                return match
+            }
+            try? await Task.sleep(nanoseconds: 700_000_000)
+        } while Date() < deadline
+        return nil
     }
 
     /// Last-resort recovery when a required wait/click times out: the guest is
@@ -449,7 +743,11 @@ struct SetupStepRunner {
     /// actually changed and feeds that back, so a click that did nothing
     /// escalates to the next rung instead of repeating forever.
     @discardableResult
-    private func advanceUntilText(_ text: String, timeout: TimeInterval) async throws -> GuestTextMatch {
+    private func advanceUntilText(
+        _ text: String,
+        timeout: TimeInterval,
+        screenGoal: SetupStep.ScreenGoal? = nil
+    ) async throws -> GuestTextMatch {
         let deadline = Date().addingTimeInterval(timeout)
         let startedAt = Date()
         var nextStatusAt = startedAt.addingTimeInterval(Self.pollStatusInterval)
@@ -457,8 +755,14 @@ struct SetupStepRunner {
         var screen = try await captureScreen()
 
         repeat {
-            let (decision, nextState) = SetupPolicy.decide(target: text, screen: screen, state: state)
+            if let match = screenGoal?.match(in: screen) {
+                diagnostics.record("reached typed goal \(screenGoal?.rawValue ?? "unknown")", screen: screen)
+                return match
+            }
+            let policyTarget = screenGoal == nil ? text : "__macvm_typed_goal_never_matches__"
+            let (decision, nextState) = SetupPolicy.decide(target: policyTarget, screen: screen, state: state)
             state = nextState
+            diagnostics.record(Self.diagnosticSummary(decision), screen: screen)
 
             switch decision {
             case .reachedTarget(let match):
@@ -483,8 +787,7 @@ struct SetupStepRunner {
             case .act(let tactic, let ladderKey, let rationale):
                 reportStatus("Setup: \(rationale)")
                 let before = screen
-                try await perform(tactic, on: screen)
-                let outcome = try await awaitScreenChange(from: before, anchor: SetupPolicy.anchor(forLadderKey: ladderKey))
+                let outcome = try await performAndVerify(tactic, from: screen, ladderKey: ladderKey)
                 state.lastActionAdvanced = outcome.advanced
                 screen = outcome.screen
                 if !outcome.advanced {
@@ -494,6 +797,33 @@ struct SetupStepRunner {
         } while Date() < deadline
 
         throw MacVMError.message("Timed out after \(Int(timeout))s advancing until “\(text)”. Last visible text: \(Self.visibleTextSummary(screen.observations)).")
+    }
+
+    /// Run an entire action transaction on one newest VNC connection. This is
+    /// important for Virtualization.framework's private server, which may route
+    /// input to the newest client: resolving on one connection and clicking on
+    /// another races previews and attached viewers.
+    private func performAndVerify(
+        _ tactic: SetupPolicy.Tactic,
+        from fallbackScreen: SetupPolicy.Screen,
+        ladderKey: String
+    ) async throws -> (advanced: Bool, screen: SetupPolicy.Screen) {
+        let anchor = SetupPolicy.anchor(forLadderKey: ladderKey)
+        if let session = bundle.liveVNCSession() {
+            return try await RFBClient.withConnection(port: session.port, password: session.password) { actionClient in
+                try? await actionClient.nudgePointer()
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                let current = try await captureScreen(using: actionClient)
+                if SetupPolicy.didAdvance(from: fallbackScreen, to: current, anchor: anchor) {
+                    return (true, current)
+                }
+                try await perform(tactic, on: current, using: actionClient)
+                return try await awaitScreenChange(from: current, anchor: anchor, using: actionClient)
+            }
+        }
+
+        try await perform(tactic, on: fallbackScreen, using: client)
+        return try await awaitScreenChange(from: fallbackScreen, anchor: anchor, using: client)
     }
 
     /// Nudge the display awake, let it settle, then capture and OCR one frame.
@@ -513,6 +843,17 @@ struct SetupStepRunner {
         return screen
     }
 
+    private func captureScreen(using captureClient: RFBClient) async throws -> SetupPolicy.Screen {
+        var screen = try await captureScreenOnce(using: captureClient)
+        var retries = 0
+        while screen.observations.isEmpty && retries < 3 {
+            retries += 1
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            screen = try await captureScreenOnce(using: captureClient)
+        }
+        return screen
+    }
+
     private func captureScreenOnce() async throws -> SetupPolicy.Screen {
         try? await nudgeDisplay()
         try? await Task.sleep(nanoseconds: 400_000_000)
@@ -523,15 +864,30 @@ struct SetupStepRunner {
         )
     }
 
+    private func captureScreenOnce(using captureClient: RFBClient) async throws -> SetupPolicy.Screen {
+        try? await captureClient.nudgePointer()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let framebuffer = try await captureClient.captureFramebuffer()
+        publishPreview(framebuffer)
+        return SetupPolicy.Screen(
+            observations: OCRService.observations(in: framebuffer),
+            size: CGSize(width: framebuffer.width, height: framebuffer.height)
+        )
+    }
+
     /// Execute a tactic's atoms in order. Clicks after the first re-resolve
     /// against a fresh capture because earlier atoms may have moved the layout;
     /// a query that no longer matches abandons the tactic — the verify step
     /// then reports "did not advance" and the policy escalates.
-    private func perform(_ tactic: SetupPolicy.Tactic, on screen: SetupPolicy.Screen) async throws {
+    private func perform(
+        _ tactic: SetupPolicy.Tactic,
+        on screen: SetupPolicy.Screen,
+        using actionClient: RFBClient
+    ) async throws {
         // Input sent to an asleep display is consumed as a wake event and the
         // click never lands. Wake it just before acting, not only at capture
         // time — an aggressive guest can blank in the gap between the two.
-        try? await nudgeDisplay()
+        try? await actionClient.nudgePointer()
         try? await Task.sleep(nanoseconds: 250_000_000)
 
         var observations = screen.observations
@@ -540,7 +896,8 @@ struct SetupStepRunner {
             case .click(let query):
                 if index > 0 {
                     try? await Task.sleep(nanoseconds: 400_000_000)
-                    if let framebuffer = try? await captureFramebufferForOCR() {
+                    if let framebuffer = try? await actionClient.captureFramebuffer() {
+                        publishPreview(framebuffer)
                         observations = OCRService.observations(in: framebuffer)
                     }
                 }
@@ -548,18 +905,17 @@ struct SetupStepRunner {
                     reportStatus("Setup: “\(query)” is not on screen mid-tactic; abandoning this attempt")
                     return
                 }
-                try await click(match)
+                try await actionClient.click(x: match.x, y: match.y)
 
             case .clickMatch(let match):
-                try await click(match)
+                let refreshed = SetupPolicy.detectModal(in: screen)?.button ?? match
+                try await actionClient.click(x: refreshed.x, y: refreshed.y)
 
             case .keys(let keys):
-                try await pressKeys(keys)
+                try await pressKeys(keys, using: actionClient)
 
             case .type(let text):
-                try await withInputClient { inputClient in
-                    try await inputClient.typeText(text)
-                }
+                try await actionClient.typeText(text)
 
             case .delay(let seconds):
                 try await Task.sleep(nanoseconds: Self.nanoseconds(from: seconds))
@@ -574,12 +930,13 @@ struct SetupStepRunner {
     /// capture either way so the caller reuses it as the next perception.
     private func awaitScreenChange(
         from before: SetupPolicy.Screen,
-        anchor: String?
+        anchor: String?,
+        using captureClient: RFBClient
     ) async throws -> (advanced: Bool, screen: SetupPolicy.Screen) {
         try? await Task.sleep(nanoseconds: 700_000_000)
         var latest = before
         for attempt in 0..<4 {
-            latest = try await captureScreen()
+            latest = try await captureScreen(using: captureClient)
             if SetupPolicy.didAdvance(from: before, to: latest, anchor: anchor) {
                 return (true, latest)
             }
@@ -590,15 +947,13 @@ struct SetupStepRunner {
         return (false, latest)
     }
 
-    private func pressKeys(_ keys: [String]) async throws {
-        try await withInputClient { inputClient in
-            for token in keys {
-                guard let chord = Keysym.parseChord(token) else {
-                    throw MacVMError.message("Unknown key in setup pane action: '\(token)'")
-                }
-                try await inputClient.pressKey(chord.key, modifiers: chord.modifiers)
-                try? await Task.sleep(nanoseconds: 120_000_000)
+    private func pressKeys(_ keys: [String], using inputClient: RFBClient) async throws {
+        for token in keys {
+            guard let chord = Keysym.parseChord(token) else {
+                throw MacVMError.message("Unknown key in setup pane action: '\(token)'")
             }
+            try await inputClient.pressKey(chord.key, modifiers: chord.modifiers)
+            try? await Task.sleep(nanoseconds: 120_000_000)
         }
     }
 
@@ -650,15 +1005,38 @@ struct SetupStepRunner {
     }
 
     private func captureFramebufferForOCR() async throws -> Framebuffer {
+        let framebuffer: Framebuffer
         if let session = bundle.liveVNCSession() {
             do {
-                return try await RFBClient.captureOnce(port: session.port, password: session.password)
+                framebuffer = try await RFBClient.captureOnce(port: session.port, password: session.password)
+                publishPreview(framebuffer)
+                return framebuffer
             } catch {
                 DebugLog.log("Setup: fresh VNC OCR capture failed (\(error.localizedDescription)); falling back to the control connection.")
             }
         }
 
-        return try await client.captureFramebuffer()
+        framebuffer = try await client.captureFramebuffer()
+        publishPreview(framebuffer)
+        return framebuffer
+    }
+
+    private func publishPreview(_ framebuffer: Framebuffer) {
+        let url = bundle.setupPreviewURL
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let modified = attributes[.modificationDate] as? Date,
+           Date().timeIntervalSince(modified) < 1.5 {
+            return
+        }
+        guard let png = framebuffer.pngData() else { return }
+        try? FileManager.default.createDirectory(at: bundle.runtimeDirectoryURL, withIntermediateDirectories: true)
+        try? png.write(to: url, options: .atomic)
+        diagnostics.recordFrame(
+            png: png,
+            observations: OCRService.observations(in: framebuffer),
+            width: framebuffer.width,
+            height: framebuffer.height
+        )
     }
 
     private func nudgeDisplay() async throws {
@@ -713,6 +1091,19 @@ struct SetupStepRunner {
         }
 
         return summary.isEmpty ? "none" : summary.joined(separator: " | ")
+    }
+
+    private static func diagnosticSummary(_ decision: SetupPolicy.Decision) -> String {
+        switch decision {
+        case .reachedTarget(let match):
+            return "reached target via \(match.text)"
+        case .act(let tactic, let ladderKey, _):
+            return "act \(ladderKey): \(tactic.summary)"
+        case .wait(let seconds):
+            return "wait \(seconds)s"
+        case .stuck(let reason):
+            return "stuck: \(reason.summary)"
+        }
     }
 
     private static func nanoseconds(from seconds: TimeInterval) -> UInt64 {

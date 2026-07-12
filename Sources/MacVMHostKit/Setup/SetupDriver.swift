@@ -13,7 +13,7 @@ struct VNCSetupDriver: SetupDriver {
     let steps: [SetupStep]
 
     func reachLoggedInDesktop(progress: VMOperationHandler?) async throws {
-        if await runner.visibleText("Finder", timeout: 8) != nil {
+        if await runner.visibleScreen(.desktop, timeout: 8) != nil {
             progress?(.status("Finder is already visible; skipping Setup Assistant driving."))
             return
         }

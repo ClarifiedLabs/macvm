@@ -5,7 +5,7 @@ import Foundation
 /// Parses the OCR dumps `SetupStepRunner.dumpScreenshot` writes next to failure
 /// screenshots (`<label>.txt`) into a `SetupPolicy.Screen`, so real-guest
 /// failures can be replayed as policy regression tests. Copy the artifact from
-/// `<vm>.macvm/Setup/screenshots/` into `Tests/MacVMHostKitTests/Fixtures/`.
+/// `<vm>.macvm/Setup/diagnostics/` into `Tests/MacVMHostKitTests/Fixtures/`.
 ///
 /// Format (one observation per line, sizes in framebuffer pixels):
 ///     confidence  x,y wxh  text (framebuffer 2560x1440)

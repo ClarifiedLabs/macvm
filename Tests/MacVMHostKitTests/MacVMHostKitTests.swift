@@ -913,6 +913,8 @@ func setupStepsRoundTripThroughJSON() throws {
         .clickText("English", timeout: 60),
         .clickText("^Continue$", whenText: "FileVault", timeout: 30, optional: true),
         .advanceUntilText("Finder|Enter Password", timeout: 120),
+        .advanceUntilScreen(.loginWindowOrDesktop, timeout: 300),
+        .createAccount(username: "admin", password: "secret", timeout: 600),
         .clickText("Not Now", timeout: 20, optional: true),
         .type("United States", holdDelay: 0.08, gapDelay: 0.18),
         .type("admin", whenText: "Enter Password", timeout: 5, optional: true),
@@ -951,7 +953,7 @@ func setupFlowDrivesEarlyOnboardingPanesReactivelyBeforeAccountCreation() throws
             && ($0.text ?? "").contains("Create a.*Account")
             && ($0.text ?? "").contains("Create a Computer Account")
     })
-    let account = try #require(steps.firstIndex { $0.action == .waitText && ($0.text ?? "").contains("Create a.*Account") })
+    let account = try #require(steps.firstIndex { $0.action == .createAccount })
 
     #expect(country < dispatcher)
     #expect(dispatcher < account)
@@ -980,7 +982,8 @@ func setupPlanExposesPhasesWithAnchors() {
         "Wait for IP and SSH",
     ])
     #expect(plan.phases[2].anchor == #"advanceUntilText "Create a.*Account""#)
-    #expect(plan.phases[4].anchor == #"advanceUntilText "Finder|Enter Password""#)
+    #expect(plan.phases[3].anchor == "createAccount")
+    #expect(plan.phases[4].anchor == "advanceUntilScreen loginWindowOrDesktop")
     #expect(plan.phases[8].anchor == "dhcpd_leases")
 
     // Pipeline-owned phases carry no step index; OCR phases point into the flow
@@ -1326,14 +1329,10 @@ func setupFlowAdvancesLatePanesAndLogsInOnlyWhenNeeded() throws {
     let options = SetupOptions()
     let steps = SetupFlows.tahoe(options: options)
     let waits = steps.filter { $0.action == .waitText }
-    let advances = steps.filter { $0.action == .advanceUntilText }
-
-    let firstFinishGate = try #require(advances.first {
-        ($0.text ?? "").contains("Finder") && ($0.text ?? "").contains("Enter Password")
+    let firstFinishGate = try #require(steps.first {
+        $0.action == .advanceUntilScreen && $0.screenGoal == .loginWindowOrDesktop
     })
-    #expect((firstFinishGate.text ?? "").contains("Finder"))
-    #expect((firstFinishGate.text ?? "").contains("Enter Password"))
-    #expect(firstFinishGate.optional != true)
+    #expect(firstFinishGate.timeout == 300)
 
     let conditionalPassword = try #require(steps.first {
         $0.action == .type
@@ -1354,11 +1353,12 @@ func setupFlowAdvancesLatePanesAndLogsInOnlyWhenNeeded() throws {
     #expect(conditionalPassword.optional == true)
     #expect(conditionalReturn.optional == true)
 
-    let desktopGate = try #require(advances.last)
-    #expect(desktopGate.text == "Finder")
-    #expect(desktopGate.optional != true)
+    let desktopGate = try #require(steps.last {
+        $0.action == .advanceUntilScreen && $0.screenGoal == .desktop
+    })
+    #expect(desktopGate.timeout == 240)
 
-    let account = try #require(steps.firstIndex { $0.action == .waitText && ($0.text ?? "").contains("Create a.*Account") })
+    let account = try #require(steps.firstIndex { $0.action == .createAccount })
     let focusIndex = try #require(steps.firstIndex { $0 == loginFocus })
     let loginIndex = try #require(steps.firstIndex { $0 == conditionalPassword })
     let desktopIndex = try #require(steps.firstIndex { $0 == desktopGate })
@@ -1375,12 +1375,10 @@ func setupFlowHandlesFileVaultInsideScreenshotDrivenTail() throws {
     let steps = SetupFlows.tahoe(options: SetupOptions())
 
     let account = try #require(steps.firstIndex {
-        $0.action == .waitText && ($0.text ?? "").contains("Create a.*Account")
+        $0.action == .createAccount
     })
     let tail = try #require(steps.firstIndex {
-        $0.action == .advanceUntilText
-            && ($0.text ?? "").contains("Enter Password")
-            && ($0.text ?? "").contains("Finder")
+        $0.action == .advanceUntilScreen && $0.screenGoal == .loginWindowOrDesktop
     })
 
     #expect(account < tail)
@@ -1390,33 +1388,21 @@ func setupFlowHandlesFileVaultInsideScreenshotDrivenTail() throws {
 }
 
 @Test
-func setupFlowSlowsAccountPasswordTypingAndRepairsMismatchAlert() throws {
+func setupFlowUsesVerifiedAccountCreationAndSlowLoginPasswordTyping() throws {
     let options = SetupOptions(username: "dev", password: "admin")
     let steps = SetupFlows.tahoe(options: options)
 
     let account = try #require(steps.firstIndex {
-        $0.action == .waitText && ($0.text ?? "").contains("Create a.*Account")
-    })
-    let repair = try #require(steps.firstIndex {
-        $0.action == .repairAccountPasswordMismatch
+        $0.action == .createAccount
     })
     let tail = try #require(steps.firstIndex {
-        $0.action == .advanceUntilText
-            && ($0.text ?? "").contains("Enter Password")
-            && ($0.text ?? "").contains("Finder")
+        $0.action == .advanceUntilScreen && $0.screenGoal == .loginWindowOrDesktop
     })
 
-    #expect(account < repair)
-    #expect(repair < tail)
-    #expect(steps[repair].text == options.password)
-    #expect(steps[repair].timeout == 5)
-
-    let accountPasswordEntries = steps[account..<repair].filter {
-        $0.action == .type && $0.text == options.password && $0.whenText == nil
-    }
-    #expect(accountPasswordEntries.count == 2)
-    #expect(accountPasswordEntries.allSatisfy { ($0.typingHoldDelay ?? 0) >= 0.08 })
-    #expect(accountPasswordEntries.allSatisfy { ($0.typingGapDelay ?? 0) >= 0.18 })
+    #expect(account < tail)
+    #expect(steps[account].account == SetupStep.Account(username: options.username, password: options.password))
+    #expect(steps[account].timeout == 600)
+    #expect(!steps.contains { $0.action == .repairAccountPasswordMismatch })
 
     let loginPassword = try #require(steps.first {
         $0.action == .type
@@ -1919,8 +1905,25 @@ func setupRuntimeStateRoundTripsAndReportsLiveness() throws {
     #expect(bundle.readSetupRuntimeState()?.failureMessage == "Timed out")
     #expect(bundle.liveSetupRuntimeState() == nil)
 
+    try Data("preview".utf8).write(to: bundle.setupPreviewURL, options: .atomic)
+    #expect(FileManager.default.fileExists(atPath: bundle.setupPreviewURL.path))
+    let previewVM = ManagedVM(
+        bundleURL: bundleURL,
+        metadata: VMMetadata(
+            name: "preview",
+            cpuCount: 2,
+            memorySizeBytes: 4 * oneGiB,
+            diskSizeBytes: 40 * oneGiB,
+            displayWidth: 1280,
+            displayHeight: 720,
+            bootstrapShareEnabled: false
+        )
+    )
+    #expect(MacVMService().setupPreviewPNG(for: previewVM) == Data("preview".utf8))
+
     bundle.clearSetupRuntimeState()
     #expect(bundle.readSetupRuntimeState() == nil)
+    #expect(!FileManager.default.fileExists(atPath: bundle.setupPreviewURL.path))
 }
 
 @Test
@@ -2091,6 +2094,26 @@ func rfbCaptureOnceUsesANewConnectionForEachCapture() async throws {
 }
 
 @Test
+func rfbActionTransactionCapturesClicksAndVerifiesOnOneConnection() async throws {
+    let server = try MinimalRFBServer(maxConnections: 1, mode: .captureClickAndVerify)
+    server.start()
+    defer { server.stop() }
+
+    let frames = try await RFBClient.withConnection(port: server.port, password: nil) { client in
+        let before = try await client.captureFramebuffer()
+        try await client.click(x: 0, y: 0)
+        let after = try await client.captureFramebuffer()
+        return (before, after)
+    }
+
+    #expect(frames.0.pixels == [0, 0, 255, 0])
+    #expect(frames.1.pixels == [0, 255, 0, 0])
+    #expect(server.connectionCount == 1)
+    #expect(server.pointerEventCount == 3)
+    #expect(server.waitUntilStopped(timeout: 2))
+}
+
+@Test
 func setupRFBConnectionRetriesDroppedInitialFramebufferRequest() async throws {
     let server = try MinimalRFBServer(maxConnections: 2, mode: .dropFirstFramebufferRequestThenCapture)
     server.start()
@@ -2161,6 +2184,7 @@ func rfbClientClipboardWaitTimesOut() async throws {
 private enum MinimalRFBServerMode {
     case framebufferCaptures
     case dropFirstFramebufferRequestThenCapture
+    case captureClickAndVerify
     case captureClientCutText
     case sendServerCutText(String)
     case idleAfterHandshake
@@ -2177,6 +2201,7 @@ private final class MinimalRFBServer: @unchecked Sendable {
     private var closed = false
     private var handledConnections = 0
     private var capturedClientCutTexts: [String] = []
+    private var capturedPointerEvents = 0
 
     var connectionCount: Int {
         lock.lock()
@@ -2188,6 +2213,12 @@ private final class MinimalRFBServer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return capturedClientCutTexts
+    }
+
+    var pointerEventCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedPointerEvents
     }
 
     init(maxConnections: Int, mode: MinimalRFBServerMode = .framebufferCaptures) throws {
@@ -2313,6 +2344,8 @@ private final class MinimalRFBServer: @unchecked Sendable {
                 return
             }
             try serveFramebufferCapture(clientFD: clientFD, connectionIndex: connectionIndex)
+        case .captureClickAndVerify:
+            try captureClickAndVerify(clientFD: clientFD)
         case .captureClientCutText:
             try captureClientCutText(clientFD: clientFD)
         case .sendServerCutText(let text):
@@ -2325,6 +2358,26 @@ private final class MinimalRFBServer: @unchecked Sendable {
     private func serveFramebufferCapture(clientFD: Int32, connectionIndex: Int) throws {
         _ = try readExactly(10, from: clientFD) // FramebufferUpdateRequest.
         let pixel: [UInt8] = connectionIndex == 1 ? [0, 0, 255, 0] : [0, 255, 0, 0]
+        try sendFramebuffer(pixel: pixel, to: clientFD)
+    }
+
+    private func captureClickAndVerify(clientFD: Int32) throws {
+        _ = try readExactly(10, from: clientFD) // Initial FramebufferUpdateRequest.
+        try sendFramebuffer(pixel: [0, 0, 255, 0], to: clientFD)
+        for _ in 0..<3 {
+            let pointer = try readExactly(6, from: clientFD)
+            guard pointer.first == RFB.pointerEventType else {
+                throw TestSocketError.operationFailed("pointerEvent")
+            }
+            lock.lock()
+            capturedPointerEvents += 1
+            lock.unlock()
+        }
+        _ = try readExactly(10, from: clientFD) // Verification FramebufferUpdateRequest.
+        try sendFramebuffer(pixel: [0, 255, 0, 0], to: clientFD)
+    }
+
+    private func sendFramebuffer(pixel: [UInt8], to clientFD: Int32) throws {
         var update: [UInt8] = [RFB.framebufferUpdateType, 0]
         update.appendBigEndian(UInt16(1))
         update.appendBigEndian(UInt16(0))

@@ -103,17 +103,15 @@ public enum SetupFlows {
             SetupPhase(id: 0, title: "Boot headless, connect RFB client", anchor: "", firstStepIndex: nil),
             SetupPhase(id: 1, title: "Language and region", anchor: #"waitText "Language|Hello""#, firstStepIndex: steps.isEmpty ? nil : 0),
             SetupPhase(id: 2, title: "Setup Assistant panes before account", anchor: #"advanceUntilText "Create a.*Account""#, firstStepIndex: firstIndex(.advanceUntilText, containing: "Create a")),
-            SetupPhase(id: 3, title: "Create admin account", anchor: #"clickText "Full Name""#, firstStepIndex: firstIndex(.waitText, containing: "Create a")),
-            SetupPhase(id: 4, title: "Finish Setup Assistant panes", anchor: #"advanceUntilText "Finder|Enter Password""#, firstStepIndex: firstIndex(.advanceUntilText, containing: "Enter Password")),
+            SetupPhase(id: 3, title: "Create admin account", anchor: "createAccount", firstStepIndex: steps.firstIndex { $0.action == .createAccount }),
+            SetupPhase(id: 4, title: "Finish Setup Assistant panes", anchor: "advanceUntilScreen loginWindowOrDesktop", firstStepIndex: steps.firstIndex { $0.action == .advanceUntilScreen && $0.screenGoal == .loginWindowOrDesktop }),
             SetupPhase(
                 id: 5,
                 title: "Log in if required",
                 anchor: #"whenText "Enter Password""#,
-                firstStepIndex: steps.firstIndex {
-                    $0.action == .type && ($0.whenText?.contains("Enter Password") ?? false)
-                }
+                firstStepIndex: steps.firstIndex { $0.action == .type && ($0.whenText?.contains("Enter Password") ?? false) }
             ),
-            SetupPhase(id: 6, title: "Reach the desktop", anchor: #"advanceUntilText "Finder""#, firstStepIndex: lastIndex(.advanceUntilText, containing: "Finder")),
+            SetupPhase(id: 6, title: "Reach the desktop", anchor: "advanceUntilScreen desktop", firstStepIndex: steps.lastIndex { $0.action == .advanceUntilScreen && $0.screenGoal == .desktop }),
             SetupPhase(id: 7, title: "Enable SSH, install per-VM key", anchor: provisioningAnchor, firstStepIndex: nil),
             SetupPhase(id: 8, title: "Wait for IP and SSH", anchor: sshReadyAnchor, firstStepIndex: nil),
         ]
@@ -141,7 +139,7 @@ public enum SetupFlows {
     /// into the Full Name field so the Account Name auto-derives to it — the field's
     /// autocomplete makes clearing a separately-typed account name unreliable.
     public static func tahoe(options: SetupOptions) -> [SetupStep] {
-        let loginWindowText = "\(options.username)|\(options.fullName)|Enter Password|Touch ID"
+        let loginWindowText = "Enter Password"
         let passwordHoldDelay: TimeInterval = 0.08
         let passwordGapDelay: TimeInterval = 0.18
 
@@ -172,33 +170,11 @@ public enum SetupFlows {
             //    visible until account creation appears.
             .advanceUntilText("Create a.*Account|Create a Computer Account|Full Name", timeout: 420),
 
-            // 6. Create a Mac/Computer Account. Type the username into Full Name so Account Name
-            //    auto-derives to it; click each password field explicitly (Tab
-            //    navigation is unreliable and mismatched the two password entries).
-            // Settle after each field click before typing — the first keystroke is
-            // dropped/reordered if focus hasn't finished landing.
-            // Generous timeout: several optional panes precede this required
-            // anchor, and a slow guest can push their appearance well past the
-            // per-pane budget.
-            .waitText("Create a.*Account|Create a Computer Account|Full Name", timeout: 30),
-            .clickText("Full Name", timeout: 20, optional: true),
-            .delay(1),
-            .type(options.username),
-            .delay(1),
-            .clickText("^Password$", timeout: 15),
-            .delay(1),
-            .type(options.password, holdDelay: passwordHoldDelay, gapDelay: passwordGapDelay),
-            .delay(1),
-            .clickText("Verify Password", timeout: 15),
-            .delay(1),
-            .type(options.password, holdDelay: passwordHoldDelay, gapDelay: passwordGapDelay),
-            .delay(1),
-            .clickText("Continue", timeout: 20),
-            .delay(2),
-            // If a secure-field keystroke is dropped, Setup Assistant reports a
-            // mismatch; recover before the flow starts looking for later panes.
-            .repairAccountPasswordMismatch(options.password),
-            .delay(4),
+            // 6. Fill, submit, and wait for the account as one verified action.
+            //    The "Creating account…" state is passive and can legitimately
+            //    take several minutes; never mistake the typed username for a
+            //    login-window anchor or send unrelated input while it is busy.
+            .createAccount(username: options.username, password: options.password, timeout: 600),
 
             // 7. Late Setup Assistant panes drift and reorder the most across
             //    releases. FileVault may appear before or after Apple Account,
@@ -207,7 +183,7 @@ public enum SetupFlows {
             //    Instead of paying one timeout per possible pane, repeatedly OCR
             //    the current screenshot and click the safest visible advancement
             //    button until either the login window or Finder appears.
-            .advanceUntilText("Finder|\(loginWindowText)", timeout: 300),
+            .advanceUntilScreen(.loginWindowOrDesktop, timeout: 300),
 
             // 8. Some builds land at the login window, while others auto-login
             //     straight to Finder. Only type the password if a login window is
@@ -228,7 +204,7 @@ public enum SetupFlows {
             //     Keep driving from screenshots until Finder is visible.
             // Plain substring (no ^$ anchors): Vision sometimes merges adjacent
             // menu-bar titles into one observation ("Finder File Edit …").
-            .advanceUntilText("Finder", timeout: 240),
+            .advanceUntilScreen(.desktop, timeout: 240),
             .delay(5),
             .screenshot("post-setup-desktop"),
         ]

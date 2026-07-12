@@ -209,6 +209,14 @@ enum SetupPolicy {
         "^Delete",
     ]
 
+    /// Screens that report a real macOS operation in progress. They are never
+    /// rescue-clicked: input during account creation can refocus fields or
+    /// activate a now-disabled Continue button. The outer operation timeout is
+    /// the only cap for these transitions.
+    static let passiveTransitionAnchors = [
+        "Creating account",
+    ]
+
     static let modalRules: [ModalRule] = [
         // Alert prose wraps mid-sentence and anchors match one OCR observation
         // at a time, so each anchor alternates the fragments a line break can
@@ -482,6 +490,10 @@ enum SetupPolicy {
 
         if let dangerous = dangerousModalAnchors.first(where: { OCRService.match($0, in: screen.observations) != nil }) {
             return (.stuck(.dangerousModal(anchor: dangerous)), state)
+        }
+
+        if passiveTransitionAnchors.contains(where: { OCRService.match($0, in: screen.observations) != nil }) {
+            return (.wait(idleWait), state)
         }
 
         let modal = detectModal(in: screen)
