@@ -15,9 +15,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A00000000000000000000034"
-               BuildableName = "MacVM Manager.app"
-               BlueprintName = "MacVM Manager"
+               BlueprintIdentifier = "A00000000000000000000033"
+               BuildableName = "macvm"
+               BlueprintName = "MacVM CLI"
                ReferencedContainer = "container:macvm.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -32,23 +32,12 @@
       <Testables>
          <TestableReference
             skipped = "NO"
-            parallelizable = "NO">
+            parallelizable = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "A00000000000000000000035"
                BuildableName = "MacVMHostKitTests.xctest"
                BlueprintName = "MacVMHostKitTests"
-               ReferencedContainer = "container:macvm.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A00000000000000000000036"
-               BuildableName = "MacVMManagerTests.xctest"
-               BlueprintName = "MacVMManagerTests"
                ReferencedContainer = "container:macvm.xcodeproj">
             </BuildableReference>
          </TestableReference>
@@ -68,9 +57,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A00000000000000000000034"
-            BuildableName = "MacVM Manager.app"
-            BlueprintName = "MacVM Manager"
+            BlueprintIdentifier = "A00000000000000000000033"
+            BuildableName = "macvm"
+            BlueprintName = "MacVM CLI"
             ReferencedContainer = "container:macvm.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -85,9 +74,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A00000000000000000000034"
-            BuildableName = "MacVM Manager.app"
-            BlueprintName = "MacVM Manager"
+            BlueprintIdentifier = "A00000000000000000000033"
+            BuildableName = "macvm"
+            BlueprintName = "MacVM CLI"
             ReferencedContainer = "container:macvm.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

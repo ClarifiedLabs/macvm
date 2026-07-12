@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct MacVMManagerApp: App {
+struct MacVMApp: App {
     @State private var store = AppStore()
 
     init() {

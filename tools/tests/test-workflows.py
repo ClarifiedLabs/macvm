@@ -11,7 +11,7 @@ def main() -> None:
     release_workflow = read(REPO_ROOT / ".github/workflows/release.yml")
     makefile = read(REPO_ROOT / "Makefile")
     manager_scheme = read(
-        REPO_ROOT / "macvm.xcodeproj/xcshareddata/xcschemes/MacVM Manager.xcscheme"
+        REPO_ROOT / "macvm.xcodeproj/xcshareddata/xcschemes/MacVM App.xcscheme"
     )
 
     for needle in (
@@ -22,7 +22,7 @@ def main() -> None:
         "workflow_dispatch:",
         "runs-on: macos-26",
         "PROJECT: macvm.xcodeproj",
-        "SCHEME: MacVM Manager",
+        "SCHEME: MacVM App",
         "make test",
         "XCODE_RESULT_BUNDLE_PATH: .build/ci/xcresults/MacVMTests.xcresult",
         "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
@@ -90,12 +90,12 @@ def main() -> None:
         manager_scheme,
         'parallelizable = "NO"',
         2,
-        "MacVM Manager.xcscheme",
+        "MacVM App.xcscheme",
     )
     require_absent(
         manager_scheme,
         'parallelizable = "YES"',
-        "MacVM Manager.xcscheme",
+        "MacVM App.xcscheme",
     )
 
     for forbidden in (

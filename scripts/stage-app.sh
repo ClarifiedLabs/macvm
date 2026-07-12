@@ -1,14 +1,15 @@
 #!/bin/zsh
 set -euo pipefail
 
-# Build and stage the Xcode-produced "dist/MacVM Manager.app". The app hosts
+# Build and stage the Xcode-produced "dist/MacVM.app". The app hosts
 # VZVirtualMachine in-process, so the Xcode target signs local builds with the
 # same virtualization entitlement as the CLI. Public Developer ID packaging is
 # handled by scripts/package-release.sh.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT_DIR="$ROOT_DIR/dist"
-APP_NAME="MacVM Manager"
+APP_SCHEME="MacVM App"
+APP_NAME="MacVM"
 PROJECT_PATH="$ROOT_DIR/macvm.xcodeproj"
 CONFIGURATION="Release"
 DERIVED_DATA_PATH="${XCODE_DERIVED_DATA:-$ROOT_DIR/.build/xcode-derived}"
@@ -16,7 +17,7 @@ SOURCE_PACKAGES_PATH="${XCODE_SOURCE_PACKAGES:-$ROOT_DIR/.build/xcode-source-pac
 
 xcodebuild \
   -project "$PROJECT_PATH" \
-  -scheme "$APP_NAME" \
+  -scheme "$APP_SCHEME" \
   -configuration "$CONFIGURATION" \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH" \

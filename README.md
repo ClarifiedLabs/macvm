@@ -5,7 +5,7 @@ MacVM creates and runs macOS virtual machines on Apple silicon Macs.
 It ships as a signed and notarized installer package with:
 
 - `macvm`, a command-line tool installed at `/usr/local/bin/macvm`
-- `MacVM Manager`, a native SwiftUI app installed in `/Applications`
+- `MacVM`, a native SwiftUI app installed in `/Applications`
 
 MacVM uses Apple's Virtualization framework, creates each VM from a macOS restore image, and stores VMs as ordinary bundles on disk.
 
@@ -38,8 +38,12 @@ The package installs:
 ```text
 /usr/local/bin/macvm
 /usr/local/bin/macvm_MacVMHostKit.bundle
-/Applications/MacVM Manager.app
+/Applications/MacVM.app
 ```
+
+The installer marks the app bundle as non-relocatable so PackageKit always
+installs it at `/Applications/MacVM.app`, even when another build with
+the same bundle identifier exists elsewhere on the host.
 
 If `/usr/local/bin` is not on your shell `PATH`, add it before running the CLI.
 
@@ -103,9 +107,9 @@ macvm UUID, creation date, and MAC address. Runtime session files and launch on
 boot are not copied. The source must remain stopped for the duration of the
 clone, and Apple Account services may require reauthentication.
 
-## MacVM Manager
+## MacVM App
 
-Open `MacVM Manager` from `/Applications` for a graphical VM manager. It can create and clone VMs, list existing VMs, start viewer windows, run setup, manage restore images, and track Xcode `.xip` archives used for guest provisioning. Closing a VM display hides it without stopping the VM; use **Attach** to restore a Manager-owned native window or open another running owner in macOS Screen Sharing. Use the Clone button or a stopped VM's sidebar context menu to create a copy.
+Open `MacVM` from `/Applications` for a graphical VM manager. It can create and clone VMs, list existing VMs, start viewer windows, run setup, manage restore images, and track Xcode `.xip` archives used for guest provisioning. Closing a VM display hides it without stopping the VM; use **Attach** to restore a Manager-owned native window or open another running owner in macOS Screen Sharing. Use the Clone button or a stopped VM's sidebar context menu to create a copy.
 
 ## Automated Setup
 
@@ -155,7 +159,7 @@ real-VM smoke test.
 
 ## Display and VNC Access
 
-Every running VM owner publishes a temporary password-protected VNC session. Closing a native viewer window leaves its VM running. Reopen the viewer from its Dock icon, use **Attach** in MacVM Manager, or attach from the CLI:
+Every running VM owner publishes a temporary password-protected VNC session. Closing a native viewer window leaves its VM running. Reopen the viewer from its Dock icon, use **Attach** in MacVM, or attach from the CLI:
 
 ```bash
 macvm run dev-02

@@ -54,7 +54,7 @@ struct ManagerWindow: View {
             ProvisionVMSheet()
         }
         .alert(
-            "MacVM Manager",
+            "MacVM",
             isPresented: Binding(
                 get: { store.alertMessage != nil },
                 set: { if !$0 { store.dismissAlert() } }
@@ -145,7 +145,7 @@ struct ManagerWindow: View {
         case .vm(let name): name
         case .images: "Restore Images"
         case .xcode: "Xcode"
-        case nil: "MacVM Manager"
+        case nil: "MacVM"
         }
     }
 
@@ -180,7 +180,7 @@ private struct LocalNetworkOnboardingView: View {
             Text("Local Network Access")
                 .font(.title2.bold())
 
-            Text("MacVM Manager connects to your virtual machines over a private virtual network for setup, SSH, and management. macOS will ask for Local Network access when the first virtual machine needs it.")
+            Text("MacVM connects to your virtual machines over a private virtual network for setup, SSH, and management. macOS will ask for Local Network access when the first virtual machine needs it.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 

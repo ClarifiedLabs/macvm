@@ -10,13 +10,16 @@ DERIVED_DATA_PATH="${XCODE_DERIVED_DATA:-$ROOT_DIR/.build/xcode-derived}"
 SOURCE_PACKAGES_PATH="${XCODE_SOURCE_PACKAGES:-$ROOT_DIR/.build/xcode-source-packages}"
 CONFIGURATION="Release"
 
-APP_NAME="MacVM Manager"
+APP_SCHEME="MacVM App"
+APP_NAME="MacVM"
 CLI_NAME="macvm"
+CLI_SCHEME="MacVM CLI"
 RESOURCE_BUNDLE_NAME="macvm_MacVMHostKit.bundle"
 BASE_BUNDLE_IDENTIFIER="dev.macvm.macvm"
 CLI_BUNDLE_IDENTIFIER="$BASE_BUNDLE_IDENTIFIER.cli"
 PKG_IDENTIFIER="$BASE_BUNDLE_IDENTIFIER.pkg"
 ENTITLEMENTS_PATH="$ROOT_DIR/Support/macvm.entitlements"
+COMPONENT_PLIST_PATH="$ROOT_DIR/Support/macvm-component.plist"
 
 export COPYFILE_DISABLE=1
 
@@ -90,6 +93,8 @@ if [[ ! "$BUILD_NUMBER" =~ '^[0-9]+$' ]]; then
   echo "Invalid build number '$BUILD_NUMBER' (expected integer)" >&2
   exit 2
 fi
+
+require_file "$COMPONENT_PLIST_PATH" "package component plist"
 
 build_scheme() {
   local scheme="$1"
@@ -180,6 +185,7 @@ build_installer_package() {
     --version "$VERSION" \
     --install-location / \
     --ownership recommended \
+    --component-plist "$COMPONENT_PLIST_PATH" \
     "$component_pkg"
 
   productbuild --package "$component_pkg" "$unsigned_pkg"
@@ -205,8 +211,8 @@ notarize_installer_package() {
 rm -rf "$BUILD_DIR"
 mkdir -p "$OUTPUT_DIR" "$PAYLOAD_ROOT/usr/local/bin" "$PAYLOAD_ROOT/Applications"
 
-build_scheme "$CLI_NAME"
-build_scheme "$APP_NAME"
+build_scheme "$CLI_SCHEME"
+build_scheme "$APP_SCHEME"
 
 PRODUCTS_DIR="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION"
 CLI_PRODUCT="$PRODUCTS_DIR/$CLI_NAME"

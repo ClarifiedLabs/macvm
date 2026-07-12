@@ -522,7 +522,7 @@ public final class MacVMService: Sendable {
         }
 
         guard process.role != .manager else {
-            throw MacVMError.message("Refusing to terminate MacVM Manager for '\(vm.metadata.name)'. Stop this Manager-owned VM from MacVM Manager.")
+            throw MacVMError.message("Refusing to terminate MacVM for '\(vm.metadata.name)'. Stop this app-owned VM from MacVM.")
         }
 
         guard process.pid != getpid() else {

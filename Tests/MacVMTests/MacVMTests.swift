@@ -4,7 +4,7 @@ import Foundation
 import Testing
 
 @testable import MacVMHostKit
-@testable import MacVMManager
+@testable import MacVM
 
 private let macOS26Release = MacOSRelease(
     majorVersion: 26,

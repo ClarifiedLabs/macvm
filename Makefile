@@ -23,14 +23,14 @@ help:
 		'make               Run tests and build the signed CLI and app in dist/' \
 		'make build         Build the CLI and app in debug mode with xcodebuild' \
 		'make build-cli     Build the macvm CLI in debug mode with xcodebuild' \
-		'make build-app     Build "MacVM Manager.app" in debug mode with xcodebuild' \
+		'make build-app     Build "MacVM.app" in debug mode with xcodebuild' \
 		'make test          Run the Xcode test suite' \
 		'make test-provisioning  Syntax-check bundled and example Ansible playbooks' \
 		'make test-provisioning-e2e  Create a real VM and smoke-test provisioning' \
 		'make test-setup-e2e  Install one seed and soak Setup Assistant on three APFS clones' \
 		'make dist          Run tests and build the signed CLI and app in dist/' \
 		'make dist-cli      Run tests and build the signed dist/macvm binary' \
-		'make dist-app      Run tests and build the signed "dist/MacVM Manager.app"' \
+		'make dist-app      Run tests and build the signed "dist/MacVM.app"' \
 		'make package       Build a local unsigned installer package for payload testing' \
 		'make release       Create a GitHub release tag (VERSION=patch|minor|major|X.Y.Z)' \
 		'make release-list  List the current release tag' \
@@ -40,13 +40,13 @@ help:
 build: build-cli build-app
 
 build-cli:
-	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme macvm -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) build
+	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "MacVM CLI" -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) build
 
 build-app:
-	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "MacVM Manager" -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) build
+	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "MacVM App" -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) build
 
 test:
-	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "MacVM Manager" -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) -destination '$(XCODE_DESTINATION)' $(XCODE_RESULT_BUNDLE_FLAGS) test
+	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "MacVM App" -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) -destination '$(XCODE_DESTINATION)' $(XCODE_RESULT_BUNDLE_FLAGS) test
 
 test-provisioning:
 	@./scripts/check-provisioning-playbooks.sh
@@ -89,6 +89,7 @@ test-release:
 	@python3 tools/tests/test-release.py
 	@python3 tools/tests/test-workflows.py
 	@python3 tools/tests/test-homebrew-cask.py
+	@python3 tools/tests/test-package.py
 
 clean:
 	rm -rf .build dist

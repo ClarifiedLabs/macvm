@@ -179,7 +179,7 @@ jobs:
 
     env:
       PROJECT: macvm.xcodeproj
-      SCHEME: MacVM Manager
+      SCHEME: MacVM App
       BUNDLE_IDENTIFIER: dev.macvm.macvm
       XCODE_SOURCE_PACKAGES_PATH: .build/ci/xcode-source-packages
       XCODE_DERIVED_DATA_PATH: .build/ci/xcode-derived-data

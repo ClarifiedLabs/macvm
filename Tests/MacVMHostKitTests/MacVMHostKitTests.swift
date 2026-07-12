@@ -2354,7 +2354,7 @@ func stopVMRefusesToTerminateManagerOwner() throws {
         _ = try service.stopVM(vm)
         Issue.record("Expected Manager owner refusal")
     } catch {
-        #expect(error.localizedDescription.contains("Refusing to terminate MacVM Manager"))
+        #expect(error.localizedDescription.contains("Refusing to terminate MacVM"))
     }
 }
 
@@ -2392,7 +2392,7 @@ func stopVMRefusesManagerOwnerFromVNCSessionFallback() throws {
         _ = try service.stopVM(vm)
         Issue.record("Expected Manager owner refusal")
     } catch {
-        #expect(error.localizedDescription.contains("Refusing to terminate MacVM Manager"))
+        #expect(error.localizedDescription.contains("Refusing to terminate MacVM"))
     }
 }
 

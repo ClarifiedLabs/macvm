@@ -3,7 +3,7 @@ import Foundation
 public enum VMProcessRuntimeRole: String, Codable, Sendable {
     case viewer
     case headless
-    /// A VM hosted in the multi-VM MacVM Manager process. External stop
+    /// A VM hosted in the multi-VM MacVM app process. External stop
     /// commands must never terminate this process to stop a single guest.
     case manager
 }

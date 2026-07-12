@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT_DIR="$ROOT_DIR/dist"
 PRODUCT_NAME="macvm"
+SCHEME_NAME="MacVM CLI"
 PROJECT_PATH="$ROOT_DIR/macvm.xcodeproj"
 CONFIGURATION="Release"
 DERIVED_DATA_PATH="${XCODE_DERIVED_DATA:-$ROOT_DIR/.build/xcode-derived}"
@@ -12,7 +13,7 @@ PRODUCTS_DIR="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION"
 
 xcodebuild \
   -project "$PROJECT_PATH" \
-  -scheme "$PRODUCT_NAME" \
+  -scheme "$SCHEME_NAME" \
   -configuration "$CONFIGURATION" \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH" \
