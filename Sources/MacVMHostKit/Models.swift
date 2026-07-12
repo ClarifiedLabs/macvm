@@ -5,6 +5,45 @@ public enum RestoreImageSelectionMode: String, CaseIterable, Codable, Sendable {
     case localFile
 }
 
+/// The macOS release installed from a restore image. The Apple build identifier
+/// is retained because Setup Assistant can drift between builds of the same
+/// semantic OS version.
+public struct MacOSRelease: Codable, Equatable, Sendable {
+    public let majorVersion: Int
+    public let minorVersion: Int
+    public let patchVersion: Int
+    public let buildVersion: String
+
+    public init(
+        majorVersion: Int,
+        minorVersion: Int,
+        patchVersion: Int,
+        buildVersion: String
+    ) {
+        self.majorVersion = majorVersion
+        self.minorVersion = minorVersion
+        self.patchVersion = patchVersion
+        self.buildVersion = buildVersion
+    }
+
+    public init(operatingSystemVersion: OperatingSystemVersion, buildVersion: String) {
+        self.init(
+            majorVersion: operatingSystemVersion.majorVersion,
+            minorVersion: operatingSystemVersion.minorVersion,
+            patchVersion: operatingSystemVersion.patchVersion,
+            buildVersion: buildVersion
+        )
+    }
+
+    public var versionDescription: String {
+        "\(majorVersion).\(minorVersion).\(patchVersion)"
+    }
+
+    public var displayDescription: String {
+        "macOS \(versionDescription) (\(buildVersion))"
+    }
+}
+
 public struct VMCreationDraft: Equatable, Sendable {
     public var name: String
     public var cpuCount: Int
@@ -73,6 +112,10 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
     public var displayHeight: Int
     public var bootstrapShareEnabled: Bool
     public var installedRestoreImageName: String?
+    /// Release identity recorded from the restore image at installation time.
+    /// Bundles created before this field was introduced remain manually usable,
+    /// but require an explicit custom flow for automated setup.
+    public var installedMacOSRelease: MacOSRelease?
     /// Stable MAC assigned at creation so host-side DHCP/ARP lookups can find
     /// the guest reliably. Optional so bundles created before this field decode
     /// cleanly; `VMBundle.ensureNetworkIdentity` backfills a value on demand.
@@ -93,6 +136,7 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         displayHeight: Int,
         bootstrapShareEnabled: Bool,
         installedRestoreImageName: String? = nil,
+        installedMacOSRelease: MacOSRelease? = nil,
         macAddress: String? = nil,
         setupUsername: String? = nil,
         setupFullName: String? = nil,
@@ -108,6 +152,7 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         self.displayHeight = displayHeight
         self.bootstrapShareEnabled = bootstrapShareEnabled
         self.installedRestoreImageName = installedRestoreImageName
+        self.installedMacOSRelease = installedMacOSRelease
         self.macAddress = macAddress
         self.setupUsername = setupUsername
         self.setupFullName = setupFullName

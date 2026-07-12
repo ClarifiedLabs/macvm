@@ -158,9 +158,9 @@ func migrationErrorRecoversToNotNowAfterDismissal() throws {
 }
 
 @Test
-func transferPaneLegacyLayoutSelectsSetUpAsNewThenContinue() throws {
-    let legacy = try OCRDumpFixture.load("transfer-legacy")
-    let (decision, _) = SetupPolicy.decide(target: accountTarget, screen: legacy, state: SetupPolicy.PolicyState())
+func transferPaneAlternateLayoutSelectsSetUpAsNewThenContinue() throws {
+    let alternate = try OCRDumpFixture.load("transfer-alternate")
+    let (decision, _) = SetupPolicy.decide(target: accountTarget, screen: alternate, state: SetupPolicy.PolicyState())
 
     #expect(actLadderKey(decision) == "pane:Transfer or Migration Assistant")
     let tactic = try #require(actTactic(decision))
@@ -375,6 +375,37 @@ func paneAndModalRuleTitlesAreUnique() {
     #expect(Set(paneTitles).count == paneTitles.count)
     let modalTitles = SetupPolicy.modalRules.map(\.title)
     #expect(Set(modalTitles).count == modalTitles.count)
+}
+
+@Test
+func setupDecisionEngineUsesTheSelectedFlowsRuleSet() throws {
+    let customRule = SetupPolicy.PaneRule(
+        title: "Future Release Pane",
+        anchor: "Future Release",
+        tactics: [SetupPolicy.Tactic(atoms: [.click("^Next$")])],
+        allowGenericRescue: false
+    )
+    let ruleSet = SetupPolicy.RuleSet(
+        dangerousModalAnchors: [],
+        passiveTransitionAnchors: [],
+        modalRules: [],
+        paneRules: [customRule],
+        rescueQueries: []
+    )
+    let current = screen([
+        obs("Future Release", 800, 300, 300, 40),
+        obs("Next", 1100, 900, 100, 30),
+    ])
+
+    let (decision, _) = SetupPolicy.decide(
+        target: "Never",
+        screen: current,
+        state: SetupPolicy.PolicyState(),
+        ruleSet: ruleSet
+    )
+    #expect(actLadderKey(decision) == "pane:Future Release Pane")
+    #expect(actTactic(decision)?.atoms == [.click("^Next$")])
+    #expect(SetupPolicy.anchor(forLadderKey: "pane:Future Release Pane", ruleSet: ruleSet) == "Future Release")
 }
 
 // MARK: - Slow pane transitions (observed live: the last pre-account pane

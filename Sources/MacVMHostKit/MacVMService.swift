@@ -144,7 +144,7 @@ public final class MacVMService: Sendable {
         return try SetupFlows.resolvePlan(
             bundle: VMBundle(url: vm.bundleURL),
             options: options,
-            hostMajor: Self.hostMacOSMajor(),
+            guestRelease: vm.metadata.installedMacOSRelease,
             provisioningProfiles: profiles
         )
     }
@@ -789,6 +789,7 @@ public final class MacVMService: Sendable {
         _ vm: ManagedVM,
         session: VNCSession,
         options: SetupOptions,
+        plan: SetupPlan,
         nativeProvisioning: Bool = false,
         progress: VMOperationHandler? = nil
     ) async throws -> SetupResult {
@@ -800,11 +801,8 @@ public final class MacVMService: Sendable {
         }
         let bundle = VMBundle(url: vm.bundleURL)
         let profiles = try provisioningCatalog(for: vm).validate(options.provisioningSelection)
-        let plan = try SetupFlows.resolvePlan(
-            bundle: bundle,
-            options: options,
-            hostMajor: Self.hostMacOSMajor(),
-            provisioningProfiles: profiles
+        DebugLog.log(
+            "Using setup flow \(plan.flowIdentifier) for \(plan.guestRelease?.displayDescription ?? "unidentified guest")"
         )
         let runtimePublisher = SetupRuntimePublisher(
             bundle: bundle,
@@ -839,6 +837,9 @@ public final class MacVMService: Sendable {
         }
 
         do {
+            setupProgress(.status(
+                "Selected setup flow \(plan.flowIdentifier) for \(plan.guestRelease?.displayDescription ?? "an unidentified guest")"
+            ))
             emitPhase(0)
             try await Self.withSetupRFBConnection(port: session.port, password: session.password, progress: setupProgress) { client in
                 if nativeProvisioning {
@@ -852,7 +853,10 @@ public final class MacVMService: Sendable {
                         bundle: bundle,
                         defaultTimeout: options.perPaneTimeout,
                         progress: setupProgress,
-                        phases: plan.phases
+                        phases: plan.phases,
+                        ruleSet: plan.ruleSet,
+                        flowIdentifier: plan.flowIdentifier,
+                        guestRelease: plan.guestRelease
                     )
                     let driver = VNCSetupDriver(runner: runner, steps: plan.steps)
                     try await driver.reachLoggedInDesktop(progress: setupProgress)
@@ -1129,10 +1133,6 @@ public final class MacVMService: Sendable {
         throw MacVMError.message("Timed out after \(Int(timeout)) seconds waiting for SSH.\(detail)")
     }
 
-    private static func hostMacOSMajor() -> Int {
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-    }
-
     private func signalProcess(pid: Int32, signal: Int32, vmName: String) throws {
         if kill(pid, signal) == 0 {
             return
@@ -1174,7 +1174,11 @@ public final class MacVMService: Sendable {
     }
 
     @MainActor
-    public func createVM(from draft: VMCreationDraft, progress: VMOperationHandler? = nil) async throws -> ManagedVM {
+    public func createVM(
+        from draft: VMCreationDraft,
+        setupOptions: SetupOptions? = nil,
+        progress: VMOperationHandler? = nil
+    ) async throws -> ManagedVM {
         DebugLog.log("Create requested for '\(draft.name)' with cpu=\(draft.cpuCount) memoryGiB=\(draft.memoryGiB) diskGiB=\(draft.diskGiB) display=\(draft.displayDescription) points (\(draft.displayPixelDescription) pixels) restoreMode=\(String(describing: draft.restoreMode)) bootstrap=\(draft.createBootstrapShare)")
         try validate(draft)
         try storage.ensureRootDirectories()
@@ -1183,10 +1187,7 @@ public final class MacVMService: Sendable {
         guard !FileManager.default.fileExists(atPath: bundleURL.path) else {
             throw MacVMError.bundleAlreadyExists(bundleURL)
         }
-        DebugLog.log("Creating bundle at \(bundleURL.path)")
-
         let bundle = VMBundle(url: bundleURL)
-        try bundle.createDirectory()
 
         progress?(.status("Resolving restore image..."))
         let restoreImageURL = try await resolveRestoreImage(for: draft, progress: progress)
@@ -1194,6 +1195,13 @@ public final class MacVMService: Sendable {
 
         progress?(.status("Loading restore image metadata from \(restoreImageURL.lastPathComponent)..."))
         let restoreImage = try await VirtualizationAsync.loadRestoreImage(from: restoreImageURL)
+        let installedRelease = MacOSRelease(
+            operatingSystemVersion: restoreImage.operatingSystemVersion,
+            buildVersion: restoreImage.buildVersion
+        )
+        if let setupOptions {
+            try SetupFlows.validateForCreation(options: setupOptions, release: installedRelease)
+        }
         guard let requirements = restoreImage.mostFeaturefulSupportedConfiguration else {
             throw MacVMError.unsupportedHardwareModel
         }
@@ -1202,6 +1210,9 @@ public final class MacVMService: Sendable {
             throw MacVMError.unsupportedHardwareModel
         }
         DebugLog.log("Restore image requirements: minCPU=\(requirements.minimumSupportedCPUCount) minMemoryBytes=\(requirements.minimumSupportedMemorySize) hardwareModelSupported=\(requirements.hardwareModel.isSupported)")
+
+        DebugLog.log("Creating bundle at \(bundleURL.path)")
+        try bundle.createDirectory()
 
         var metadata = VMMetadata(
             name: draft.name,
@@ -1212,6 +1223,7 @@ public final class MacVMService: Sendable {
             displayHeight: draft.displayHeight,
             bootstrapShareEnabled: draft.createBootstrapShare,
             installedRestoreImageName: restoreImageURL.lastPathComponent,
+            installedMacOSRelease: installedRelease,
             macAddress: VZMACAddress.randomLocallyAdministered().string
         )
 

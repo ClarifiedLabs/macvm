@@ -304,20 +304,20 @@ final class AppStore {
     }
 
     private func reconcileSetupProgress(from setupStates: [String: VMSetupRuntimeState], sessions: [String: VNCSession]) {
-        let hostMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-
         for (name, state) in setupStates {
             guard let vm = vm(named: name) else { continue }
             let existing = setups[name]
-            let fallbackPlan = SetupFlows.plan(
-                forMacOSMajor: hostMajor,
-                options: SetupOptions(
-                    username: state.username,
-                    fullName: state.fullName,
-                    xcodeXIPURL: state.installsXcode ? URL(fileURLWithPath: "Xcode.xip") : nil
-                )
+            let fallbackOptions = SetupOptions(
+                username: state.username,
+                fullName: state.fullName,
+                xcodeXIPURL: state.installsXcode ? URL(fileURLWithPath: "Xcode.xip") : nil
             )
-            let phases = state.phases.isEmpty ? fallbackPlan.phases : state.phases
+            let fallbackSteps = SetupFlows.macOS26(options: fallbackOptions)
+            let fallbackPhases = SetupFlows.phases(
+                for: fallbackSteps,
+                includeXcodeInstall: state.installsXcode
+            )
+            let phases = state.phases.isEmpty ? fallbackPhases : state.phases
             let vncURL: String
             if let session = sessions[name] {
                 vncURL = session.vncURLString
@@ -830,7 +830,14 @@ final class AppStore {
         let bundleExistedBeforeCreation = (try? service.resolveRemovalTarget(identifier: name)) != nil
         Task { @MainActor in
             do {
-                let vm = try await service.createVM(from: draft) { [weak self] event in
+                let creationSetupOptions = runSetupAfter ? SetupOptions(
+                    xcodeXIPURL: setupXcodeXIPURL,
+                    provisioningSelection: setupSelection
+                ) : nil
+                let vm = try await service.createVM(
+                    from: draft,
+                    setupOptions: creationSetupOptions
+                ) { [weak self] event in
                     DispatchQueue.main.async {
                         self?.applyInstallEvent(event, name: name)
                     }
@@ -1008,7 +1015,7 @@ final class AppStore {
             managedVM: vm,
             requestedPort: options.requestedVNCPort,
             forceSharedDirectory: true,
-            nativeProvisioning: options,
+            nativeProvisioning: plan.usesNativeGuestProvisioning ? options : nil,
             installSignalHandlers: false,
             processRuntimeRole: .manager
         )
@@ -1047,6 +1054,7 @@ final class AppStore {
                         vm,
                         session: session,
                         options: options,
+                        plan: plan,
                         nativeProvisioning: native
                     ) { [weak self] event in
                         DispatchQueue.main.async {

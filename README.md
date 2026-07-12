@@ -111,14 +111,16 @@ Open `MacVM Manager` from `/Applications` for a graphical VM manager. It can cre
 
 MacVM can drive a fresh macOS install to an SSH-ready state:
 
+Automated setup is currently tested and supported for macOS 26 guests only. Other Virtualization.framework-compatible releases can still be installed and run, with Setup Assistant completed manually. An explicit `--script` or per-VM `Setup/steps.json` opts into custom automation for an otherwise unsupported release. If the latest image supported by the host is not macOS 26, pass a macOS 26 IPSW explicitly.
+
 ```bash
-macvm create --name dev-02 --setup
+macvm create --name dev-02 --ipsw ~/Downloads/UniversalMac_26.x_Restore.ipsw --setup
 macvm ssh dev-02
 macvm inventory dev-02 > dev-02.inventory
 ansible -i dev-02.inventory all -m raw -a true
 ```
 
-Setup uses a verified OCR policy and keeps redacted decision traces under each VM bundle's `Setup/diagnostics/`. Contributors can run `make test-setup-e2e` to soak Setup Assistant against three fresh clones of one installed macOS seed; set `MACVM_E2E_IPSW` to avoid downloading a restore image.
+Setup uses a verified OCR policy and keeps redacted decision traces under each VM bundle's `Setup/diagnostics/`. Contributors can run `make test-setup-e2e` to soak Setup Assistant against three fresh clones of one installed macOS 26 seed; set `MACVM_E2E_IPSW` to avoid downloading a restore image.
 
 By default setup creates an `admin` account with password `admin`. Override it when creating or setting up a VM:
 

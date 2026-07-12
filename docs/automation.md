@@ -1,6 +1,6 @@
 # Automation
 
-MacVM can drive a fresh VM unattended and reach it over SSH so you can hand off to Ansible or other tooling.
+MacVM can drive a fresh macOS 26 VM unattended and reach it over SSH so you can hand off to Ansible or other tooling. Other guest releases can be installed and completed manually, but have no registered built-in setup flow yet.
 
 ## Setup Flow
 
@@ -56,7 +56,9 @@ There is no public API to inject input into a headless macOS guest. MacVM uses t
 
 ## Setup Assistant Drift
 
-Setup Assistant panes drift between macOS releases. The built-in flow keeps the first boot/language/region screens ordered, then uses the screenshot-driven policy through the rest of Setup Assistant. The policy covers the pane families used by macOS 12 Monterey, 13 Ventura, 14 Sonoma, 15 Sequoia, and 26 Tahoe, including both the older Migration Assistant-before-account path and the newer Transfer-before-Written-and-Spoken-Languages path.
+Setup Assistant panes drift between macOS releases. MacVM records the installed guest's full macOS version and Apple build, then selects a registered setup plan from that guest identity. The only built-in flow currently tested and supported is `macos-26`. Other releases can be installed and completed manually, but automated setup fails before boot unless the user explicitly supplies `--script` or a per-VM `Setup/steps.json`.
+
+Each plan composes reusable step fragments and a release-specific `SetupPolicy.RuleSet`. The capture, OCR, decision engine, input verification, safety caps, and diagnostics stay shared. Supporting another release requires registering its plan, composing only the fragments and pane rules verified for that release, adding recorded fixtures, and passing the real-guest setup soak.
 
 How the policy stays safe and debuggable:
 
@@ -71,11 +73,11 @@ How the policy stays safe and debuggable:
 
 Maintainer trap: a query's `|` alternatives are **not** a preference order. `OCRService.find` picks the topmost/leftmost match across the whole alternation. Express preference as successive tactics in a pane's ladder, one query per rung.
 
-Override the flow without rebuilding by dropping a `Setup/steps.json` into the bundle or passing `--script`.
+Override the flow without rebuilding by dropping a `Setup/steps.json` into the bundle or passing `--script`. CLI overrides take precedence over bundle overrides, and either explicit override may opt an unsupported guest into VNC automation. Dispatcher steps in a custom flow use the current macOS 26 rule set; use explicit wait/click/type steps for behavior that differs on the target release.
 
 ## Local Setup Soak
 
-The normal `make test` suite uses deterministic OCR and policy fixtures. Before a release or after setup-driver changes, run the real-guest soak on a virtualization-capable Mac:
+The normal `make test` suite uses deterministic OCR and policy fixtures. Before a release or after setup-driver changes, run the macOS 26 real-guest soak on a virtualization-capable Mac:
 
 ```bash
 make test-setup-e2e MACVM_E2E_IPSW=~/Downloads/UniversalMac_26.x_Restore.ipsw
@@ -83,9 +85,9 @@ make test-setup-e2e MACVM_E2E_IPSW=~/Downloads/UniversalMac_26.x_Restore.ipsw
 
 The soak installs one pristine seed, creates three APFS clones, runs Setup Assistant sequentially on each clone, and requires SSH readiness. Successful clones are deleted; a failed clone and its diagnostics are retained. `MACVM_E2E_ITERATIONS`, `MACVM_E2E_ROOT`, `MACVM_E2E_KEEP_VM`, and `MACVM_E2E_SETUP_TIMEOUT_SECONDS` customize the run. After debugging a retained failed clone, set `MACVM_E2E_SEED` to the basename of an existing pristine seed under `MACVM_E2E_ROOT` to repeat the soak without reinstalling macOS; a reused seed is never deleted by the script.
 
-## macOS 27 Native Provisioning
+## Future Native Provisioning
 
-On macOS 27+ hosts and guests, `macvm setup` uses the public `VZMacGuestProvisioningOptions` API to create the account and enable SSH natively on first boot. It falls back to the VNC/OCR flow when native provisioning is unavailable.
+The runtime bridge for `VZMacGuestProvisioningOptions` is retained for a future versioned plan, but no currently supported setup plan selects it. In particular, macOS 27 can be installed and configured manually but is not accepted for automated setup until that path has been validated and registered.
 
 ## Bootstrap Script
 

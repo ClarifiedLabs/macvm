@@ -119,9 +119,10 @@ brew install ansible
 make test-provisioning-e2e
 ```
 
-By default it uses the latest restore image supported by the host and stores
-the temporary VM under `.build/provisioning-e2e`. Reuse a downloaded image with
-`MACVM_E2E_IPSW=/path/to/restore.ipsw`. Set `MACVM_E2E_KEEP_VM=1` to retain the
+The provisioning smoke test requires the supported macOS 26 setup flow. Set
+`MACVM_E2E_IPSW=/path/to/macos-26-restore.ipsw` when the latest image supported
+by the host is not macOS 26. It stores the temporary VM under
+`.build/provisioning-e2e`. Set `MACVM_E2E_KEEP_VM=1` to retain the
 VM for inspection, or `MACVM_E2E_CREATE_TIMEOUT_SECONDS` to change the default
 two-hour creation timeout. These tests are intentionally local-only and are not
 part of the normal `make test` or hosted CI workflow.

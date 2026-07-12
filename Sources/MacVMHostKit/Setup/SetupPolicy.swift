@@ -39,7 +39,7 @@ enum SetupPolicy {
 
     /// One indivisible input. A tactic's atoms run in order with no
     /// verification between them; verification happens after the tactic.
-    enum Atom: Equatable {
+    enum Atom: Equatable, Sendable {
         /// Click the match for an OCR query, resolved at execution time.
         case click(String)
         /// Click a pre-resolved point (used for modal buttons, whose query can
@@ -51,7 +51,7 @@ enum SetupPolicy {
     }
 
     /// One rung of an escalation ladder.
-    struct Tactic: Equatable {
+    struct Tactic: Equatable, Sendable {
         let atoms: [Atom]
         /// Optional extra OCR gate; the rung is skipped unless this matches.
         let requires: String?
@@ -93,7 +93,7 @@ enum SetupPolicy {
 
     /// A recognized Setup Assistant pane and its escalation ladder,
     /// most-preferred tactic first.
-    struct PaneRule: Equatable {
+    struct PaneRule: Equatable, Sendable {
         let title: String
         let anchor: String
         let tactics: [Tactic]
@@ -117,10 +117,25 @@ enum SetupPolicy {
     /// match (each element may itself be an alternation of OCR fragmentations
     /// of the same sentence). Conjunction is what stops a modal rule from
     /// shadowing the pane it confirms.
-    struct ModalRule: Equatable {
+    struct ModalRule: Equatable, Sendable {
         let title: String
         let anchors: [String]
         let button: String
+    }
+
+    /// Release-specific Setup Assistant knowledge consumed by the shared pure
+    /// decision engine. A new flow composes a rule set from reusable pane and
+    /// modal rules instead of forking the runner.
+    struct RuleSet: Equatable, Sendable {
+        let dangerousModalAnchors: [String]
+        let passiveTransitionAnchors: [String]
+        let modalRules: [ModalRule]
+        let paneRules: [PaneRule]
+        let rescueQueries: [String]
+
+        var genericRescueTactics: [Tactic] {
+            rescueQueries.map { Tactic(atoms: [.click($0)]) }
+        }
     }
 
     // MARK: - Decisions
@@ -277,10 +292,10 @@ enum SetupPolicy {
                 Tactic(atoms: [.click("Sign in Later in Settings")]),
             ]
         ),
-        // macOS 26 shows a migration-source list with Not Now/Continue; older
-        // releases show a "Set up as new" choice that must be selected before
-        // Continue. Never press blind keys here — space toggles a source row,
-        // and Continue with a source selected starts a migration.
+        // Observed macOS 26 layouts include a migration-source list with Not
+        // Now/Continue and an alternate "Set up as new" choice that must be
+        // selected before Continue. Never press blind keys here — space toggles
+        // a source row, and Continue with a source selected starts a migration.
         PaneRule(
             title: "Transfer or Migration Assistant",
             anchor: "Transfer Your Data|Migration Assistant|How do you want to transfer",
@@ -475,9 +490,25 @@ enum SetupPolicy {
         Tactic(atoms: [.click($0)])
     }
 
+    /// The only built-in rule set currently validated against a real guest.
+    static var macOS26RuleSet: RuleSet {
+        RuleSet(
+            dangerousModalAnchors: dangerousModalAnchors,
+            passiveTransitionAnchors: passiveTransitionAnchors,
+            modalRules: modalRules,
+            paneRules: paneRules,
+            rescueQueries: rescueQueries
+        )
+    }
+
     // MARK: - The decision
 
-    static func decide(target: String, screen: Screen, state: PolicyState) -> (decision: Decision, state: PolicyState) {
+    static func decide(
+        target: String,
+        screen: Screen,
+        state: PolicyState,
+        ruleSet: RuleSet = macOS26RuleSet
+    ) -> (decision: Decision, state: PolicyState) {
         var state = state
 
         // A blank capture means the guest display is asleep or mid-transition
@@ -488,15 +519,15 @@ enum SetupPolicy {
             return (.wait(idleWait), state)
         }
 
-        if let dangerous = dangerousModalAnchors.first(where: { OCRService.match($0, in: screen.observations) != nil }) {
+        if let dangerous = ruleSet.dangerousModalAnchors.first(where: { OCRService.match($0, in: screen.observations) != nil }) {
             return (.stuck(.dangerousModal(anchor: dangerous)), state)
         }
 
-        if passiveTransitionAnchors.contains(where: { OCRService.match($0, in: screen.observations) != nil }) {
+        if ruleSet.passiveTransitionAnchors.contains(where: { OCRService.match($0, in: screen.observations) != nil }) {
             return (.wait(idleWait), state)
         }
 
-        let modal = detectModal(in: screen)
+        let modal = detectModal(in: screen, ruleSet: ruleSet)
 
         // A modal can sit over a screen whose background still shows the target
         // (e.g. an error dialog over the desktop), so the modal normally wins —
@@ -521,13 +552,13 @@ enum SetupPolicy {
             tactics.append(Tactic(atoms: [.keys(["return"])]))
             ladder = tactics
             ladderCap = maxActionsPerModalLadder
-        } else if let pane = paneRule(in: screen.observations) {
+        } else if let pane = paneRule(in: screen.observations, ruleSet: ruleSet) {
             ladderKey = "pane:\(pane.title)"
-            ladder = pane.tactics + (pane.allowGenericRescue ? genericRescueTactics : [])
+            ladder = pane.tactics + (pane.allowGenericRescue ? ruleSet.genericRescueTactics : [])
             ladderCap = maxActionsPerLadder
         } else {
             ladderKey = "rescue"
-            ladder = genericRescueTactics
+            ladder = ruleSet.genericRescueTactics
             ladderCap = maxActionsPerLadder
         }
 
@@ -591,22 +622,22 @@ enum SetupPolicy {
 
     /// The anchor to watch for disappearance after acting on a ladder, when the
     /// ladder has one.
-    static func anchor(forLadderKey key: String) -> String? {
+    static func anchor(forLadderKey key: String, ruleSet: RuleSet = macOS26RuleSet) -> String? {
         if key.hasPrefix("pane:") {
             let title = String(key.dropFirst("pane:".count))
-            return paneRules.first { $0.title == title }?.anchor
+            return ruleSet.paneRules.first { $0.title == title }?.anchor
         }
         if key.hasPrefix("modal:") {
             let title = String(key.dropFirst("modal:".count))
-            return modalRules.first { $0.title == title }?.anchors.first
+            return ruleSet.modalRules.first { $0.title == title }?.anchors.first
         }
         return nil
     }
 
     // MARK: - Modal detection
 
-    static func detectModal(in screen: Screen) -> DetectedModal? {
-        for rule in modalRules {
+    static func detectModal(in screen: Screen, ruleSet: RuleSet = macOS26RuleSet) -> DetectedModal? {
+        for rule in ruleSet.modalRules {
             let anchorsMatch = rule.anchors.allSatisfy {
                 OCRService.match($0, in: screen.observations) != nil
             }
@@ -724,7 +755,12 @@ enum SetupPolicy {
     /// gone (decisive), or the OCR text changed materially. A blank capture is
     /// never progress — it is the asleep-display framebuffer, and counting it
     /// as an advance would reset the escalation ladder on every sleep blink.
-    static func didAdvance(from: Screen, to: Screen, anchor: String?) -> Bool {
+    static func didAdvance(
+        from: Screen,
+        to: Screen,
+        anchor: String?,
+        ruleSet: RuleSet = macOS26RuleSet
+    ) -> Bool {
         guard !to.observations.isEmpty else { return false }
         if let anchor {
             guard OCRService.match(anchor, in: to.observations) != nil else {
@@ -736,7 +772,8 @@ enum SetupPolicy {
             // acted-on pane's stable anchor remains, token similarity alone is
             // not evidence that the action advanced. A newly presented modal
             // is progress even when the underlying pane remains visible.
-            if detectModal(in: from) == nil, detectModal(in: to) != nil {
+            if detectModal(in: from, ruleSet: ruleSet) == nil,
+               detectModal(in: to, ruleSet: ruleSet) != nil {
                 return true
             }
             return false
@@ -746,15 +783,21 @@ enum SetupPolicy {
 
     // MARK: - Lookups shared with the rescue path
 
-    static func paneRule(in observations: [TextObservation]) -> PaneRule? {
-        paneRules.first { OCRService.match($0.anchor, in: observations) != nil }
+    static func paneRule(
+        in observations: [TextObservation],
+        ruleSet: RuleSet = macOS26RuleSet
+    ) -> PaneRule? {
+        ruleSet.paneRules.first { OCRService.match($0.anchor, in: observations) != nil }
     }
 
     /// A single safe button for the step-timeout rescue path: known modals
     /// first (their body text gates the button so a live dialog wins over
     /// stale background buttons), then the generic dismissive-first list.
-    static func rescueMatch(in observations: [TextObservation]) -> GuestTextMatch? {
-        for rule in modalRules {
+    static func rescueMatch(
+        in observations: [TextObservation],
+        ruleSet: RuleSet = macOS26RuleSet
+    ) -> GuestTextMatch? {
+        for rule in ruleSet.modalRules {
             let anchorsMatch = rule.anchors.allSatisfy {
                 OCRService.match($0, in: observations) != nil
             }
@@ -763,7 +806,7 @@ enum SetupPolicy {
                 return match
             }
         }
-        for query in rescueQueries {
+        for query in ruleSet.rescueQueries {
             if let match = OCRService.match(query, in: observations) {
                 return match
             }

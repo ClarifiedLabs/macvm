@@ -37,8 +37,8 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     /// Called once after the VM and its published runtime state are torn down.
     public var onStop: (@MainActor () -> Void)?
 
-    /// True when the VM was started with native macOS 27 guest provisioning (so the
-    /// caller can skip the OCR-driven Setup Assistant flow).
+    /// True when the selected setup plan started the VM with native guest
+    /// provisioning, so the caller can skip the OCR-driven flow.
     public private(set) var usedNativeProvisioning = false
 
     /// `installSignalHandlers` should stay true for CLI processes (Ctrl+C stops
@@ -136,8 +136,8 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
             }
         }
 
-        // macOS 27: apply native guest provisioning at first boot, skipping the
-        // OCR-driven Setup Assistant flow. Unavailable on macOS 26 → VNC path.
+        // Only a registered setup plan may provide native provisioning options.
+        // No currently supported plan does; this is retained for a future flow.
         if let nativeProvisioning, MacVMGuestProvisioning.isAvailable() {
             let startOptions = VZMacOSVirtualMachineStartOptions()
             do {
@@ -150,7 +150,7 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
                     logsInAutomatically: nativeProvisioning.autoLogin
                 )
                 usedNativeProvisioning = true
-                DebugLog.log("Starting VM with native guest provisioning (macOS 27)")
+                DebugLog.log("Starting VM with native guest provisioning")
                 virtualMachine.start(options: startOptions, completionHandler: completion)
                 return
             } catch {

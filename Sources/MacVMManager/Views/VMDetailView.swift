@@ -434,6 +434,7 @@ struct BundleSectionView: View {
                     }
                     Divider().overlay(Theme.hairline)
                     InfoRow(label: "Restore image", value: metadata.installedRestoreImageName ?? "—")
+                    InfoRow(label: "Guest OS", value: metadata.installedMacOSRelease?.displayDescription ?? "—")
                     Divider().overlay(Theme.hairline)
                     InfoRow(label: "Created", value: created)
                 }

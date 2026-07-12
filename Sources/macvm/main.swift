@@ -528,6 +528,9 @@ extension MacVMCommand {
             if let restoreImageName = metadata.installedRestoreImageName {
                 print("Restore Image: \(restoreImageName)")
             }
+            if let release = metadata.installedMacOSRelease {
+                print("Guest OS: \(release.displayDescription)")
+            }
 
             if metadata.bootstrapShareEnabled {
                 let sharedDirectory = virtualMachine.bundleURL.appendingPathComponent("Shared", isDirectory: true)
@@ -619,7 +622,7 @@ extension MacVMCommand {
         )
         var bootstrap = true
 
-        @Flag(name: .long, help: "After install, drive Setup Assistant to an SSH/Ansible-ready state.")
+        @Flag(name: .long, help: "After install, drive a supported guest (currently macOS 26) to an SSH/Ansible-ready state.")
         var setup = false
 
         @Flag(name: .long, help: "Launch this VM headless at macOS user login.")
@@ -700,7 +703,10 @@ extension MacVMCommand {
             }
 
             let reporter = CLIReporter()
-            let virtualMachine = try await service.createVM(from: draft) { event in
+            let virtualMachine = try await service.createVM(
+                from: draft,
+                setupOptions: shouldSetup ? setupOptions : nil
+            ) { event in
                 reporter.handle(event)
             }
 
@@ -1360,7 +1366,7 @@ extension MacVMCommand {
 
     struct Setup: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Drive a fresh VM through Setup Assistant to an SSH/Ansible-ready state."
+            abstract: "Drive a supported fresh VM (currently macOS 26) through Setup Assistant to an SSH/Ansible-ready state."
         )
 
         @OptionGroup var storage: StorageOptions
@@ -1519,11 +1525,15 @@ extension MacVMCommand {
 /// lifecycle. Shared by `macvm setup` and `macvm create --setup`.
 private func performSetup(service: MacVMService, virtualMachine: ManagedVM, options: SetupOptions) async throws {
     let reporter = CLIReporter()
+    let plan = try service.setupPlan(for: virtualMachine, options: options)
+    reporter.handle(.status(
+        "Selected setup flow \(plan.flowIdentifier) for \(plan.guestRelease?.displayDescription ?? "an unidentified guest")"
+    ))
     let runner = await HeadlessRunner(
         managedVM: virtualMachine,
         requestedPort: options.requestedVNCPort,
         forceSharedDirectory: true,
-        nativeProvisioning: options,
+        nativeProvisioning: plan.usesNativeGuestProvisioning ? options : nil,
         processRuntimeRole: .headless
     )
     let session = try await runner.start()
@@ -1536,6 +1546,7 @@ private func performSetup(service: MacVMService, virtualMachine: ManagedVM, opti
             virtualMachine,
             session: session,
             options: options,
+            plan: plan,
             nativeProvisioning: native
         ) { event in reporter.handle(event) }
     } catch {

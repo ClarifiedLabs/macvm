@@ -431,6 +431,9 @@ struct SetupStepRunner {
     let bundle: VMBundle
     let defaultTimeout: TimeInterval
     let progress: VMOperationHandler?
+    let ruleSet: SetupPolicy.RuleSet
+    let flowIdentifier: String
+    let guestRelease: MacOSRelease?
     /// Display phases over the flow; entering a phase's first step emits a
     /// structured `.setupStep` event for UIs.
     var phases: [SetupPhase] = []
@@ -441,13 +444,19 @@ struct SetupStepRunner {
         bundle: VMBundle,
         defaultTimeout: TimeInterval,
         progress: VMOperationHandler?,
-        phases: [SetupPhase] = []
+        phases: [SetupPhase] = [],
+        ruleSet: SetupPolicy.RuleSet = SetupPolicy.macOS26RuleSet,
+        flowIdentifier: String = "custom",
+        guestRelease: MacOSRelease? = nil
     ) {
         self.client = client
         self.bundle = bundle
         self.defaultTimeout = defaultTimeout
         self.progress = progress
         self.phases = phases
+        self.ruleSet = ruleSet
+        self.flowIdentifier = flowIdentifier
+        self.guestRelease = guestRelease
         diagnostics = SetupDiagnostics(bundle: bundle)
     }
 
@@ -510,6 +519,10 @@ struct SetupStepRunner {
     private static let setupPasswordGapDelay: TimeInterval = 0.18
 
     func run(_ steps: [SetupStep]) async throws {
+        diagnostics.record("selected setup flow", fields: [
+            "flowIdentifier": flowIdentifier,
+            "guestRelease": guestRelease?.displayDescription ?? "unidentified",
+        ])
         for (index, step) in steps.enumerated() {
             for phase in phases where phase.firstStepIndex == index {
                 progress?(.setupStep(SetupStepProgress(
@@ -1093,7 +1106,12 @@ struct SetupStepRunner {
                 return match
             }
             let policyTarget = screenGoal == nil ? text : "__macvm_typed_goal_never_matches__"
-            let (decision, nextState) = SetupPolicy.decide(target: policyTarget, screen: screen, state: state)
+            let (decision, nextState) = SetupPolicy.decide(
+                target: policyTarget,
+                screen: screen,
+                state: state,
+                ruleSet: ruleSet
+            )
             state = nextState
             diagnostics.record(Self.diagnosticSummary(decision), screen: screen)
 
@@ -1152,7 +1170,7 @@ struct SetupStepRunner {
         from fallbackScreen: SetupPolicy.Screen,
         ladderKey: String
     ) async throws -> (advanced: Bool, screen: SetupPolicy.Screen) {
-        let anchor = SetupPolicy.anchor(forLadderKey: ladderKey)
+        let anchor = SetupPolicy.anchor(forLadderKey: ladderKey, ruleSet: ruleSet)
         if let session = bundle.liveVNCSession() {
             return try await RFBClient.withConnection(
                 port: session.port,
@@ -1163,7 +1181,7 @@ struct SetupStepRunner {
                 try? await actionClient.nudgePointer()
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 let current = try await captureScreen(using: actionClient)
-                if SetupPolicy.didAdvance(from: fallbackScreen, to: current, anchor: anchor) {
+                if SetupPolicy.didAdvance(from: fallbackScreen, to: current, anchor: anchor, ruleSet: ruleSet) {
                     return (true, current)
                 }
                 switch try await perform(tactic, on: current, using: actionClient) {
@@ -1289,7 +1307,7 @@ struct SetupStepRunner {
                 try await actionClient.click(x: match.x, y: match.y)
 
             case .clickMatch(let match):
-                let refreshed = SetupPolicy.detectModal(in: latest)?.button ?? match
+                let refreshed = SetupPolicy.detectModal(in: latest, ruleSet: ruleSet)?.button ?? match
                 try await actionClient.click(x: refreshed.x, y: refreshed.y)
 
             case .keys(let keys):
@@ -1319,7 +1337,7 @@ struct SetupStepRunner {
         var latest = before
         for attempt in 0..<4 {
             latest = try await captureScreen(using: captureClient)
-            if SetupPolicy.didAdvance(from: before, to: latest, anchor: anchor) {
+            if SetupPolicy.didAdvance(from: before, to: latest, anchor: anchor, ruleSet: ruleSet) {
                 return (true, latest)
             }
             if attempt < 3 {
@@ -1350,7 +1368,7 @@ struct SetupStepRunner {
             try? await inputClient.nudgePointer()
             try? await Task.sleep(nanoseconds: 400_000_000)
             let screen = try await captureScreen(using: inputClient)
-            guard let match = Self.rescueMatch(in: screen.observations) else {
+            guard let match = SetupPolicy.rescueMatch(in: screen.observations, ruleSet: ruleSet) else {
                 return nil
             }
             do {

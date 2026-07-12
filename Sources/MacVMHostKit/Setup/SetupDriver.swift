@@ -2,7 +2,8 @@ import Foundation
 
 /// Strategy for getting a fresh guest from first boot to a logged-in desktop with
 /// the setup account created. Two implementations exist: the OCR-driven VNC path
-/// (macOS 26), and the native macOS 27 provisioning path (added later).
+/// (the registered macOS 26 flow), and a dormant native provisioning path that
+/// can be selected by a future empirically validated flow.
 protocol SetupDriver {
     func reachLoggedInDesktop(progress: VMOperationHandler?) async throws
 }

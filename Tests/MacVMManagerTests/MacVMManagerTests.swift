@@ -6,6 +6,13 @@ import Testing
 @testable import MacVMHostKit
 @testable import MacVMManager
 
+private let macOS26Release = MacOSRelease(
+    majorVersion: 26,
+    minorVersion: 0,
+    patchVersion: 0,
+    buildVersion: "25A000"
+)
+
 @Test
 func localNetworkOnboardingIsAcknowledgedPersistently() throws {
     let suiteName = "dev.macvm.macvm.tests.\(UUID().uuidString)"
@@ -687,8 +694,8 @@ func managerReconstructsXcodeSetupProgressFromRuntimeState() throws {
     )
     let bundle = VMBundle(url: bundleURL)
     try bundle.writeMetadata(metadata)
-    let plan = SetupFlows.plan(
-        forMacOSMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+    let plan = try SetupFlows.builtIn(
+        for: macOS26Release,
         options: SetupOptions(
             username: "admin",
             fullName: "Administrator",

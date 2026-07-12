@@ -6,6 +6,13 @@ import Testing
 import Virtualization
 @testable import MacVMHostKit
 
+private let macOS26Release = MacOSRelease(
+    majorVersion: 26,
+    minorVersion: 0,
+    patchVersion: 0,
+    buildVersion: "25A000"
+)
+
 @Test
 func bundledProvisioningCatalogContainsExpectedProfilesAndResolvesDependencies() throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
@@ -266,7 +273,13 @@ func metadataRoundTripsThroughJSON() throws {
         displayWidth: 1920,
         displayHeight: 1200,
         bootstrapShareEnabled: true,
-        installedRestoreImageName: "UniversalMac_26.3_Restore.ipsw"
+        installedRestoreImageName: "UniversalMac_26.3_Restore.ipsw",
+        installedMacOSRelease: MacOSRelease(
+            majorVersion: 26,
+            minorVersion: 3,
+            patchVersion: 0,
+            buildVersion: "25D60"
+        )
     )
 
     let bundleURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -289,6 +302,8 @@ func metadataRoundTripsThroughJSON() throws {
     #expect(decoded.displayPixelDescription == "3840x2400")
     #expect(decoded.bootstrapShareEnabled == metadata.bootstrapShareEnabled)
     #expect(decoded.installedRestoreImageName == metadata.installedRestoreImageName)
+    #expect(decoded.installedMacOSRelease == metadata.installedMacOSRelease)
+    #expect(decoded.installedMacOSRelease?.displayDescription == "macOS 26.3.0 (25D60)")
     #expect(abs(decoded.createdAt.timeIntervalSince(metadata.createdAt)) < 1)
 }
 
@@ -435,6 +450,7 @@ func cloneVMPreservesPersistentStateAndRefreshesHostIdentity() async throws {
         displayHeight: 900,
         bootstrapShareEnabled: true,
         installedRestoreImageName: "UniversalMac.ipsw",
+        installedMacOSRelease: macOS26Release,
         macAddress: "02:00:00:00:00:01",
         setupUsername: "developer",
         setupFullName: "Developer",
@@ -482,6 +498,7 @@ func cloneVMPreservesPersistentStateAndRefreshesHostIdentity() async throws {
     #expect(clonedMetadata.displayHeight == metadata.displayHeight)
     #expect(clonedMetadata.bootstrapShareEnabled == metadata.bootstrapShareEnabled)
     #expect(clonedMetadata.installedRestoreImageName == metadata.installedRestoreImageName)
+    #expect(clonedMetadata.installedMacOSRelease == metadata.installedMacOSRelease)
     #expect(clonedMetadata.setupUsername == metadata.setupUsername)
     #expect(clonedMetadata.setupFullName == metadata.setupFullName)
     #expect(clonedMetadata.setupCompletedAt == metadata.setupCompletedAt)
@@ -1116,8 +1133,148 @@ func setupFlowLoadsOverrideFromJSON() throws {
 }
 
 @Test
+func builtInSetupRejectsUnregisteredGuestReleases() {
+    for major in [12, 13, 14, 15, 27] {
+        let release = MacOSRelease(
+            majorVersion: major,
+            minorVersion: 1,
+            patchVersion: 0,
+            buildVersion: "test-build"
+        )
+        #expect(throws: MacVMError.self) {
+            try SetupFlows.builtIn(for: release, options: SetupOptions())
+        }
+    }
+}
+
+@Test
+func unsupportedSetupErrorExplainsManualAndOverridePaths() {
+    let release = MacOSRelease(
+        majorVersion: 27,
+        minorVersion: 1,
+        patchVersion: 2,
+        buildVersion: "26B123"
+    )
+    do {
+        _ = try SetupFlows.builtIn(for: release, options: SetupOptions())
+        Issue.record("Expected macOS 27 automated setup to be rejected")
+    } catch {
+        let message = error.localizedDescription
+        #expect(message.contains("macOS 27.1.2 (26B123)"))
+        #expect(message.contains("supports macOS 26 only"))
+        #expect(message.contains("manually"))
+        #expect(message.contains("--script"))
+        #expect(message.contains("Setup/steps.json"))
+    }
+}
+
+@Test
+func setupPlanUsesGuestReleaseAndRejectsMissingIdentity() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("test.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let metadata = VMMetadata(
+        name: "test",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        installedMacOSRelease: macOS26Release
+    )
+    let service = MacVMService(rootDirectory: root)
+    let supported = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    let plan = try service.setupPlan(for: supported, options: SetupOptions())
+    #expect(plan.flowIdentifier == SetupFlows.macOS26FlowIdentifier)
+    #expect(plan.guestRelease == macOS26Release)
+
+    var missingMetadata = metadata
+    missingMetadata.installedMacOSRelease = nil
+    let missing = ManagedVM(bundleURL: bundleURL, metadata: missingMetadata)
+    #expect(throws: MacVMError.self) {
+        try service.setupPlan(for: missing, options: SetupOptions())
+    }
+}
+
+@Test
+func explicitSetupOverridesBypassBuiltInVersionSupport() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("test.macvm", isDirectory: true)
+    let bundle = VMBundle(url: bundleURL)
+    try FileManager.default.createDirectory(at: bundle.setupDirectoryURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let bundleSteps: [SetupStep] = [.waitText("Bundled")]
+    try JSONEncoder().encode(bundleSteps).write(
+        to: bundle.setupDirectoryURL.appendingPathComponent("steps.json")
+    )
+    let unsupported = MacOSRelease(
+        majorVersion: 27,
+        minorVersion: 0,
+        patchVersion: 0,
+        buildVersion: "26A000"
+    )
+    let bundledPlan = try SetupFlows.resolvePlan(
+        bundle: bundle,
+        options: SetupOptions(),
+        guestRelease: unsupported
+    )
+    #expect(bundledPlan.flowIdentifier == "custom-bundle")
+    #expect(bundledPlan.steps == bundleSteps)
+    #expect(!bundledPlan.usesNativeGuestProvisioning)
+
+    let cliURL = root.appendingPathComponent("cli-steps.json")
+    let cliSteps: [SetupStep] = [.waitText("CLI")]
+    try JSONEncoder().encode(cliSteps).write(to: cliURL)
+    let cliPlan = try SetupFlows.resolvePlan(
+        bundle: bundle,
+        options: SetupOptions(scriptOverride: cliURL),
+        guestRelease: unsupported
+    )
+    #expect(cliPlan.flowIdentifier == "custom-cli")
+    #expect(cliPlan.steps == cliSteps)
+
+    try Data("not valid setup JSON".utf8).write(to: cliURL)
+    #expect(throws: DecodingError.self) {
+        try SetupFlows.resolvePlan(
+            bundle: bundle,
+            options: SetupOptions(scriptOverride: cliURL),
+            guestRelease: unsupported
+        )
+    }
+}
+
+@Test
+func creationValidationAllowsOnlyMacOS26OrExplicitScript() throws {
+    let unsupported = MacOSRelease(
+        majorVersion: 27,
+        minorVersion: 0,
+        patchVersion: 0,
+        buildVersion: "26A000"
+    )
+    #expect(throws: MacVMError.self) {
+        try SetupFlows.validateForCreation(options: SetupOptions(), release: unsupported)
+    }
+
+    let url = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathExtension("json")
+    try JSONEncoder().encode([SetupStep.waitText("Custom")]).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    try SetupFlows.validateForCreation(
+        options: SetupOptions(scriptOverride: url),
+        release: unsupported
+    )
+}
+
+@Test
 func setupFlowDrivesEarlyOnboardingPanesReactivelyBeforeAccountCreation() throws {
-    let steps = SetupFlows.builtIn(forMacOSMajor: 26, options: SetupOptions())
+    let steps = try SetupFlows.builtIn(for: macOS26Release, options: SetupOptions()).steps
 
     let country = try #require(steps.firstIndex { $0.action == .waitText && ($0.text ?? "").contains("Country") })
     let dispatcher = try #require(steps.firstIndex {
@@ -1138,7 +1295,7 @@ func setupFlowDrivesEarlyOnboardingPanesReactivelyBeforeAccountCreation() throws
 
 @Test
 func setupPlanExposesPhasesWithAnchors() {
-    let plan = SetupFlows.plan(forMacOSMajor: 26, options: SetupOptions())
+    let plan = try! SetupFlows.builtIn(for: macOS26Release, options: SetupOptions())
 
     #expect(plan.phases.count == 9)
     #expect(plan.phases.map(\.id) == Array(0..<9))
@@ -1171,9 +1328,9 @@ func setupPlanExposesPhasesWithAnchors() {
 
 @Test
 func setupPlanAddsXcodePhaseOnlyWhenRequested() {
-    let plain = SetupFlows.plan(forMacOSMajor: 26, options: SetupOptions())
-    let withXcode = SetupFlows.plan(
-        forMacOSMajor: 26,
+    let plain = try! SetupFlows.builtIn(for: macOS26Release, options: SetupOptions())
+    let withXcode = try! SetupFlows.builtIn(
+        for: macOS26Release,
         options: SetupOptions(xcodeXIPURL: URL(fileURLWithPath: "/tmp/Xcode.xip"))
     )
 
@@ -1189,8 +1346,8 @@ func setupPlanAddsXcodePhaseOnlyWhenRequested() {
 func setupPlanAddsResolvedProvisioningProfilesInExecutionOrder() throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
     let profiles = try ProvisioningCatalog.load(rootDirectory: root).resolve(["codex"])
-    let plan = SetupFlows.plan(
-        forMacOSMajor: 26,
+    let plan = try SetupFlows.builtIn(
+        for: macOS26Release,
         options: SetupOptions(
             xcodeXIPURL: URL(fileURLWithPath: "/tmp/Xcode.xip"),
             provisioningSelection: ProvisioningSelection(profileIDs: ["codex"])
@@ -1355,7 +1512,7 @@ func setupPaneDispatcherRecognizesTransferPaneBeforeWrittenSpokenLanguages() thr
 
     let pane = try #require(SetupStepRunner.paneRule(in: observations))
     #expect(pane.title == "Transfer or Migration Assistant")
-    // Preferred rung is the macOS 26 dismissal; the legacy radio+Continue is a
+    // Preferred rung is the macOS 26 dismissal; the alternate radio+Continue is a
     // separate, applicability-gated rung — never blind keystrokes.
     #expect(pane.tactics.first == SetupPolicy.Tactic(atoms: [.click("^Not Now$")]))
     #expect(pane.tactics.contains { tactic in
@@ -1365,7 +1522,7 @@ func setupPaneDispatcherRecognizesTransferPaneBeforeWrittenSpokenLanguages() thr
 }
 
 @Test
-func setupPaneDispatcherCoversMacOSFamiliesFromTartTemplates() throws {
+func macOS26SetupPolicyRecognizesAllConfiguredPaneFamilies() throws {
     let migration = try #require(SetupStepRunner.paneRule(in: [
         TextObservation(
             string: "Migration Assistant",
@@ -1505,16 +1662,16 @@ func setupPaneDispatcherFailsFastWhenRecognizedPaneDoesNotAdvance() throws {
 }
 
 @Test
-func builtInSetupFlowUsesReactiveDispatcherForSupportedMacOSMajors() throws {
-    for major in [12, 13, 14, 15, 26] {
-        let steps = SetupFlows.builtIn(forMacOSMajor: major, options: SetupOptions())
-        let dispatcher = try #require(steps.first {
-            $0.action == .advanceUntilText
-                && ($0.text ?? "").contains("Create a.*Account")
-                && ($0.text ?? "").contains("Create a Computer Account")
-        })
-        #expect(dispatcher.timeout == 420)
-    }
+func builtInSetupFlowUsesReactiveDispatcherForMacOS26() throws {
+    let plan = try SetupFlows.builtIn(for: macOS26Release, options: SetupOptions())
+    #expect(plan.flowIdentifier == "macos-26")
+    #expect(plan.guestRelease == macOS26Release)
+    let dispatcher = try #require(plan.steps.first {
+        $0.action == .advanceUntilText
+            && ($0.text ?? "").contains("Create a.*Account")
+            && ($0.text ?? "").contains("Create a Computer Account")
+    })
+    #expect(dispatcher.timeout == 420)
 }
 
 /// Regression for the flow ending mid-Setup-Assistant: late panes should be
@@ -1524,7 +1681,7 @@ func builtInSetupFlowUsesReactiveDispatcherForSupportedMacOSMajors() throws {
 @Test
 func setupFlowAdvancesLatePanesAndLogsInOnlyWhenNeeded() throws {
     let options = SetupOptions()
-    let steps = SetupFlows.tahoe(options: options)
+    let steps = SetupFlows.macOS26(options: options)
     let waits = steps.filter { $0.action == .waitText }
     let firstFinishGate = try #require(steps.first {
         $0.action == .advanceUntilScreen && $0.screenGoal == .loginWindowOrDesktop
@@ -1569,7 +1726,7 @@ func setupFlowAdvancesLatePanesAndLogsInOnlyWhenNeeded() throws {
 
 @Test
 func setupFlowHandlesFileVaultInsideScreenshotDrivenTail() throws {
-    let steps = SetupFlows.tahoe(options: SetupOptions())
+    let steps = SetupFlows.macOS26(options: SetupOptions())
 
     let account = try #require(steps.firstIndex {
         $0.action == .createAccount
@@ -1587,7 +1744,7 @@ func setupFlowHandlesFileVaultInsideScreenshotDrivenTail() throws {
 @Test
 func setupFlowUsesVerifiedAccountCreationAndSlowLoginPasswordTyping() throws {
     let options = SetupOptions(username: "dev", password: "admin")
-    let steps = SetupFlows.tahoe(options: options)
+    let steps = SetupFlows.macOS26(options: options)
 
     let account = try #require(steps.firstIndex {
         $0.action == .createAccount
