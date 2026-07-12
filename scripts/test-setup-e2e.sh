@@ -9,8 +9,9 @@ iterations="${MACVM_E2E_ITERATIONS:-3}"
 keep_vm="${MACVM_E2E_KEEP_VM:-0}"
 timeout_seconds="${MACVM_E2E_SETUP_TIMEOUT_SECONDS:-1800}"
 run_id="$(date +%Y%m%d-%H%M%S)-$$"
-seed="macvm-setup-seed-$run_id"
+seed="${MACVM_E2E_SEED:-macvm-setup-seed-$run_id}"
 seed_bundle="$vm_root/$seed.macvm"
+owns_seed=1
 successful_bundles=()
 successful_logs=()
 failed_bundle=""
@@ -37,7 +38,9 @@ cleanup() {
         for log in "${successful_logs[@]}"; do
             rm -f "$log"
         done
-        "$macvm" rm --root "$vm_root" --force "$seed" >/dev/null 2>&1 || true
+        if [ "$owns_seed" = "1" ]; then
+            "$macvm" rm --root "$vm_root" --force "$seed" >/dev/null 2>&1 || true
+        fi
     fi
     if [ -n "$failed_bundle" ]; then
         echo "Failed VM retained at $vm_root/$failed_bundle.macvm" >&2
@@ -86,6 +89,21 @@ if metadata.get("setupUsername") != "admin":
 diagnostics = sorted((bundle / "Setup" / "diagnostics").glob("*/trace.jsonl"))
 if not diagnostics:
     raise SystemExit("setup produced no decision trace")
+events = [json.loads(line) for line in diagnostics[-1].read_text().splitlines() if line.strip()]
+pointer_events = [
+    event for event in events
+    if event.get("event") == "rfb" and event.get("kind") == "pointer_click"
+]
+if not pointer_events:
+    raise SystemExit("setup trace contains no RFB pointer diagnostics")
+unsafe = [
+    event for event in pointer_events
+    if event.get("lastCaptureHadPixels") != "true"
+    or not event.get("captureWidth")
+    or not event.get("captureHeight")
+]
+if unsafe:
+    raise SystemExit(f"setup sent pointer input without a captured framebuffer: {unsafe!r}")
 print(diagnostics[-1])
 PY
 }
@@ -93,19 +111,24 @@ PY
 [ -x "$macvm" ] || fail "macvm binary not found at $macvm; run make build-cli first"
 case "$iterations" in ''|*[!0-9]*|0) fail "MACVM_E2E_ITERATIONS must be a positive integer" ;; esac
 case "$timeout_seconds" in ''|*[!0-9]*|0) fail "MACVM_E2E_SETUP_TIMEOUT_SECONDS must be a positive integer" ;; esac
-[ ! -e "$seed_bundle" ] || fail "seed VM already exists: $seed_bundle"
-
 mkdir -p "$vm_root"
-create_args=("$macvm" create --root "$vm_root" --name "$seed")
-if [ -n "${MACVM_E2E_IPSW:-}" ]; then
-    [ -f "$MACVM_E2E_IPSW" ] || fail "MACVM_E2E_IPSW does not exist: $MACVM_E2E_IPSW"
-    create_args+=(--ipsw "$MACVM_E2E_IPSW")
+if [ -n "${MACVM_E2E_SEED:-}" ]; then
+    [ -d "$seed_bundle" ] || fail "MACVM_E2E_SEED does not exist under $vm_root: $seed"
+    owns_seed=0
+    echo "Reusing pristine macOS seed '$seed'."
 else
-    create_args+=(--latest)
-fi
+    [ ! -e "$seed_bundle" ] || fail "seed VM already exists: $seed_bundle"
+    create_args=("$macvm" create --root "$vm_root" --name "$seed")
+    if [ -n "${MACVM_E2E_IPSW:-}" ]; then
+        [ -f "$MACVM_E2E_IPSW" ] || fail "MACVM_E2E_IPSW does not exist: $MACVM_E2E_IPSW"
+        create_args+=(--ipsw "$MACVM_E2E_IPSW")
+    else
+        create_args+=(--latest)
+    fi
 
-echo "Installing pristine macOS seed '$seed'."
-run_with_timeout 7200 "${create_args[@]}" || fail "seed installation failed"
+    echo "Installing pristine macOS seed '$seed'."
+    run_with_timeout 7200 "${create_args[@]}" || fail "seed installation failed"
+fi
 
 for iteration in $(seq 1 "$iterations"); do
     name="macvm-setup-soak-$run_id-$iteration"

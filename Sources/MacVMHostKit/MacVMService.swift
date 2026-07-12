@@ -630,20 +630,30 @@ public final class MacVMService: Sendable {
         pollInterval: TimeInterval = 1,
         occurrence: Int = 0
     ) async throws -> GuestTextMatch {
-        try await withRFBClient(vm) { client, session in
-            let match = try await Self.pollForText(
-                client,
-                freshCaptureSession: session,
-                query: query,
-                timeout: timeout,
-                pollInterval: pollInterval,
-                occurrence: occurrence
-            )
-            try await Self.withInputClient(freshCaptureSession: session, fallback: client) { inputClient in
-                try await inputClient.click(x: match.x, y: match.y)
-            }
-            return match
+        guard let session = liveVNCSession(for: vm) else {
+            throw MacVMError.message("No live VNC session for '\(vm.metadata.name)'. Start one with: macvm run \(vm.metadata.name) --headless")
         }
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            let match = try await RFBClient.withActionFramebuffer(
+                port: session.port,
+                password: session.password,
+                purpose: "click-text"
+            ) { actionClient, framebuffer -> GuestTextMatch? in
+                guard let match = OCRService.match(query, in: framebuffer, occurrence: occurrence) else {
+                    return nil
+                }
+                try await actionClient.click(x: match.x, y: match.y)
+                _ = try? await actionClient.captureFramebuffer()
+                return match
+            }
+            if let match {
+                return match
+            }
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        } while Date() < deadline
+
+        throw MacVMError.message("Timed out after \(Int(timeout))s waiting for text matching '\(query)'.")
     }
 
     private static func pollForText(

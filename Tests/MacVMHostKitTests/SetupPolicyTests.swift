@@ -93,6 +93,20 @@ func creatingAccountIsPassiveAndNeverRescueClicked() {
     })
 }
 
+@Test
+func creatingAccountNeverTriggersFormResubmissionEvenWhenAccountAnchorsRemainVisible() {
+    #expect(!SetupStepRunner.shouldRetryAccountSubmission(
+        isAccountForm: true,
+        isCreating: true,
+        elapsed: 60
+    ))
+    #expect(SetupStepRunner.shouldRetryAccountSubmission(
+        isAccountForm: true,
+        isCreating: false,
+        elapsed: 5
+    ))
+}
+
 // MARK: - The reported failure (Transfer pane, macOS 26)
 
 @Test
@@ -330,6 +344,30 @@ func passwordMismatchAlertIsNeverAutoDismissed() throws {
 }
 
 @Test
+func accountRequiredInformationAlertIsDetectedWhileVerifyPasswordIsObscured() {
+    let missingInformation = screen([
+        obs("Create a Mac Account", 800, 250, 360, 34),
+        obs("You haven't provided all of the", 1060, 670, 390, 30),
+        obs("requested information.", 1060, 705, 300, 26),
+        obs("Go Back", 1220, 900, 115, 22),
+        obs("Password", 835, 830, 120, 24),
+    ])
+
+    #expect(SetupStepRunner.accountInterruption(in: missingInformation.observations) == .missingInformation)
+    #expect(OCRService.match("Verify Password", in: missingInformation.observations) == nil)
+}
+
+@Test
+func accountPasswordMismatchUsesTheSameAccountInterruptionClassifier() {
+    let mismatch = screen([
+        obs("The passwords don't match.", 1100, 600, 320, 26),
+        obs("Go Back", 1240, 700, 100, 28),
+    ])
+
+    #expect(SetupStepRunner.accountInterruption(in: mismatch.observations) == .passwordMismatch)
+}
+
+@Test
 func paneAndModalRuleTitlesAreUnique() {
     // Attempt counters are keyed by ladder key; duplicate titles would merge
     // two screens' accounting.
@@ -437,6 +475,21 @@ func blankCaptureIsNeverJudgedAsProgress() {
     // Without the guard, the anchor "disappearing" into a blank frame reads
     // as an advance and resets the escalation ladder on every sleep blink.
     #expect(!SetupPolicy.didAdvance(from: accessibility, to: blank, anchor: "Accessibility"))
+}
+
+@Test
+func stablePaneAnchorOutranksSparseOCRSpellingJitter() {
+    let before = screen([
+        obs("welcome", 848, 599, 859, 186),
+        obs("Get Started", 1209, 1194, 141, 23),
+    ])
+    let after = screen([
+        obs("wacome", 840, 602, 900, 182),
+        obs("Get Started", 1209, 1194, 141, 23),
+    ])
+
+    #expect(SetupPolicy.similarity(from: before, to: after) < SetupPolicy.screenChangeSimilarityThreshold)
+    #expect(!SetupPolicy.didAdvance(from: before, to: after, anchor: "Welcome to Mac|Get Started"))
 }
 
 @Test

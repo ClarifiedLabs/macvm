@@ -726,8 +726,20 @@ enum SetupPolicy {
     /// as an advance would reset the escalation ladder on every sleep blink.
     static func didAdvance(from: Screen, to: Screen, anchor: String?) -> Bool {
         guard !to.observations.isEmpty else { return false }
-        if let anchor, OCRService.match(anchor, in: to.observations) == nil {
-            return true
+        if let anchor {
+            guard OCRService.match(anchor, in: to.observations) != nil else {
+                return true
+            }
+
+            // OCR on sparse, stylized panes can vary on every capture (for
+            // example "welcome", "uelcome", and "wacome"). As long as the
+            // acted-on pane's stable anchor remains, token similarity alone is
+            // not evidence that the action advanced. A newly presented modal
+            // is progress even when the underlying pane remains visible.
+            if detectModal(in: from) == nil, detectModal(in: to) != nil {
+                return true
+            }
+            return false
         }
         return similarity(from: from, to: to) < screenChangeSimilarityThreshold
     }

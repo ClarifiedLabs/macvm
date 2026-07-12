@@ -2114,6 +2114,42 @@ func rfbActionTransactionCapturesClicksAndVerifiesOnOneConnection() async throws
 }
 
 @Test
+func rfbActionFramebufferNegotiatesDesktopSizeBeforePointerInputAndTracesGeometry() async throws {
+    let server = try MinimalRFBServer(maxConnections: 1, mode: .pointSizedThenDesktopSizeAndClick)
+    let events = RFBEventRecorder()
+    server.start()
+    defer { server.stop() }
+
+    let sizes = try await RFBClient.withActionFramebuffer(
+        port: server.port,
+        password: nil,
+        purpose: "geometry-regression",
+        trace: { events.append($0) }
+    ) { client, framebuffer in
+        #expect(framebuffer.width == 2)
+        #expect(framebuffer.height == 2)
+        try await client.click(x: 1, y: 1)
+        return await client.framebufferSize
+    }
+
+    #expect(sizes?.width == 2)
+    #expect(sizes?.height == 2)
+    #expect(server.pointerEventCount == 4) // wake move + the click's move/down/up
+    #expect(server.receivedPointerCoordinates.suffix(3).allSatisfy { $0.0 == 1 && $0.1 == 1 })
+    let recorded = events.values
+    #expect(Set(recorded.map(\.connectionID)).count == 1)
+    #expect(recorded.contains { $0.kind == "server_init" && $0.fields["width"] == "1" })
+    #expect(recorded.contains { $0.kind == "desktop_size" && $0.fields["width"] == "2" })
+    #expect(recorded.contains {
+        $0.kind == "pointer_click"
+            && $0.fields["captureWidth"] == "2"
+            && $0.fields["captureHeight"] == "2"
+            && $0.fields["lastCaptureHadPixels"] == "true"
+    })
+    #expect(server.waitUntilStopped(timeout: 2))
+}
+
+@Test
 func setupRFBConnectionRetriesDroppedInitialFramebufferRequest() async throws {
     let server = try MinimalRFBServer(maxConnections: 2, mode: .dropFirstFramebufferRequestThenCapture)
     server.start()
@@ -2181,10 +2217,28 @@ func rfbClientClipboardWaitTimesOut() async throws {
     #expect(didThrow)
 }
 
+private final class RFBEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [RFBTraceEvent] = []
+
+    var values: [RFBTraceEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
+
+    func append(_ event: RFBTraceEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+}
+
 private enum MinimalRFBServerMode {
     case framebufferCaptures
     case dropFirstFramebufferRequestThenCapture
     case captureClickAndVerify
+    case pointSizedThenDesktopSizeAndClick
     case captureClientCutText
     case sendServerCutText(String)
     case idleAfterHandshake
@@ -2202,6 +2256,7 @@ private final class MinimalRFBServer: @unchecked Sendable {
     private var handledConnections = 0
     private var capturedClientCutTexts: [String] = []
     private var capturedPointerEvents = 0
+    private var capturedPointerCoordinates: [(Int, Int)] = []
 
     var connectionCount: Int {
         lock.lock()
@@ -2219,6 +2274,12 @@ private final class MinimalRFBServer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return capturedPointerEvents
+    }
+
+    var receivedPointerCoordinates: [(Int, Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedPointerCoordinates
     }
 
     init(maxConnections: Int, mode: MinimalRFBServerMode = .framebufferCaptures) throws {
@@ -2346,6 +2407,8 @@ private final class MinimalRFBServer: @unchecked Sendable {
             try serveFramebufferCapture(clientFD: clientFD, connectionIndex: connectionIndex)
         case .captureClickAndVerify:
             try captureClickAndVerify(clientFD: clientFD)
+        case .pointSizedThenDesktopSizeAndClick:
+            try pointSizedThenDesktopSizeAndClick(clientFD: clientFD)
         case .captureClientCutText:
             try captureClientCutText(clientFD: clientFD)
         case .sendServerCutText(let text):
@@ -2377,15 +2440,75 @@ private final class MinimalRFBServer: @unchecked Sendable {
         try sendFramebuffer(pixel: [0, 255, 0, 0], to: clientFD)
     }
 
+    private func pointSizedThenDesktopSizeAndClick(clientFD: Int32) throws {
+        try readUntilFramebufferRequest(from: clientFD)
+
+        var resize: [UInt8] = [RFB.framebufferUpdateType, 0]
+        resize.appendBigEndian(UInt16(1))
+        resize.appendBigEndian(UInt16(0))
+        resize.appendBigEndian(UInt16(0))
+        resize.appendBigEndian(UInt16(2))
+        resize.appendBigEndian(UInt16(2))
+        resize.appendBigEndian(UInt32(bitPattern: RFB.desktopSizeEncoding))
+        try writeAll(resize, to: clientFD)
+
+        _ = try readExactly(10, from: clientFD)
+        try sendFramebuffer(
+            width: 2,
+            height: 2,
+            pixels: Array(repeating: [UInt8](arrayLiteral: 0, 0, 255, 0), count: 4).flatMap { $0 },
+            to: clientFD
+        )
+
+        for _ in 0..<3 {
+            let pointer = try readExactly(6, from: clientFD)
+            guard pointer.first == RFB.pointerEventType else {
+                throw TestSocketError.operationFailed("pointerEvent")
+            }
+            recordPointer(pointer)
+        }
+    }
+
+    private func readUntilFramebufferRequest(from clientFD: Int32) throws {
+        while true {
+            let messageType = try readExactly(1, from: clientFD)[0]
+            switch messageType {
+            case RFB.pointerEventType:
+                let remainder = try readExactly(5, from: clientFD)
+                recordPointer([messageType] + remainder)
+            case RFB.keyEventType:
+                _ = try readExactly(7, from: clientFD)
+            case RFB.framebufferUpdateRequestType:
+                _ = try readExactly(9, from: clientFD)
+                return
+            default:
+                throw TestSocketError.operationFailed("unexpectedClientMessage")
+            }
+        }
+    }
+
+    private func recordPointer(_ pointer: [UInt8]) {
+        let x = Int(UInt16(pointer[2]) << 8 | UInt16(pointer[3]))
+        let y = Int(UInt16(pointer[4]) << 8 | UInt16(pointer[5]))
+        lock.lock()
+        capturedPointerEvents += 1
+        capturedPointerCoordinates.append((x, y))
+        lock.unlock()
+    }
+
     private func sendFramebuffer(pixel: [UInt8], to clientFD: Int32) throws {
+        try sendFramebuffer(width: 1, height: 1, pixels: pixel, to: clientFD)
+    }
+
+    private func sendFramebuffer(width: Int, height: Int, pixels: [UInt8], to clientFD: Int32) throws {
         var update: [UInt8] = [RFB.framebufferUpdateType, 0]
         update.appendBigEndian(UInt16(1))
         update.appendBigEndian(UInt16(0))
         update.appendBigEndian(UInt16(0))
-        update.appendBigEndian(UInt16(1))
-        update.appendBigEndian(UInt16(1))
+        update.appendBigEndian(UInt16(width))
+        update.appendBigEndian(UInt16(height))
         update.appendBigEndian(UInt32(bitPattern: RFB.rawEncoding))
-        update.append(contentsOf: pixel)
+        update.append(contentsOf: pixels)
         try writeAll(update, to: clientFD)
     }
 

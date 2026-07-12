@@ -1,6 +1,13 @@
 import Foundation
 import Network
 
+struct RFBTraceEvent: Sendable {
+    let kind: String
+    let connectionID: String
+    let purpose: String
+    let fields: [String: String]
+}
+
 enum RFBError: LocalizedError {
     case connectionClosed
     case handshakeFailed(String)
@@ -48,21 +55,46 @@ actor RFBClient {
     private var framebufferHeight: Int?
     private var started = false
     private var nudgeToggle = false
+    private let connectionID: String
+    private let purpose: String
+    private let trace: (@Sendable (RFBTraceEvent) -> Void)?
+    private var lastCaptureSize: (width: Int, height: Int)?
+    private var lastCaptureHadPixels = false
 
-    init(host: String = "127.0.0.1", port: Int) {
+    init(
+        host: String = "127.0.0.1",
+        port: Int,
+        purpose: String = "unspecified",
+        trace: (@Sendable (RFBTraceEvent) -> Void)? = nil
+    ) {
         let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) ?? 5900
         self.connection = NWConnection(
             host: NWEndpoint.Host(host),
             port: endpointPort,
             using: .tcp
         )
+        connectionID = String(UUID().uuidString.prefix(8))
+        self.purpose = purpose
+        self.trace = trace
     }
 
     /// Open a short-lived shared RFB connection, capture one full framebuffer, and
     /// close it. OCR polling uses this to force the server to send a clean full
     /// frame even when the long-lived control connection has seen a dimmed screen.
-    static func captureOnce(host: String = "127.0.0.1", port: Int, password: String?) async throws -> Framebuffer {
-        try await withConnection(host: host, port: port, password: password) { client in
+    static func captureOnce(
+        host: String = "127.0.0.1",
+        port: Int,
+        password: String?,
+        purpose: String = "capture",
+        trace: (@Sendable (RFBTraceEvent) -> Void)? = nil
+    ) async throws -> Framebuffer {
+        try await withConnection(
+            host: host,
+            port: port,
+            password: password,
+            purpose: purpose,
+            trace: trace
+        ) { client in
             try await client.captureFramebuffer()
         }
     }
@@ -74,9 +106,11 @@ actor RFBClient {
         host: String = "127.0.0.1",
         port: Int,
         password: String?,
+        purpose: String = "operation",
+        trace: (@Sendable (RFBTraceEvent) -> Void)? = nil,
         _ body: (RFBClient) async throws -> T
     ) async throws -> T {
-        let client = RFBClient(host: host, port: port)
+        let client = RFBClient(host: host, port: port, purpose: purpose, trace: trace)
         do {
             try await client.connect(password: password)
             let result = try await body(client)
@@ -88,15 +122,44 @@ actor RFBClient {
         }
     }
 
+    /// Open the newest shared connection, wake the display, and negotiate/capture
+    /// its current framebuffer before allowing any coordinate-based action.
+    static func withActionFramebuffer<T>(
+        host: String = "127.0.0.1",
+        port: Int,
+        password: String?,
+        purpose: String,
+        trace: (@Sendable (RFBTraceEvent) -> Void)? = nil,
+        _ body: (RFBClient, Framebuffer) async throws -> T
+    ) async throws -> T {
+        try await withConnection(
+            host: host,
+            port: port,
+            password: password,
+            purpose: purpose,
+            trace: trace
+        ) { client in
+            try? await client.nudgePointer()
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            let framebuffer = try await client.captureFramebuffer()
+            return try await body(client, framebuffer)
+        }
+    }
+
     /// Framebuffer dimensions reported by the server (available after `connect`).
     var framebufferSize: (width: Int, height: Int)? {
         guard let framebufferWidth, let framebufferHeight else { return nil }
         return (framebufferWidth, framebufferHeight)
     }
 
+    var traceIdentity: (connectionID: String, purpose: String) {
+        (connectionID, purpose)
+    }
+
     /// Perform the full RFB 3.8 handshake: version, security/auth, init, then set
     /// our pixel format (BGRA32) and Raw encoding.
     func connect(password: String?) async throws {
+        emit("connection_open")
         try await startConnection()
 
         _ = try await receive(exactly: 12) // ProtocolVersion greeting
@@ -133,6 +196,10 @@ actor RFBClient {
         let header = try await receive(exactly: 24)
         framebufferWidth = Int(UInt16(header[0]) << 8 | UInt16(header[1]))
         framebufferHeight = Int(UInt16(header[2]) << 8 | UInt16(header[3]))
+        emit("server_init", fields: [
+            "width": String(framebufferWidth ?? 0),
+            "height": String(framebufferHeight ?? 0),
+        ])
         let nameLength = Int(
             UInt32(header[20]) << 24 | UInt32(header[21]) << 16 | UInt32(header[22]) << 8 | UInt32(header[23])
         )
@@ -151,17 +218,36 @@ actor RFBClient {
         }
 
         var framebuffer = Framebuffer(width: width, height: height)
-        for _ in 0..<6 {
+        for attempt in 1...6 {
             let requestWidth = UInt16(framebufferWidth ?? width)
             let requestHeight = UInt16(framebufferHeight ?? height)
+            emit("framebuffer_request", fields: [
+                "attempt": String(attempt),
+                "width": String(requestWidth),
+                "height": String(requestHeight),
+            ])
             try await send(RFBMessage.framebufferUpdateRequest(
                 incremental: false, x: 0, y: 0, width: requestWidth, height: requestHeight
             ))
             if try await readOneUpdate(into: &framebuffer) {
+                lastCaptureSize = (framebuffer.width, framebuffer.height)
+                lastCaptureHadPixels = true
+                emit("framebuffer_result", fields: [
+                    "width": String(framebuffer.width),
+                    "height": String(framebuffer.height),
+                    "hasRawPixels": "true",
+                ])
                 return framebuffer
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        lastCaptureSize = (framebuffer.width, framebuffer.height)
+        lastCaptureHadPixels = false
+        emit("framebuffer_result", fields: [
+            "width": String(framebuffer.width),
+            "height": String(framebuffer.height),
+            "hasRawPixels": "false",
+        ])
         return framebuffer
     }
 
@@ -230,6 +316,10 @@ actor RFBClient {
                 let newHeight = Int(rectangle.height)
                 framebufferWidth = newWidth
                 framebufferHeight = newHeight
+                emit("desktop_size", fields: [
+                    "width": String(newWidth),
+                    "height": String(newHeight),
+                ])
                 if newWidth != framebuffer.width || newHeight != framebuffer.height {
                     framebuffer = Framebuffer(width: newWidth, height: newHeight)
                 }
@@ -333,6 +423,19 @@ actor RFBClient {
         let mask = UInt8(1 << (button - 1))
         let px = UInt16(clamping: x)
         let py = UInt16(clamping: y)
+        var fields = [
+            "x": String(px),
+            "y": String(py),
+            "button": String(button),
+            "negotiatedWidth": String(framebufferWidth ?? 0),
+            "negotiatedHeight": String(framebufferHeight ?? 0),
+            "lastCaptureHadPixels": String(lastCaptureHadPixels),
+        ]
+        if let lastCaptureSize {
+            fields["captureWidth"] = String(lastCaptureSize.width)
+            fields["captureHeight"] = String(lastCaptureSize.height)
+        }
+        emit("pointer_click", fields: fields)
         try await send(RFBMessage.pointerEvent(buttonMask: 0, x: px, y: py))
         try? await Task.sleep(nanoseconds: 30_000_000)
         try await send(RFBMessage.pointerEvent(buttonMask: mask, x: px, y: py))
@@ -342,7 +445,12 @@ actor RFBClient {
     }
 
     func close() {
+        emit("connection_close")
         connection.cancel()
+    }
+
+    private func emit(_ kind: String, fields: [String: String] = [:]) {
+        trace?(RFBTraceEvent(kind: kind, connectionID: connectionID, purpose: purpose, fields: fields))
     }
 
     // MARK: - Connection plumbing

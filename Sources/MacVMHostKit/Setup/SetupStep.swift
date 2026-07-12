@@ -5,11 +5,20 @@ private final class SetupDiagnostics: @unchecked Sendable {
     private static let retainedFrameCount = 20
 
     let directory: URL
+    private let expectedWidth: Int?
+    private let expectedHeight: Int?
     private let lock = NSLock()
     private var frameNames: [String] = []
+    private var pinnedFrameNames = Set<String>()
+    private var observedSizes: [String: Int] = [:]
+    private var accountAttempts: [[String: Any]] = []
+    private var lastActionableFrame: String?
     private var sequence = 0
 
     init(bundle: VMBundle) {
+        let metadata = try? bundle.readMetadata()
+        expectedWidth = metadata?.displayPixelWidth
+        expectedHeight = metadata?.displayPixelHeight
         let formatter = ISO8601DateFormatter()
         let timestamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
         directory = bundle.setupDirectoryURL
@@ -18,7 +27,7 @@ private final class SetupDiagnostics: @unchecked Sendable {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    func record(_ event: String, screen: SetupPolicy.Screen? = nil) {
+    func record(_ event: String, screen: SetupPolicy.Screen? = nil, fields: [String: Any] = [:]) {
         let payload: [String: Any] = lock.withLock {
             sequence += 1
             var value: [String: Any] = [
@@ -31,8 +40,64 @@ private final class SetupDiagnostics: @unchecked Sendable {
                 value["visibleText"] = SetupStepRunner.visibleTextSummary(screen.observations, limit: 20)
                 value["signature"] = String(SetupPolicy.signature(of: screen.observations).hash)
             }
+            for (key, field) in fields {
+                value[key] = field
+            }
             return value
         }
+        append(payload)
+    }
+
+    var rfbTraceSink: @Sendable (RFBTraceEvent) -> Void {
+        { [weak self] event in
+            self?.recordRFB(event)
+        }
+    }
+
+    func recordAccountAttempt(_ attempt: Int, result: String, fields: [String: Any] = [:]) {
+        var value: [String: Any] = ["attempt": attempt, "result": result]
+        for (key, field) in fields {
+            value[key] = field
+        }
+        lock.withLock {
+            accountAttempts.append(value)
+        }
+        record("account_attempt", fields: value)
+    }
+
+    private func recordRFB(_ event: RFBTraceEvent) {
+        var fields: [String: Any] = [
+            "kind": event.kind,
+            "connectionID": event.connectionID,
+            "purpose": event.purpose,
+        ]
+        for (key, value) in event.fields {
+            fields[key] = value
+        }
+        if ["server_init", "desktop_size", "framebuffer_result"].contains(event.kind),
+           let width = event.fields["width"], let height = event.fields["height"] {
+            lock.withLock {
+                observedSizes["\(width)x\(height)", default: 0] += 1
+            }
+        }
+        record("rfb", fields: fields)
+    }
+
+    func shouldRecordFrame(
+        observations: [TextObservation],
+        width: Int,
+        height: Int,
+        pinned: Bool,
+        previewIsFresh: Bool
+    ) -> Bool {
+        pinned
+            || !previewIsFresh
+            || observations.isEmpty
+            || (expectedWidth != nil && expectedHeight != nil
+                && (width != expectedWidth || height != expectedHeight))
+    }
+
+    private func append(_ payload: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
               var line = String(data: data, encoding: .utf8) else { return }
         line.append("\n")
@@ -48,7 +113,20 @@ private final class SetupDiagnostics: @unchecked Sendable {
         }
     }
 
-    func recordFrame(png: Data, observations: [TextObservation], width: Int, height: Int) {
+    @discardableResult
+    func recordFrame(
+        png: Data,
+        observations: [TextObservation],
+        width: Int,
+        height: Int,
+        connectionID: String? = nil,
+        purpose: String? = nil,
+        pinned: Bool = false
+    ) -> String {
+        let effectivePinned = pinned
+            || observations.isEmpty
+            || (expectedWidth != nil && expectedHeight != nil
+                && (width != expectedWidth || height != expectedHeight))
         let frameName: String = lock.withLock {
             sequence += 1
             return String(format: "frame-%05d", sequence)
@@ -72,16 +150,34 @@ private final class SetupDiagnostics: @unchecked Sendable {
 
         let expired: [String] = lock.withLock {
             frameNames.append(frameName)
-            guard frameNames.count > Self.retainedFrameCount else { return [] }
-            let count = frameNames.count - Self.retainedFrameCount
-            let removed = Array(frameNames.prefix(count))
-            frameNames.removeFirst(count)
+            if !observations.isEmpty {
+                lastActionableFrame = frameName
+            }
+            if effectivePinned {
+                pinnedFrameNames.insert(frameName)
+            }
+            let rolling = frameNames.filter { !pinnedFrameNames.contains($0) }
+            guard rolling.count > Self.retainedFrameCount else { return [] }
+            let removed = Array(rolling.prefix(rolling.count - Self.retainedFrameCount))
+            frameNames.removeAll { removed.contains($0) }
             return removed
         }
         for name in expired {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(name).png"))
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(name).txt"))
         }
+        var fields: [String: Any] = [
+            "frame": frameName,
+            "width": width,
+            "height": height,
+            "ocrCount": observations.count,
+            "actionable": !observations.isEmpty,
+            "pinned": effectivePinned,
+        ]
+        if let connectionID { fields["connectionID"] = connectionID }
+        if let purpose { fields["purpose"] = purpose }
+        record("frame", fields: fields)
+        return frameName
     }
 
     func finishSuccessfully() {
@@ -92,6 +188,47 @@ private final class SetupDiagnostics: @unchecked Sendable {
         }
         record("setup assistant completed")
     }
+
+    func finishFailure(_ error: Error) {
+        let summary: [String: Any] = lock.withLock {
+            var value: [String: Any] = [
+                "failure": error.localizedDescription,
+                "observedFramebufferSizes": observedSizes,
+                "accountAttempts": accountAttempts,
+            ]
+            if let lastActionableFrame {
+                value["lastActionableFrame"] = lastActionableFrame
+            }
+            if let expectedWidth, let expectedHeight {
+                value["expectedFramebuffer"] = ["width": expectedWidth, "height": expectedHeight]
+            }
+            return value
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys]) else {
+            return
+        }
+        try? data.write(to: directory.appendingPathComponent("summary.json"), options: .atomic)
+    }
+}
+
+private enum OCRActionAttemptResult<T> {
+    case targetMissing(String)
+    case value(T)
+}
+
+private struct OCRActionTargetNotFound: LocalizedError {
+    let query: String
+    let timeout: TimeInterval
+    let visible: String
+
+    var errorDescription: String? {
+        "Timed out after \(Int(timeout))s waiting to act on “\(query)”. Last visible text: \(visible)."
+    }
+}
+
+enum AccountFormInterruption: Error, Equatable {
+    case missingInformation
+    case passwordMismatch
 }
 
 /// One step in a Setup Assistant flow. A flat, Codable shape so flows can ship as
@@ -320,6 +457,25 @@ struct SetupStepRunner {
     }
 
     static let accountPasswordMismatchQuery = "passwords don.t match"
+    static let accountMissingInformationQuery = "haven.t provided all of the|requested information"
+
+    static func accountInterruption(in observations: [TextObservation]) -> AccountFormInterruption? {
+        if OCRService.match(accountMissingInformationQuery, in: observations) != nil {
+            return .missingInformation
+        }
+        if OCRService.match(accountPasswordMismatchQuery, in: observations) != nil {
+            return .passwordMismatch
+        }
+        return nil
+    }
+
+    static func shouldRetryAccountSubmission(
+        isAccountForm: Bool,
+        isCreating: Bool,
+        elapsed: TimeInterval
+    ) -> Bool {
+        isAccountForm && !isCreating && elapsed >= 5
+    }
 
     /// How many unexpected panes a single required step may click through
     /// before its timeout is treated as fatal. The login/desktop gates at the
@@ -346,6 +502,7 @@ struct SetupStepRunner {
                 await dumpScreenshot(label: "failure-\(index)-\(step.action.rawValue)")
                 DebugLog.log("Setup step \(index) (\(step.action.rawValue)) failed: \(error.localizedDescription)")
                 diagnostics.record("failed: \(error.localizedDescription)")
+                diagnostics.finishFailure(error)
                 throw MacVMError.message(
                     "\(error.localizedDescription) Diagnostics: \(diagnostics.directory.path)"
                 )
@@ -373,8 +530,12 @@ struct SetupStepRunner {
             let text = step.text ?? ""
             progress?(.status("Setup: clicking “\(text)”"))
             do {
-                let match = try await poll(text: text, timeout: step.timeout ?? defaultTimeout, occurrence: step.occurrence ?? 0)
-                try await withInputClient { inputClient in
+                try await performOCRAction(
+                    query: text,
+                    timeout: step.timeout ?? defaultTimeout,
+                    occurrence: step.occurrence ?? 0,
+                    purpose: "setup-click-text"
+                ) { inputClient, match in
                     try await inputClient.click(x: match.x, y: match.y)
                 }
             } catch {
@@ -472,172 +633,296 @@ struct SetupStepRunner {
     private func createAccount(_ account: SetupStep.Account, timeout: TimeInterval) async throws {
         progress?(.status("Setup: creating account “\(account.username)”"))
         _ = try await poll(text: "Create a.*Account|Create a Computer Account|Full Name", timeout: 30, occurrence: 0)
-
-        if let fullName = try? await poll(text: "Full Name", timeout: 5, occurrence: 0) {
-            try await click(fullName)
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            try await clearFocusedText(maxCharacters: max(34, account.username.count + 4))
-        }
-        try await withInputClient { inputClient in
-            try await inputClient.typeText(account.username)
-        }
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-
-        try await enterAccountPassword(account.password, field: "^Password$")
-        try await enterAccountPassword(account.password, field: "Verify Password")
-        try await submitAccountForm()
-
         let deadline = Date().addingTimeInterval(timeout)
         let startedAt = Date()
         var nextStatusAt = startedAt
-        var submitRetries = 0
 
-        while Date() < deadline {
-            if await visibleText(Self.accountPasswordMismatchQuery, timeout: 1) != nil {
-                try await repairAccountPasswordMismatch(password: account.password, timeout: 5)
+        accountAttempts: for attempt in 1...3 {
+            guard Date() < deadline else { break }
+            let multiplier = [1.0, 1.5, 2.0][attempt - 1]
+            diagnostics.recordAccountAttempt(attempt, result: "started", fields: ["typingMultiplier": multiplier])
+            reportStatus("Setup: account form attempt \(attempt)/3")
+
+            do {
+                _ = try await fillAccountFieldIfVisible(
+                    "Full Name",
+                    value: account.username,
+                    secure: false,
+                    multiplier: multiplier,
+                    purpose: "account-full-name"
+                )
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                _ = try await fillAccountFieldIfVisible(
+                    "^Account Name$",
+                    value: account.username,
+                    secure: false,
+                    multiplier: multiplier,
+                    purpose: "account-name-fallback"
+                )
+                _ = try await fillAccountFieldIfVisible(
+                    "^Password$",
+                    value: account.password,
+                    secure: true,
+                    multiplier: multiplier,
+                    purpose: "account-password"
+                )
+                _ = try await fillAccountFieldIfVisible(
+                    "Verify Password",
+                    value: account.password,
+                    secure: true,
+                    multiplier: multiplier,
+                    purpose: "account-verify-password"
+                )
+                try await performOCRAction(
+                    query: "^Continue$",
+                    timeout: 20,
+                    purpose: "account-submit",
+                    detectAccountInterruptions: true
+                ) { inputClient, match in
+                    try await inputClient.click(x: match.x, y: match.y)
+                }
+            } catch let interruption as AccountFormInterruption {
+                diagnostics.recordAccountAttempt(attempt, result: String(describing: interruption))
+                try await dismissAccountAlert(interruption)
                 continue
             }
 
-            let screen = try await captureScreen()
-            if screen.observations.isEmpty {
+            let submissionStartedAt = Date()
+            while Date() < deadline {
+                let screen = try await captureScreen()
+                if screen.observations.isEmpty {
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    continue
+                }
+                if let interruption = Self.accountInterruption(in: screen.observations) {
+                    diagnostics.recordAccountAttempt(attempt, result: String(describing: interruption))
+                    try await dismissAccountAlert(interruption)
+                    continue accountAttempts
+                }
+
+                let isAccountForm = OCRService.match(
+                    "Create a.*Account|Create a Computer Account|Full Name|Hint \\(Optional\\)",
+                    in: screen.observations
+                ) != nil
+                let isCreating = OCRService.match("Creating account", in: screen.observations) != nil
+
+                if !isAccountForm && !isCreating {
+                    diagnostics.recordAccountAttempt(attempt, result: "completed")
+                    return
+                }
+
+                let now = Date()
+                if now >= nextStatusAt {
+                    let elapsed = Int(now.timeIntervalSince(startedAt))
+                    let state = isCreating ? "macOS is creating the account" : "waiting for account submission"
+                    reportStatus("Setup: \(state) (\(elapsed)s); no unrelated input will be sent")
+                    nextStatusAt = now.addingTimeInterval(Self.pollStatusInterval)
+                }
+
+                if Self.shouldRetryAccountSubmission(
+                    isAccountForm: isAccountForm,
+                    isCreating: isCreating,
+                    elapsed: now.timeIntervalSince(submissionStartedAt)
+                ) {
+                    diagnostics.recordAccountAttempt(attempt, result: "form-still-visible")
+                    continue accountAttempts
+                }
                 try? await Task.sleep(nanoseconds: 700_000_000)
-                continue
             }
-
-            let isAccountForm = OCRService.match(
-                "Create a.*Account|Create a Computer Account|Full Name|Hint \\(Optional\\)",
-                in: screen.observations
-            ) != nil
-            let isCreating = OCRService.match("Creating account", in: screen.observations) != nil
-
-            if !isAccountForm && !isCreating {
-                return
-            }
-
-            let now = Date()
-            if now >= nextStatusAt {
-                let elapsed = Int(now.timeIntervalSince(startedAt))
-                let state = isCreating ? "macOS is creating the account" : "waiting for account submission"
-                reportStatus("Setup: \(state) (\(elapsed)s); no unrelated input will be sent")
-                nextStatusAt = now.addingTimeInterval(Self.pollStatusInterval)
-            }
-
-            if !isCreating, submitRetries < 3,
-               let continueButton = OCRService.match("^Continue$", in: screen.observations) {
-                submitRetries += 1
-                reportStatus("Setup: account form did not begin creating; retrying Continue (\(submitRetries)/3)")
-                try await click(continueButton)
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                continue
-            }
-
-            try? await Task.sleep(nanoseconds: 700_000_000)
         }
 
         await dumpScreenshot(label: "account-creation-timeout")
-        throw MacVMError.message(
-            "Timed out after \(Int(timeout))s waiting for macOS to create account ‘\(account.username)’."
-        )
-    }
-
-    private func enterAccountPassword(_ password: String, field: String) async throws {
-        let match = try await poll(text: field, timeout: 15, occurrence: 0)
-        try await click(match)
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        try await clearFocusedText(maxCharacters: max(12, password.count + 2))
-        try await withInputClient { inputClient in
-            try await inputClient.typeText(
-                password,
-                holdDelay: Self.nanoseconds(from: Self.setupPasswordHoldDelay),
-                gapDelay: Self.nanoseconds(from: Self.setupPasswordGapDelay)
+        if Date() >= deadline {
+            throw MacVMError.message(
+                "Timed out after \(Int(timeout))s waiting for macOS to create account ‘\(account.username)’."
             )
         }
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-    }
-
-    private func submitAccountForm() async throws {
-        let continueButton = try await poll(text: "^Continue$", timeout: 20, occurrence: 0)
-        try await click(continueButton)
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        throw MacVMError.message("Account creation did not advance after 3 verified form attempts.")
     }
 
     private func repairAccountPasswordMismatch(password: String, timeout: TimeInterval) async throws {
         guard await visibleText(Self.accountPasswordMismatchQuery, timeout: timeout) != nil else {
             return
         }
-
-        progress?(.status("Setup: password mismatch alert appeared; retrying account password entry"))
-        let attempts = 2
-        for attempt in 1...attempts {
-            let goBack = try await poll(text: "Go Back", timeout: 10, occurrence: 0)
-            try await click(goBack)
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-
-            _ = try await poll(text: "Create a.*Account|Full Name|Hint \\(Optional\\)", timeout: 20, occurrence: 0)
-            try await refillAccountPasswordFields(password: password, attempt: attempt)
-
-            let continueButton = try await poll(text: "Continue", timeout: 15, occurrence: 0)
-            try await click(continueButton)
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
-
-            if await visibleText(Self.accountPasswordMismatchQuery, timeout: 2) == nil {
-                return
-            }
-
-            if attempt < attempts {
-                progress?(.status("Setup: password mismatch persisted; retrying account password entry again"))
-            }
-        }
-
-        await dumpScreenshot(label: "account-password-mismatch")
-        throw MacVMError.message("Setup Assistant reported mismatched account passwords after retrying account password entry.")
-    }
-
-    private func refillAccountPasswordFields(password: String, attempt: Int) async throws {
-        let multiplier = attempt == 1 ? 1 : 1.5
-        let holdDelay = Self.setupPasswordHoldDelay * multiplier
-        let gapDelay = Self.setupPasswordGapDelay * multiplier
-
-        try await refillAccountPasswordField("^Password$", password: password, holdDelay: holdDelay, gapDelay: gapDelay)
-        try await refillAccountPasswordField("Verify Password", password: password, holdDelay: holdDelay, gapDelay: gapDelay)
-    }
-
-    private func refillAccountPasswordField(
-        _ fieldText: String,
-        password: String,
-        holdDelay: TimeInterval,
-        gapDelay: TimeInterval
-    ) async throws {
-        let field = try await poll(text: fieldText, timeout: 15, occurrence: 0)
-        try await click(field)
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-
-        try await clearFocusedText(maxCharacters: max(12, password.count + 2))
-        try await withInputClient { inputClient in
-            try await inputClient.typeText(
-                password,
-                holdDelay: Self.nanoseconds(from: holdDelay),
-                gapDelay: Self.nanoseconds(from: gapDelay)
-            )
-        }
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-    }
-
-    private func clearFocusedText(maxCharacters: Int) async throws {
-        try await withInputClient { inputClient in
-            if let selectAll = Keysym.parseChord("cmd+a") {
-                try await inputClient.pressKey(selectAll.key, modifiers: selectAll.modifiers)
-            }
-            for _ in 0..<maxCharacters {
-                try await inputClient.pressKey(Keysym.backspace)
-            }
-        }
-    }
-
-    private func click(_ match: GuestTextMatch) async throws {
-        try await withInputClient { inputClient in
+        try await dismissAccountAlert(.passwordMismatch)
+        _ = try await fillAccountFieldIfVisible(
+            "^Password$", value: password, secure: true, multiplier: 1.5, purpose: "repair-password"
+        )
+        _ = try await fillAccountFieldIfVisible(
+            "Verify Password", value: password, secure: true, multiplier: 1.5, purpose: "repair-verify-password"
+        )
+        try await performOCRAction(
+            query: "^Continue$",
+            timeout: 15,
+            purpose: "repair-account-submit"
+        ) { inputClient, match in
             try await inputClient.click(x: match.x, y: match.y)
         }
+    }
+
+    private func fillAccountFieldIfVisible(
+        _ query: String,
+        value: String,
+        secure: Bool,
+        multiplier: Double,
+        purpose: String
+    ) async throws -> Bool {
+        do {
+            try await performOCRAction(
+                query: query,
+                timeout: 3,
+                purpose: purpose,
+                detectAccountInterruptions: true
+            ) { inputClient, match in
+                try await inputClient.click(x: match.x, y: match.y)
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                try await clearFocusedText(
+                    using: inputClient,
+                    maxCharacters: max(secure ? 12 : 34, value.count + 4)
+                )
+                diagnostics.record("account_type", fields: [
+                    "purpose": purpose,
+                    "characterCount": value.count,
+                    "secure": secure,
+                    "holdDelay": secure ? Self.setupPasswordHoldDelay * multiplier : 0.035,
+                    "gapDelay": secure ? Self.setupPasswordGapDelay * multiplier : 0.09,
+                ])
+                try await inputClient.typeText(
+                    value,
+                    holdDelay: Self.nanoseconds(from: secure ? Self.setupPasswordHoldDelay * multiplier : 0.035),
+                    gapDelay: Self.nanoseconds(from: secure ? Self.setupPasswordGapDelay * multiplier : 0.09)
+                )
+            }
+            return true
+        } catch is OCRActionTargetNotFound {
+            diagnostics.record("account_field_not_empty_or_not_visible", fields: ["purpose": purpose, "query": query])
+            return false
+        }
+    }
+
+    private func dismissAccountAlert(_ interruption: AccountFormInterruption) async throws {
+        let label = interruption == .passwordMismatch ? "password mismatch" : "missing required information"
+        reportStatus("Setup: \(label) alert appeared; returning to the account form")
+        try await performOCRAction(
+            query: "Go Back",
+            timeout: 10,
+            purpose: "account-alert-go-back"
+        ) { inputClient, match in
+            try await inputClient.click(x: match.x, y: match.y)
+        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+
+    private func clearFocusedText(using inputClient: RFBClient, maxCharacters: Int) async throws {
+        if let selectAll = Keysym.parseChord("cmd+a") {
+            try await inputClient.pressKey(selectAll.key, modifiers: selectAll.modifiers)
+        }
+        for _ in 0..<maxCharacters {
+            try await inputClient.pressKey(Keysym.backspace)
+        }
+    }
+
+    /// Resolve OCR and perform its input on one newest connection. A point-sized
+    /// blank framebuffer cannot produce a match, so it is retained as diagnostics
+    /// and retried without ever supplying pointer coordinates.
+    private func performOCRAction<T>(
+        query: String,
+        timeout: TimeInterval,
+        occurrence: Int = 0,
+        purpose: String,
+        detectAccountInterruptions: Bool = false,
+        _ action: (RFBClient, GuestTextMatch) async throws -> T
+    ) async throws -> T {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastVisible = "none"
+
+        repeat {
+            let attempt: OCRActionAttemptResult<T>
+            if let session = bundle.liveVNCSession() {
+                attempt = try await RFBClient.withActionFramebuffer(
+                    port: session.port,
+                    password: session.password,
+                    purpose: purpose,
+                    trace: diagnostics.rfbTraceSink
+                ) { actionClient, framebuffer in
+                    let identity = await actionClient.traceIdentity
+                    publishPreview(
+                        framebuffer,
+                        connectionID: identity.connectionID,
+                        purpose: identity.purpose,
+                        pinned: true
+                    )
+                    var screen = SetupPolicy.Screen(
+                        observations: OCRService.observations(in: framebuffer),
+                        size: CGSize(width: framebuffer.width, height: framebuffer.height)
+                    )
+                    if screen.observations.isEmpty {
+                        screen = try await captureScreen(using: actionClient, pinned: true)
+                    }
+                    if detectAccountInterruptions,
+                       let interruption = Self.accountInterruption(in: screen.observations) {
+                        diagnostics.record("account_interruption", fields: [
+                            "connectionID": identity.connectionID,
+                            "purpose": purpose,
+                            "interruption": String(describing: interruption),
+                            "framebuffer": ["width": screen.size.width, "height": screen.size.height],
+                        ])
+                        throw interruption
+                    }
+                    guard let match = OCRService.match(query, in: screen.observations, occurrence: occurrence) else {
+                        return .targetMissing(Self.visibleTextSummary(screen.observations))
+                    }
+                    let redactsVisibleText = purpose.hasPrefix("account-") || purpose.hasPrefix("repair-")
+                    diagnostics.record("ocr_action_match", screen: redactsVisibleText ? nil : screen, fields: [
+                        "connectionID": identity.connectionID,
+                        "purpose": purpose,
+                        "query": query,
+                        "match": match.text,
+                        "x": match.x,
+                        "y": match.y,
+                    ])
+                    let result = try await action(actionClient, match)
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    let after = try? await captureScreen(using: actionClient, pinned: true)
+                    var completionFields: [String: Any] = [
+                        "connectionID": identity.connectionID,
+                        "purpose": purpose,
+                        "query": query,
+                    ]
+                    if let after {
+                        completionFields["framebuffer"] = ["width": after.size.width, "height": after.size.height]
+                    }
+                    diagnostics.record(
+                        "ocr_action_complete",
+                        screen: redactsVisibleText ? nil : after,
+                        fields: completionFields
+                    )
+                    return .value(result)
+                }
+            } else {
+                let screen = try await captureScreen(using: client)
+                if detectAccountInterruptions,
+                   let interruption = Self.accountInterruption(in: screen.observations) {
+                    throw interruption
+                }
+                guard let match = OCRService.match(query, in: screen.observations, occurrence: occurrence) else {
+                    attempt = .targetMissing(Self.visibleTextSummary(screen.observations))
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    continue
+                }
+                attempt = .value(try await action(client, match))
+            }
+
+            switch attempt {
+            case .value(let result):
+                return result
+            case .targetMissing(let visible):
+                lastVisible = visible
+            }
+            try? await Task.sleep(nanoseconds: 700_000_000)
+        } while Date() < deadline
+
+        throw OCRActionTargetNotFound(query: query, timeout: timeout, visible: lastVisible)
     }
 
     func visibleText(_ text: String, timeout: TimeInterval) async -> GuestTextMatch? {
@@ -689,13 +974,20 @@ struct SetupStepRunner {
                 continue
             }
 
-            if let match = try? await poll(text: text, timeout: retryTimeout, occurrence: step.occurrence ?? 0) {
-                if step.action == .clickText {
-                    try await withInputClient { inputClient in
+            do {
+                try await performOCRAction(
+                    query: text,
+                    timeout: retryTimeout,
+                    occurrence: step.occurrence ?? 0,
+                    purpose: "setup-rescue-retry"
+                ) { inputClient, match in
+                    if step.action == .clickText {
                         try await inputClient.click(x: match.x, y: match.y)
                     }
                 }
                 return
+            } catch {
+                continue
             }
         }
 
@@ -713,8 +1005,12 @@ struct SetupStepRunner {
         }
 
         _ = try await poll(text: whenText, timeout: timeout, occurrence: 0)
-        let match = try await poll(text: text, timeout: min(timeout, 20), occurrence: step.occurrence ?? 0)
-        try await withInputClient { inputClient in
+        try await performOCRAction(
+            query: text,
+            timeout: min(timeout, 20),
+            occurrence: step.occurrence ?? 0,
+            purpose: "setup-gated-click"
+        ) { inputClient, match in
             try await inputClient.click(x: match.x, y: match.y)
         }
     }
@@ -810,7 +1106,12 @@ struct SetupStepRunner {
     ) async throws -> (advanced: Bool, screen: SetupPolicy.Screen) {
         let anchor = SetupPolicy.anchor(forLadderKey: ladderKey)
         if let session = bundle.liveVNCSession() {
-            return try await RFBClient.withConnection(port: session.port, password: session.password) { actionClient in
+            return try await RFBClient.withConnection(
+                port: session.port,
+                password: session.password,
+                purpose: "setup-pane-action",
+                trace: diagnostics.rfbTraceSink
+            ) { actionClient in
                 try? await actionClient.nudgePointer()
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 let current = try await captureScreen(using: actionClient)
@@ -843,13 +1144,13 @@ struct SetupStepRunner {
         return screen
     }
 
-    private func captureScreen(using captureClient: RFBClient) async throws -> SetupPolicy.Screen {
-        var screen = try await captureScreenOnce(using: captureClient)
+    private func captureScreen(using captureClient: RFBClient, pinned: Bool = false) async throws -> SetupPolicy.Screen {
+        var screen = try await captureScreenOnce(using: captureClient, pinned: pinned)
         var retries = 0
         while screen.observations.isEmpty && retries < 3 {
             retries += 1
             try? await Task.sleep(nanoseconds: 700_000_000)
-            screen = try await captureScreenOnce(using: captureClient)
+            screen = try await captureScreenOnce(using: captureClient, pinned: pinned)
         }
         return screen
     }
@@ -864,11 +1165,17 @@ struct SetupStepRunner {
         )
     }
 
-    private func captureScreenOnce(using captureClient: RFBClient) async throws -> SetupPolicy.Screen {
+    private func captureScreenOnce(using captureClient: RFBClient, pinned: Bool = false) async throws -> SetupPolicy.Screen {
         try? await captureClient.nudgePointer()
         try? await Task.sleep(nanoseconds: 400_000_000)
         let framebuffer = try await captureClient.captureFramebuffer()
-        publishPreview(framebuffer)
+        let identity = await captureClient.traceIdentity
+        publishPreview(
+            framebuffer,
+            connectionID: identity.connectionID,
+            purpose: identity.purpose,
+            pinned: pinned
+        )
         return SetupPolicy.Screen(
             observations: OCRService.observations(in: framebuffer),
             size: CGSize(width: framebuffer.width, height: framebuffer.height)
@@ -958,21 +1265,26 @@ struct SetupStepRunner {
     }
 
     private func clickAnyRescueButton() async -> GuestTextMatch? {
-        guard let framebuffer = try? await captureFramebufferForOCR() else {
-            return nil
-        }
-        let observations = OCRService.observations(in: framebuffer)
-        guard let match = Self.rescueMatch(in: observations) else {
-            return nil
-        }
-        do {
-            try await withInputClient { inputClient in
-                try await inputClient.click(x: match.x, y: match.y)
+        guard let session = bundle.liveVNCSession() else { return nil }
+        return try? await RFBClient.withConnection(
+            port: session.port,
+            password: session.password,
+            purpose: "setup-rescue",
+            trace: diagnostics.rfbTraceSink
+        ) { inputClient -> GuestTextMatch? in
+            try? await inputClient.nudgePointer()
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            let screen = try await captureScreen(using: inputClient)
+            guard let match = Self.rescueMatch(in: screen.observations) else {
+                return nil
             }
-            return match
-        } catch {
-            DebugLog.log("Setup rescue: click on “\(match.text)” failed: \(error.localizedDescription)")
-            return nil
+            do {
+                try await inputClient.click(x: match.x, y: match.y)
+                return match
+            } catch {
+                DebugLog.log("Setup rescue: click on “\(match.text)” failed: \(error.localizedDescription)")
+                return nil
+            }
         }
     }
 
@@ -1008,7 +1320,12 @@ struct SetupStepRunner {
         let framebuffer: Framebuffer
         if let session = bundle.liveVNCSession() {
             do {
-                framebuffer = try await RFBClient.captureOnce(port: session.port, password: session.password)
+                framebuffer = try await RFBClient.captureOnce(
+                    port: session.port,
+                    password: session.password,
+                    purpose: "setup-ocr-poll",
+                    trace: diagnostics.rfbTraceSink
+                )
                 publishPreview(framebuffer)
                 return framebuffer
             } catch {
@@ -1021,22 +1338,44 @@ struct SetupStepRunner {
         return framebuffer
     }
 
-    private func publishPreview(_ framebuffer: Framebuffer) {
+    private func publishPreview(
+        _ framebuffer: Framebuffer,
+        connectionID: String? = nil,
+        purpose: String? = nil,
+        pinned: Bool = false
+    ) {
         let url = bundle.setupPreviewURL
+        let observations = OCRService.observations(in: framebuffer)
+        let previewIsFresh: Bool
         if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-           let modified = attributes[.modificationDate] as? Date,
-           Date().timeIntervalSince(modified) < 1.5 {
-            return
+           let modified = attributes[.modificationDate] as? Date {
+            previewIsFresh = Date().timeIntervalSince(modified) < 1.5
+        } else {
+            previewIsFresh = false
         }
-        guard let png = framebuffer.pngData() else { return }
-        try? FileManager.default.createDirectory(at: bundle.runtimeDirectoryURL, withIntermediateDirectories: true)
-        try? png.write(to: url, options: .atomic)
-        diagnostics.recordFrame(
-            png: png,
-            observations: OCRService.observations(in: framebuffer),
+        let shouldRecord = diagnostics.shouldRecordFrame(
+            observations: observations,
             width: framebuffer.width,
-            height: framebuffer.height
+            height: framebuffer.height,
+            pinned: pinned,
+            previewIsFresh: previewIsFresh
         )
+        guard shouldRecord, let png = framebuffer.pngData() else { return }
+        if !previewIsFresh {
+            try? FileManager.default.createDirectory(at: bundle.runtimeDirectoryURL, withIntermediateDirectories: true)
+            try? png.write(to: url, options: .atomic)
+        }
+        if shouldRecord {
+            diagnostics.recordFrame(
+                png: png,
+                observations: observations,
+                width: framebuffer.width,
+                height: framebuffer.height,
+                connectionID: connectionID,
+                purpose: purpose,
+                pinned: pinned
+            )
+        }
     }
 
     private func nudgeDisplay() async throws {
@@ -1047,7 +1386,13 @@ struct SetupStepRunner {
 
     private func withInputClient<T>(_ body: (RFBClient) async throws -> T) async throws -> T {
         if let session = bundle.liveVNCSession() {
-            return try await RFBClient.withConnection(port: session.port, password: session.password, body)
+            return try await RFBClient.withConnection(
+                port: session.port,
+                password: session.password,
+                purpose: "setup-input",
+                trace: diagnostics.rfbTraceSink,
+                body
+            )
         }
 
         return try await body(client)
