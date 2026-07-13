@@ -6,6 +6,13 @@ import Testing
 import Virtualization
 @testable import MacVMHostKit
 
+private let macOS15Release = MacOSRelease(
+    majorVersion: 15,
+    minorVersion: 6,
+    patchVersion: 1,
+    buildVersion: "24G90"
+)
+
 private let macOS26Release = MacOSRelease(
     majorVersion: 26,
     minorVersion: 0,
@@ -1164,7 +1171,7 @@ func setupFlowLoadsOverrideFromJSON() throws {
 
 @Test
 func builtInSetupRejectsUnregisteredGuestReleases() {
-    for major in [12, 13, 14, 15, 28] {
+    for major in [12, 13, 14, 16, 28] {
         let release = MacOSRelease(
             majorVersion: major,
             minorVersion: 1,
@@ -1191,11 +1198,29 @@ func unsupportedSetupErrorExplainsManualAndOverridePaths() {
     } catch {
         let message = error.localizedDescription
         #expect(message.contains("macOS 28.1.2 (27B123)"))
-        #expect(message.contains("supports macOS 26 and 27"))
+        #expect(message.contains("supports macOS 15, 26, and 27"))
         #expect(message.contains("manually"))
         #expect(message.contains("--script"))
         #expect(message.contains("Setup/steps.json"))
     }
+}
+
+@Test
+func macOS15PlanUsesVersionedVNCFlow() throws {
+    let options = SetupOptions(username: "developer", password: "secret")
+    let plan = try SetupFlows.builtIn(for: macOS15Release, options: options)
+
+    #expect(plan.flowIdentifier == SetupFlows.macOS15FlowIdentifier)
+    #expect(plan.guestRelease == macOS15Release)
+    #expect(!plan.usesNativeGuestProvisioning)
+    #expect(plan.steps == SetupFlows.macOS15(options: options))
+    #expect(!plan.steps.isEmpty)
+    #expect(plan.ruleSet == SetupPolicy.macOS15RuleSet)
+    #expect(plan.steps.first?.action == .delay)
+    #expect(plan.steps.first?.seconds == 30)
+    #expect(plan.steps.contains {
+        $0.action == .waitText && ($0.text ?? "").contains("Country or Region")
+    })
 }
 
 @Test
@@ -1316,7 +1341,8 @@ func explicitSetupOverridesDisableNativeProvisioningForMacOS27() throws {
 }
 
 @Test
-func creationValidationAllowsMacOS26And27OrExplicitScript() throws {
+func creationValidationAllowsMacOS15MacOS26AndMacOS27OrExplicitScript() throws {
+    try SetupFlows.validateForCreation(options: SetupOptions(), release: macOS15Release)
     try SetupFlows.validateForCreation(options: SetupOptions(), release: macOS26Release)
     try SetupFlows.validateForCreation(options: SetupOptions(), release: macOS27Release)
 

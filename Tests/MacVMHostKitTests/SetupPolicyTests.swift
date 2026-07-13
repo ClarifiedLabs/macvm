@@ -408,6 +408,21 @@ func accountPasswordMismatchUsesTheSameAccountInterruptionClassifier() {
 }
 
 @Test
+func accountVerifyPasswordMatcherAcceptsMacOS15Placeholder() {
+    let macOS15AccountForm = screen([
+        obs("Password:", 600, 550, 120, 24),
+        obs("new password", 720, 550, 180, 24),
+        obs("verify", 1080, 550, 90, 24),
+    ])
+
+    let match = OCRService.match(
+        SetupStepRunner.accountVerifyPasswordQuery,
+        in: macOS15AccountForm.observations
+    )
+    #expect(match?.text == "verify")
+}
+
+@Test
 func paneAndModalRuleTitlesAreUnique() {
     // Attempt counters are keyed by ladder key; duplicate titles would merge
     // two screens' accounting.

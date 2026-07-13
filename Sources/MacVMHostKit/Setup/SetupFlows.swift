@@ -73,6 +73,7 @@ enum SetupAutomationStrategy: Sendable {
 /// to override the built-in flow without a rebuild.
 public enum SetupFlows {
     private enum RegisteredFlow {
+        case macOS15
         case macOS26
         case macOS27
     }
@@ -85,6 +86,7 @@ public enum SetupFlows {
         "ansible-playbook \(profileID)"
     }
 
+    public static let macOS15FlowIdentifier = "macos-15"
     public static let macOS26FlowIdentifier = "macos-26"
     public static let macOS27FlowIdentifier = "macos-27"
 
@@ -108,6 +110,11 @@ public enum SetupFlows {
         let ruleSet: SetupPolicy.RuleSet
         let automationStrategy: SetupAutomationStrategy
         switch registeredFlow {
+        case .macOS15:
+            steps = macOS15(options: options)
+            flowIdentifier = macOS15FlowIdentifier
+            ruleSet = SetupPolicy.macOS15RuleSet
+            automationStrategy = .vnc
         case .macOS26:
             steps = macOS26(options: options)
             flowIdentifier = macOS26FlowIdentifier
@@ -196,12 +203,14 @@ public enum SetupFlows {
 
     private static func unsupportedReleaseError(_ release: MacOSRelease) -> MacVMError {
         MacVMError.message(
-            "Automated setup is not supported for \(release.displayDescription). Built-in setup currently supports macOS 26 and 27. Complete Setup Assistant manually, or supply an explicit flow with --script or Setup/steps.json."
+            "Automated setup is not supported for \(release.displayDescription). Built-in setup currently supports macOS 15, 26, and 27. Complete Setup Assistant manually, or supply an explicit flow with --script or Setup/steps.json."
         )
     }
 
     private static func registeredFlow(for release: MacOSRelease) -> RegisteredFlow? {
         switch release.majorVersion {
+        case 15:
+            .macOS15
         case 26:
             .macOS26
         case 27:
@@ -264,6 +273,14 @@ public enum SetupFlows {
         return phases
     }
 
+    /// OCR-driven Setup Assistant flow validated against macOS 15 Sequoia.
+    public static func macOS15(options: SetupOptions) -> [SetupStep] {
+        macOS15LocaleSteps()
+            + preAccountSteps()
+            + accountCreationSteps(options: options)
+            + postAccountSteps(options: options)
+    }
+
     /// OCR-driven Setup Assistant flow validated against macOS 26 Tahoe.
     ///
     /// Two panes only advance via the default button (no OCR-able label): the
@@ -292,7 +309,25 @@ public enum SetupFlows {
     /// greeting, language, and region screens.
     static func localeSteps() -> [SetupStep] {
         [
-            .waitText("Language|Country|Continue|Hello", timeout: 360),
+            .waitText("Language|Country|Continue|Hello|Get Started", timeout: 360),
+            .wake,
+            .keys(["return"]),
+            .delay(2),
+            .clickText("^English$", timeout: 30, optional: true),
+            .keys(["return"]),
+            .delay(3),
+            .waitText("Select Your Country|Country or Region", timeout: 60),
+            .clickText("Continue", timeout: 60),
+            .delay(3),
+        ]
+    }
+
+    /// Sequoia's greeting cycles through localized, stylized text for several
+    /// minutes. Its arrow is the default control, so advance it by keyboard
+    /// after first boot settles instead of waiting for an English OCR anchor.
+    static func macOS15LocaleSteps() -> [SetupStep] {
+        [
+            .delay(30),
             .wake,
             .keys(["return"]),
             .delay(2),

@@ -1,6 +1,6 @@
 # Automation
 
-MacVM can configure a fresh macOS 26 or 27 VM unattended and reach it over SSH so you can hand off to Ansible or other tooling. Other guest releases can be installed and completed manually, but have no registered built-in setup flow yet.
+MacVM can configure a fresh macOS 15, 26, or 27 VM unattended and reach it over SSH so you can hand off to Ansible or other tooling. Other guest releases can be installed and completed manually, but have no registered built-in setup flow yet.
 
 ## Setup Flow
 

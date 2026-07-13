@@ -119,7 +119,7 @@ brew install ansible
 make test-provisioning-e2e
 ```
 
-The provisioning smoke test requires a supported macOS 26 or 27 setup flow. Set
+The provisioning smoke test requires a supported macOS 15, 26, or 27 setup flow. Set
 `MACVM_E2E_IPSW=/path/to/restore.ipsw` to select the guest release explicitly.
 It stores the temporary VM under
 `.build/provisioning-e2e`. Set `MACVM_E2E_KEEP_VM=1` to retain the

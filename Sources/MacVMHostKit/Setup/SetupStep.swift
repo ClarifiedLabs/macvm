@@ -491,6 +491,7 @@ struct SetupStepRunner {
 
     static let accountPasswordMismatchQuery = "passwords don.t match"
     static let accountMissingInformationQuery = "haven.t provided all of the|requested information"
+    static let accountVerifyPasswordQuery = "Verify Password|^verify$"
 
     static func accountInterruption(in observations: [TextObservation]) -> AccountFormInterruption? {
         if OCRService.match(accountMissingInformationQuery, in: observations) != nil {
@@ -704,7 +705,7 @@ struct SetupStepRunner {
                     purpose: "account-password"
                 )
                 _ = try await fillAccountFieldIfVisible(
-                    "Verify Password",
+                    Self.accountVerifyPasswordQuery,
                     value: account.password,
                     secure: true,
                     multiplier: multiplier,
@@ -792,7 +793,11 @@ struct SetupStepRunner {
             "^Password$", value: password, secure: true, multiplier: 1.5, purpose: "repair-password"
         )
         _ = try await fillAccountFieldIfVisible(
-            "Verify Password", value: password, secure: true, multiplier: 1.5, purpose: "repair-verify-password"
+            Self.accountVerifyPasswordQuery,
+            value: password,
+            secure: true,
+            multiplier: 1.5,
+            purpose: "repair-verify-password"
         )
         try await performOCRAction(
             query: "^Continue$",

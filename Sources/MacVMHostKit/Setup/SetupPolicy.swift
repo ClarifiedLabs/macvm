@@ -490,6 +490,17 @@ enum SetupPolicy {
         Tactic(atoms: [.click($0)])
     }
 
+    /// Setup Assistant knowledge validated against macOS 15.
+    static var macOS15RuleSet: RuleSet {
+        RuleSet(
+            dangerousModalAnchors: dangerousModalAnchors,
+            passiveTransitionAnchors: passiveTransitionAnchors,
+            modalRules: modalRules,
+            paneRules: paneRules,
+            rescueQueries: rescueQueries
+        )
+    }
+
     /// Setup Assistant knowledge validated against macOS 26.
     static var macOS26RuleSet: RuleSet {
         RuleSet(

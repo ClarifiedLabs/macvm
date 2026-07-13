@@ -115,7 +115,7 @@ Open `MacVM` from `/Applications` for a graphical VM manager. It can create and 
 
 MacVM can drive a fresh macOS install to an SSH-ready state:
 
-Automated setup is tested and supported for macOS 26 and 27 guests. macOS 27 hosts prefer Virtualization.framework's native first-boot guest provisioning; macOS 26 hosts use the versioned OCR flow. Other Virtualization.framework-compatible releases can still be installed and run with Setup Assistant completed manually. An explicit `--script` or per-VM `Setup/steps.json` opts into custom VNC automation for an otherwise unsupported release.
+Automated setup is tested and supported for macOS 15, 26, and 27 guests. macOS 27 hosts prefer Virtualization.framework's native first-boot guest provisioning; macOS 15 and 26 guests use versioned OCR flows. Other Virtualization.framework-compatible releases can still be installed and run with Setup Assistant completed manually. An explicit `--script` or per-VM `Setup/steps.json` opts into custom VNC automation for an otherwise unsupported release.
 
 Installing a macOS beta guest can require the matching Xcode beta's first-launch components on the host, even when the standalone Device Support package is already installed. If Virtualization.framework reports that a software update is required, install or launch the matching Xcode, allow its additional components to finish, and retry with a fresh VM bundle.
 

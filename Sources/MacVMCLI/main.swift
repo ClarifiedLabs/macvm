@@ -622,7 +622,7 @@ extension MacVMCommand {
         )
         var bootstrap = true
 
-        @Flag(name: .long, help: "After install, drive a supported macOS 26 or 27 guest to an SSH/Ansible-ready state.")
+        @Flag(name: .long, help: "After install, drive a supported macOS 15, 26, or 27 guest to an SSH/Ansible-ready state.")
         var setup = false
 
         @Flag(name: .long, help: "Launch this VM headless at macOS user login.")
@@ -1366,7 +1366,7 @@ extension MacVMCommand {
 
     struct Setup: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Drive a supported fresh macOS 26 or 27 VM to an SSH/Ansible-ready state."
+            abstract: "Drive a supported fresh macOS 15, 26, or 27 VM to an SSH/Ansible-ready state."
         )
 
         @OptionGroup var storage: StorageOptions
