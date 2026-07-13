@@ -14,18 +14,64 @@ private let macOS26Release = MacOSRelease(
 )
 
 @Test
-func localNetworkOnboardingIsAcknowledgedPersistently() throws {
-    let suiteName = "dev.macvm.macvm.tests.\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suiteName))
-    defer { defaults.removePersistentDomain(forName: suiteName) }
+@MainActor
+func managerWindowAppearanceRequestsLocalNetworkAccessOnce() {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
 
-    let initialState = LocalNetworkOnboardingState(defaults: defaults)
-    #expect(initialState.shouldPresent)
+    var requestCount = 0
+    let store = AppStore(
+        service: MacVMService(rootDirectory: rootURL),
+        triggerLocalNetworkPrivacyAlert: { requestCount += 1 }
+    )
 
-    initialState.acknowledge()
+    store.managerWindowDidAppear()
+    store.managerWindowDidAppear()
 
-    let subsequentState = LocalNetworkOnboardingState(defaults: defaults)
-    #expect(!subsequentState.shouldPresent)
+    #expect(requestCount == 1)
+}
+
+@Test
+func localNetworkPrivacyTargetsBroadcastCapableLinkLocalIPv6Addresses() {
+    func ipv6Address(prefix: [UInt8], scopeID: UInt32) -> sockaddr_in6 {
+        var address = sockaddr_in6()
+        address.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        address.sin6_family = sa_family_t(AF_INET6)
+        address.sin6_scope_id = scopeID
+        withUnsafeMutableBytes(of: &address.sin6_addr) { buffer in
+            buffer.copyBytes(from: prefix)
+        }
+        return address
+    }
+
+    let linkLocal = ipv6Address(
+        prefix: [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8],
+        scopeID: 7
+    )
+    let global = ipv6Address(
+        prefix: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8],
+        scopeID: 8
+    )
+    let firstHostPart: [UInt8] = [10, 11, 12, 13, 14, 15, 16, 17]
+    let secondHostPart: [UInt8] = [20, 21, 22, 23, 24, 25, 26, 27]
+
+    let targets = LocalNetworkPrivacy.selectedLinkLocalIPv6Addresses(
+        from: [
+            .init(flags: UInt32(bitPattern: IFF_BROADCAST), address: linkLocal),
+            .init(flags: 0, address: linkLocal),
+            .init(flags: UInt32(bitPattern: IFF_BROADCAST), address: global),
+        ],
+        hostParts: [firstHostPart, secondHostPart]
+    )
+
+    #expect(targets.count == 2)
+    #expect(targets.allSatisfy { $0.sin6_port == UInt16(9).bigEndian })
+    #expect(targets.allSatisfy { $0.sin6_scope_id == 7 })
+    #expect(withUnsafeBytes(of: targets[0].sin6_addr) { Array($0[0..<8]) }
+        == [0xfe, 0x80, 0, 0, 0, 0, 0, 0])
+    #expect(withUnsafeBytes(of: targets[0].sin6_addr) { Array($0[8..<16]) } == firstHostPart)
+    #expect(withUnsafeBytes(of: targets[1].sin6_addr) { Array($0[8..<16]) } == secondHostPart)
 }
 
 @Test

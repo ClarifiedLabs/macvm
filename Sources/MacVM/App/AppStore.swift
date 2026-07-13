@@ -69,24 +69,6 @@ enum VMShutdownRoute: Equatable {
     case ssh
 }
 
-struct LocalNetworkOnboardingState {
-    private static let acknowledgmentKey = "local-network-onboarding-acknowledged-v1"
-
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    var shouldPresent: Bool {
-        !defaults.bool(forKey: Self.acknowledgmentKey)
-    }
-
-    func acknowledge() {
-        defaults.set(true, forKey: Self.acknowledgmentKey)
-    }
-}
-
 /// Single source of truth for the manager window: the VM list, per-VM liveness,
 /// in-app operations (install / setup / viewer windows), the create-sheet draft,
 /// and the CLI-equivalent bar.
@@ -96,7 +78,7 @@ final class AppStore {
     private static let maxSetupLogMessages = 10
 
     let service: MacVMService
-    private let localNetworkOnboardingState: LocalNetworkOnboardingState
+    private let triggerLocalNetworkPrivacyAlert: () -> Void
 
     private(set) var vms: [ManagedVM] = []
     var selection: SidebarItem?
@@ -116,7 +98,6 @@ final class AppStore {
     var alertMessage: String?
     private(set) var alertRemovalCandidate: String?
     var pendingPowerAction: PendingPowerAction?
-    var localNetworkOnboardingPresented: Bool
 
     private(set) var installs: [String: InstallProgress] = [:]
     private(set) var clones: [String: CloneProgress] = [:]
@@ -143,12 +124,14 @@ final class AppStore {
     private var headlessRunners: [String: HeadlessRunner] = [:]
     private var refreshTimer: Timer?
     private var copyResetTask: Task<Void, Never>?
+    private var didTriggerLocalNetworkPrivacyAlert = false
 
-    init(service: MacVMService = MacVMService(), userDefaults: UserDefaults = .standard) {
+    init(
+        service: MacVMService = MacVMService(),
+        triggerLocalNetworkPrivacyAlert: @escaping () -> Void = LocalNetworkPrivacy.triggerAlert
+    ) {
         self.service = service
-        let localNetworkOnboardingState = LocalNetworkOnboardingState(defaults: userDefaults)
-        self.localNetworkOnboardingState = localNetworkOnboardingState
-        self.localNetworkOnboardingPresented = localNetworkOnboardingState.shouldPresent
+        self.triggerLocalNetworkPrivacyAlert = triggerLocalNetworkPrivacyAlert
         self.draft = service.defaultDraft()
         self.profileCatalog = service.provisioningCatalog()
         setenv("MACVM_MANAGER_PROCESS", "1", 1)
@@ -158,9 +141,10 @@ final class AppStore {
         startRefreshTimer()
     }
 
-    func acknowledgeLocalNetworkOnboarding() {
-        localNetworkOnboardingState.acknowledge()
-        localNetworkOnboardingPresented = false
+    func managerWindowDidAppear() {
+        guard !didTriggerLocalNetworkPrivacyAlert else { return }
+        didTriggerLocalNetworkPrivacyAlert = true
+        triggerLocalNetworkPrivacyAlert()
     }
 
     func dismissAlert() {
