@@ -107,6 +107,46 @@ func creatingAccountNeverTriggersFormResubmissionEvenWhenAccountAnchorsRemainVis
     ))
 }
 
+// MARK: - macOS 27 release-specific panes
+
+@Test
+func macOS27LiquidGlassPaneIsNotMisclassifiedByAccessibilityFooter() throws {
+    let liquidGlass = try OCRDumpFixture.load("liquid-glass-macos27")
+    let ruleSet = SetupPolicy.macOS27RuleSet
+    let pane = try #require(SetupPolicy.paneRule(
+        in: liquidGlass.observations,
+        ruleSet: ruleSet
+    ))
+    #expect(pane.title == "Liquid Glass")
+
+    let (decision, _) = SetupPolicy.decide(
+        target: SetupStep.ScreenGoal.loginWindowOrDesktop.query,
+        screen: liquidGlass,
+        state: SetupPolicy.PolicyState(),
+        ruleSet: ruleSet
+    )
+    #expect(actLadderKey(decision) == "pane:Liquid Glass")
+    #expect(actTactic(decision)?.atoms == [.click("^Continue$")])
+}
+
+@Test
+func macOS27TransferLayoutSelectsSetUpAsNew() throws {
+    let transfer = try OCRDumpFixture.load("transfer-macos27")
+    let (decision, _) = SetupPolicy.decide(
+        target: accountTarget,
+        screen: transfer,
+        state: SetupPolicy.PolicyState(),
+        ruleSet: SetupPolicy.macOS27RuleSet
+    )
+
+    #expect(actLadderKey(decision) == "pane:Transfer or Migration Assistant")
+    #expect(actTactic(decision)?.atoms == [
+        .click("^Set up as new$|^Set Up as New$|^Don.t Transfer.*$"),
+        .delay(0.4),
+        .click("^Continue$"),
+    ])
+}
+
 // MARK: - The reported failure (Transfer pane, macOS 26)
 
 @Test

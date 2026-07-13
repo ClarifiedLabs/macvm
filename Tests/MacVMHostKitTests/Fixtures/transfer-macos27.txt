@@ -1,0 +1,14 @@
+confidence  x,y wxh  text (framebuffer 2560x1440)
+1.00  2254,18 96x26  U.S. E
+1.00  2418,17 104x23  5:56PM
+1.00  826,498 506x33  Transfer Your Data to This Mac
+1.00  829,539 870x33  You can transfer your data from another Mac or Windows
+1.00  826,579 885x41  PC. If you don't want to transfer from a computer, you can
+1.00  829,624 848x34  use a backup or startup disk, or set up this Mac without
+1.00  826,665 334x37  transferring any data.
+1.00  829,837 569x26  How do you want to transfer your information?
+1.00  829,903 565x34  • From a Mac, Time Machine, or startup disk
+1.00  870,955 245x26  From a Windows PC
+1.00  870,1004 323x26  Set up with iPhone or iPad
+1.00  870,1052 178x26  Set up as new
+1.00  1856,1233 112x26  Continue

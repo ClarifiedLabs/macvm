@@ -5,9 +5,18 @@ enum InstallationErrorDiagnostics {
 
     static func message(
         for error: Error,
+        guestRelease: MacOSRelease? = nil,
         hostVersion: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion
     ) -> String {
         var sections = ["Apple's macOS installer failed."]
+
+        if isSoftwareUpdateRequired(error) {
+            let target = guestRelease.map { " for macOS \($0.majorVersion)" } ?? " for the guest release"
+            sections.append(
+                "Install Apple's Device Support\(target) from Apple Developer downloads (or install the matching Xcode), "
+                    + "restart the Mac, remove the incomplete VM, and try again."
+            )
+        }
 
         if isMobileRestoreError11(error),
            hostVersion.majorVersion == 26,
@@ -48,6 +57,27 @@ enum InstallationErrorDiagnostics {
             pending.append(contentsOf: underlyingErrors(of: current))
         }
 
+        return false
+    }
+
+    static func isSoftwareUpdateRequired(_ error: Error) -> Bool {
+        var pending = [error as NSError]
+        var visited: Set<ObjectIdentifier> = []
+
+        while let current = pending.popLast() {
+            let identifier = ObjectIdentifier(current)
+            guard visited.insert(identifier).inserted else { continue }
+
+            if current.domain == "VZErrorDomain",
+               current.code == 10006
+                || current.localizedDescription.localizedCaseInsensitiveContains("software update is required")
+                || current.localizedFailureReason?.localizedCaseInsensitiveContains("software update") == true
+            {
+                return true
+            }
+
+            pending.append(contentsOf: underlyingErrors(of: current))
+        }
         return false
     }
 

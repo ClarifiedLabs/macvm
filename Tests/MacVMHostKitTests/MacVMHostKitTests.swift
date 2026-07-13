@@ -13,6 +13,13 @@ private let macOS26Release = MacOSRelease(
     buildVersion: "25A000"
 )
 
+private let macOS27Release = MacOSRelease(
+    majorVersion: 27,
+    minorVersion: 0,
+    patchVersion: 0,
+    buildVersion: "26A5378j"
+)
+
 @Test
 func bundledProvisioningCatalogContainsExpectedProfilesAndResolvesDependencies() throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
@@ -206,6 +213,29 @@ func installationErrorDiagnosticsDoNotMisclassifyOtherFailures() {
     )
     #expect(!message.contains("Device Support for macOS 27"))
     #expect(message.contains("VZErrorDomain (10007)"))
+}
+
+@Test
+func installationErrorDiagnosticsExplainRequiredGuestDeviceSupport() {
+    let error = NSError(
+        domain: "VZErrorDomain",
+        code: 10006,
+        userInfo: [
+            NSLocalizedDescriptionKey: "A software update is required to complete the installation.",
+            NSLocalizedFailureReasonErrorKey: "Installation requires a software update.",
+        ]
+    )
+
+    let message = InstallationErrorDiagnostics.message(
+        for: error,
+        guestRelease: macOS27Release,
+        hostVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 6, patchVersion: 0)
+    )
+    #expect(InstallationErrorDiagnostics.isSoftwareUpdateRequired(error))
+    #expect(message.contains("Device Support for macOS 27"))
+    #expect(message.contains("matching Xcode"))
+    #expect(message.contains("restart the Mac"))
+    #expect(message.contains("VZErrorDomain (10006)"))
 }
 
 @Test
@@ -1134,7 +1164,7 @@ func setupFlowLoadsOverrideFromJSON() throws {
 
 @Test
 func builtInSetupRejectsUnregisteredGuestReleases() {
-    for major in [12, 13, 14, 15, 27] {
+    for major in [12, 13, 14, 15, 28] {
         let release = MacOSRelease(
             majorVersion: major,
             minorVersion: 1,
@@ -1150,21 +1180,57 @@ func builtInSetupRejectsUnregisteredGuestReleases() {
 @Test
 func unsupportedSetupErrorExplainsManualAndOverridePaths() {
     let release = MacOSRelease(
-        majorVersion: 27,
+        majorVersion: 28,
         minorVersion: 1,
         patchVersion: 2,
-        buildVersion: "26B123"
+        buildVersion: "27B123"
     )
     do {
         _ = try SetupFlows.builtIn(for: release, options: SetupOptions())
-        Issue.record("Expected macOS 27 automated setup to be rejected")
+        Issue.record("Expected macOS 28 automated setup to be rejected")
     } catch {
         let message = error.localizedDescription
-        #expect(message.contains("macOS 27.1.2 (26B123)"))
-        #expect(message.contains("supports macOS 26 only"))
+        #expect(message.contains("macOS 28.1.2 (27B123)"))
+        #expect(message.contains("supports macOS 26 and 27"))
         #expect(message.contains("manually"))
         #expect(message.contains("--script"))
         #expect(message.contains("Setup/steps.json"))
+    }
+}
+
+@Test
+func macOS27PlanPrefersNativeProvisioningWithVersionedVNCFallback() throws {
+    let options = SetupOptions(username: "developer", password: "secret")
+    let plan = try SetupFlows.builtIn(for: macOS27Release, options: options)
+
+    #expect(plan.flowIdentifier == SetupFlows.macOS27FlowIdentifier)
+    #expect(plan.guestRelease == macOS27Release)
+    #expect(plan.usesNativeGuestProvisioning)
+    #expect(plan.steps == SetupFlows.macOS27(options: options))
+    #expect(!plan.steps.isEmpty)
+    #expect(plan.ruleSet == SetupPolicy.macOS27RuleSet)
+}
+
+@Test
+func macOS27FlowCanReachDesktopWithOrWithoutNativeAutoLogin() throws {
+    for autoLogin in [true, false] {
+        let options = SetupOptions(password: "secret", autoLogin: autoLogin)
+        let steps = SetupFlows.macOS27(options: options)
+        let loginGate = try #require(steps.first {
+            $0.action == .advanceUntilScreen && $0.screenGoal == .loginWindowOrDesktop
+        })
+        let conditionalPassword = try #require(steps.first {
+            $0.action == .type
+                && $0.text == options.password
+                && ($0.whenText ?? "").contains("Enter Password")
+        })
+        let desktopGate = try #require(steps.last {
+            $0.action == .advanceUntilScreen && $0.screenGoal == .desktop
+        })
+
+        #expect(loginGate.timeout == 300)
+        #expect(conditionalPassword.optional == true)
+        #expect(desktopGate.timeout == 240)
     }
 }
 
@@ -1201,7 +1267,7 @@ func setupPlanUsesGuestReleaseAndRejectsMissingIdentity() throws {
 }
 
 @Test
-func explicitSetupOverridesBypassBuiltInVersionSupport() throws {
+func explicitSetupOverridesDisableNativeProvisioningForMacOS27() throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     let bundleURL = root.appendingPathComponent("test.macvm", isDirectory: true)
@@ -1213,7 +1279,7 @@ func explicitSetupOverridesBypassBuiltInVersionSupport() throws {
     try JSONEncoder().encode(bundleSteps).write(
         to: bundle.setupDirectoryURL.appendingPathComponent("steps.json")
     )
-    let unsupported = MacOSRelease(
+    let macOS27 = MacOSRelease(
         majorVersion: 27,
         minorVersion: 0,
         patchVersion: 0,
@@ -1222,7 +1288,7 @@ func explicitSetupOverridesBypassBuiltInVersionSupport() throws {
     let bundledPlan = try SetupFlows.resolvePlan(
         bundle: bundle,
         options: SetupOptions(),
-        guestRelease: unsupported
+        guestRelease: macOS27
     )
     #expect(bundledPlan.flowIdentifier == "custom-bundle")
     #expect(bundledPlan.steps == bundleSteps)
@@ -1234,7 +1300,7 @@ func explicitSetupOverridesBypassBuiltInVersionSupport() throws {
     let cliPlan = try SetupFlows.resolvePlan(
         bundle: bundle,
         options: SetupOptions(scriptOverride: cliURL),
-        guestRelease: unsupported
+        guestRelease: macOS27
     )
     #expect(cliPlan.flowIdentifier == "custom-cli")
     #expect(cliPlan.steps == cliSteps)
@@ -1244,18 +1310,21 @@ func explicitSetupOverridesBypassBuiltInVersionSupport() throws {
         try SetupFlows.resolvePlan(
             bundle: bundle,
             options: SetupOptions(scriptOverride: cliURL),
-            guestRelease: unsupported
+            guestRelease: macOS27
         )
     }
 }
 
 @Test
-func creationValidationAllowsOnlyMacOS26OrExplicitScript() throws {
+func creationValidationAllowsMacOS26And27OrExplicitScript() throws {
+    try SetupFlows.validateForCreation(options: SetupOptions(), release: macOS26Release)
+    try SetupFlows.validateForCreation(options: SetupOptions(), release: macOS27Release)
+
     let unsupported = MacOSRelease(
-        majorVersion: 27,
+        majorVersion: 28,
         minorVersion: 0,
         patchVersion: 0,
-        buildVersion: "26A000"
+        buildVersion: "27A000"
     )
     #expect(throws: MacVMError.self) {
         try SetupFlows.validateForCreation(options: SetupOptions(), release: unsupported)

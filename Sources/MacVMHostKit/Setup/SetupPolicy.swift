@@ -490,7 +490,7 @@ enum SetupPolicy {
         Tactic(atoms: [.click($0)])
     }
 
-    /// The only built-in rule set currently validated against a real guest.
+    /// Setup Assistant knowledge validated against macOS 26.
     static var macOS26RuleSet: RuleSet {
         RuleSet(
             dangerousModalAnchors: dangerousModalAnchors,
@@ -499,6 +499,43 @@ enum SetupPolicy {
             paneRules: paneRules,
             rescueQueries: rescueQueries
         )
+    }
+
+    /// Independently selected for macOS 27 so release-specific pane changes can
+    /// be added without changing the behavior of the macOS 26 flow.
+    static var macOS27RuleSet: RuleSet {
+        RuleSet(
+            dangerousModalAnchors: dangerousModalAnchors,
+            passiveTransitionAnchors: passiveTransitionAnchors,
+            modalRules: modalRules,
+            paneRules: macOS27PaneRules,
+            rescueQueries: rescueQueries
+        )
+    }
+
+    /// macOS 27 keeps an "Accessibility" footer visible on later panes, so its
+    /// accessibility rule must use body copy rather than the generic label.
+    /// It also adds a Liquid Glass appearance pane after account creation.
+    static var macOS27PaneRules: [PaneRule] {
+        let releaseSpecific = [
+            PaneRule(
+                title: "Liquid Glass",
+                anchor: "^Liquid Glass$",
+                tactics: [
+                    Tactic(atoms: [.click("^Continue$")]),
+                ]
+            ),
+        ]
+        let inherited = paneRules.map { pane in
+            guard pane.title == "Accessibility" else { return pane }
+            return PaneRule(
+                title: pane.title,
+                anchor: "Accessibility features adapt|See what.s available.*categories|^Vision$",
+                tactics: pane.tactics,
+                allowGenericRescue: pane.allowGenericRescue
+            )
+        }
+        return releaseSpecific + inherited
     }
 
     // MARK: - The decision

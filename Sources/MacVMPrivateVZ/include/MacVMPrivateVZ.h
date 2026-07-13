@@ -47,8 +47,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)isAvailable;
 
 /// Build guest-provisioning options and attach them to `startOptions` (a
-/// `VZMacOSVirtualMachineStartOptions`) via KVC. Returns NO (with `error`) if the
-/// API is unavailable or rejects the values.
+/// `VZMacOSVirtualMachineStartOptions`) through its validated setter. Returns NO
+/// (with `error`) if the API is unavailable or rejects the values.
 + (BOOL)applyToStartOptions:(id)startOptions
                    fullName:(NSString *)fullName
                    username:(NSString *)username

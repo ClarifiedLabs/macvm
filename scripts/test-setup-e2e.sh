@@ -8,6 +8,9 @@ vm_root="${MACVM_E2E_ROOT:-$repo_root/.build/setup-e2e}"
 iterations="${MACVM_E2E_ITERATIONS:-3}"
 keep_vm="${MACVM_E2E_KEEP_VM:-0}"
 timeout_seconds="${MACVM_E2E_SETUP_TIMEOUT_SECONDS:-1800}"
+expected_flow="${MACVM_E2E_EXPECTED_FLOW:-}"
+expected_major="${MACVM_E2E_EXPECTED_MAJOR:-}"
+expected_build="${MACVM_E2E_EXPECTED_BUILD:-}"
 run_id="$(date +%Y%m%d-%H%M%S)-$$"
 seed="${MACVM_E2E_SEED:-macvm-setup-seed-$run_id}"
 seed_bundle="$vm_root/$seed.macvm"
@@ -75,36 +78,49 @@ run_with_timeout() {
 
 verify_setup() {
     bundle="$1"
-    python3 - "$bundle" <<'PY'
+    mode="$2"
+    python3 - "$bundle" "$mode" "$expected_major" "$expected_build" <<'PY'
 import json
 import pathlib
 import sys
 
 bundle = pathlib.Path(sys.argv[1])
+mode = sys.argv[2]
+expected_major = sys.argv[3]
+expected_build = sys.argv[4]
 metadata = json.loads((bundle / "Metadata.json").read_text())
 if not metadata.get("setupCompletedAt"):
     raise SystemExit("metadata has no setupCompletedAt")
 if metadata.get("setupUsername") != "admin":
     raise SystemExit(f"unexpected setup username: {metadata.get('setupUsername')!r}")
+release = metadata.get("installedMacOSRelease") or {}
+if expected_major and release.get("majorVersion") != int(expected_major):
+    raise SystemExit(f"unexpected guest major version: {release!r}")
+if expected_build and release.get("buildVersion") != expected_build:
+    raise SystemExit(f"unexpected guest build: {release!r}")
 diagnostics = sorted((bundle / "Setup" / "diagnostics").glob("*/trace.jsonl"))
-if not diagnostics:
-    raise SystemExit("setup produced no decision trace")
-events = [json.loads(line) for line in diagnostics[-1].read_text().splitlines() if line.strip()]
-pointer_events = [
-    event for event in events
-    if event.get("event") == "rfb" and event.get("kind") == "pointer_click"
-]
-if not pointer_events:
-    raise SystemExit("setup trace contains no RFB pointer diagnostics")
-unsafe = [
-    event for event in pointer_events
-    if event.get("lastCaptureHadPixels") != "true"
-    or not event.get("captureWidth")
-    or not event.get("captureHeight")
-]
-if unsafe:
-    raise SystemExit(f"setup sent pointer input without a captured framebuffer: {unsafe!r}")
-print(diagnostics[-1])
+if mode == "ocr":
+    if not diagnostics:
+        raise SystemExit("OCR setup produced no decision trace")
+    events = [json.loads(line) for line in diagnostics[-1].read_text().splitlines() if line.strip()]
+    pointer_events = [
+        event for event in events
+        if event.get("event") == "rfb" and event.get("kind") == "pointer_click"
+    ]
+    if not pointer_events:
+        raise SystemExit("OCR setup trace contains no RFB pointer diagnostics")
+    unsafe = [
+        event for event in pointer_events
+        if event.get("lastCaptureHadPixels") != "true"
+        or not event.get("captureWidth")
+        or not event.get("captureHeight")
+    ]
+    if unsafe:
+        raise SystemExit(f"setup sent pointer input without a captured framebuffer: {unsafe!r}")
+if diagnostics:
+    print(diagnostics[-1])
+else:
+    print("native provisioning completed without an OCR decision trace")
 PY
 }
 
@@ -141,7 +157,15 @@ for iteration in $(seq 1 "$iterations"); do
         tail -100 "$log" >&2 || true
         fail "setup iteration $iteration failed; inspect $log"
     fi
-    verify_setup "$vm_root/$name.macvm"
+    mode="ocr"
+    if grep -q "with native provisioning" "$log"; then
+        mode="native"
+    fi
+    if [ -n "$expected_flow" ]; then
+        grep -q "Selected setup flow $expected_flow " "$log" \
+            || fail "iteration $iteration did not select setup flow $expected_flow; inspect $log"
+    fi
+    verify_setup "$vm_root/$name.macvm" "$mode"
     grep -q "Setup complete. $name is Ansible-ready." "$log" \
         || fail "iteration $iteration did not report SSH readiness; inspect $log"
     successful_bundles+=("$name")

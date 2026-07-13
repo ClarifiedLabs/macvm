@@ -74,6 +74,7 @@ enum SetupAutomationStrategy: Sendable {
 public enum SetupFlows {
     private enum RegisteredFlow {
         case macOS26
+        case macOS27
     }
 
     static let provisioningAnchor = "provisioning script"
@@ -85,6 +86,7 @@ public enum SetupFlows {
     }
 
     public static let macOS26FlowIdentifier = "macos-26"
+    public static let macOS27FlowIdentifier = "macos-27"
 
     /// Load steps from JSON at `url`.
     public static func load(from url: URL) throws -> [SetupStep] {
@@ -111,6 +113,11 @@ public enum SetupFlows {
             flowIdentifier = macOS26FlowIdentifier
             ruleSet = SetupPolicy.macOS26RuleSet
             automationStrategy = .vnc
+        case .macOS27:
+            steps = macOS27(options: options)
+            flowIdentifier = macOS27FlowIdentifier
+            ruleSet = SetupPolicy.macOS27RuleSet
+            automationStrategy = .nativeGuestProvisioning
         }
         return SetupPlan(
             flowIdentifier: flowIdentifier,
@@ -189,7 +196,7 @@ public enum SetupFlows {
 
     private static func unsupportedReleaseError(_ release: MacOSRelease) -> MacVMError {
         MacVMError.message(
-            "Automated setup is not supported for \(release.displayDescription). Built-in setup currently supports macOS 26 only. Complete Setup Assistant manually, or supply an explicit flow with --script or Setup/steps.json."
+            "Automated setup is not supported for \(release.displayDescription). Built-in setup currently supports macOS 26 and 27. Complete Setup Assistant manually, or supply an explicit flow with --script or Setup/steps.json."
         )
     }
 
@@ -197,6 +204,8 @@ public enum SetupFlows {
         switch release.majorVersion {
         case 26:
             .macOS26
+        case 27:
+            .macOS27
         default:
             nil
         }
@@ -263,6 +272,16 @@ public enum SetupFlows {
     /// into the Full Name field so the Account Name auto-derives to it — the field's
     /// autocomplete makes clearing a separately-typed account name unreliable.
     public static func macOS26(options: SetupOptions) -> [SetupStep] {
+        localeSteps()
+            + preAccountSteps()
+            + accountCreationSteps(options: options)
+            + postAccountSteps(options: options)
+    }
+
+    /// macOS 27 prefers Virtualization.framework guest provisioning when the
+    /// host exposes it. These independently registered VNC steps are the
+    /// fallback for macOS 26 hosts and for a native-options validation failure.
+    public static func macOS27(options: SetupOptions) -> [SetupStep] {
         localeSteps()
             + preAccountSteps()
             + accountCreationSteps(options: options)

@@ -136,8 +136,8 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
             }
         }
 
-        // Only a registered setup plan may provide native provisioning options.
-        // No currently supported plan does; this is retained for a future flow.
+        // Only the registered macOS 27 setup plan provides native provisioning
+        // options. Older hosts and rejected option values fall back to VNC.
         if let nativeProvisioning, MacVMGuestProvisioning.isAvailable() {
             let startOptions = VZMacOSVirtualMachineStartOptions()
             do {

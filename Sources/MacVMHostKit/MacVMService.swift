@@ -843,10 +843,20 @@ public final class MacVMService: Sendable {
             emitPhase(0)
             try await Self.withSetupRFBConnection(port: session.port, password: session.password, progress: setupProgress) { client in
                 if nativeProvisioning {
-                    // The framework created the account, enabled SSH, and auto-logs in.
-                    // Wait for the desktop, then still harden (sudo, our key, sleep).
-                    setupProgress(.status("Native provisioning: waiting for the desktop"))
-                    try await Task.sleep(nanoseconds: 45_000_000_000)
+                    let runner = SetupStepRunner(
+                        client: client,
+                        bundle: bundle,
+                        defaultTimeout: options.perPaneTimeout,
+                        progress: setupProgress,
+                        ruleSet: plan.ruleSet,
+                        flowIdentifier: plan.flowIdentifier,
+                        guestRelease: plan.guestRelease
+                    )
+                    let driver = NativeGuestProvisioningSetupDriver(
+                        runner: runner,
+                        loginSteps: SetupFlows.postAccountSteps(options: options)
+                    )
+                    try await driver.reachLoggedInDesktop(progress: setupProgress)
                 } else {
                     let runner = SetupStepRunner(
                         client: client,
@@ -1289,7 +1299,10 @@ public final class MacVMService: Sendable {
         do {
             try await VirtualizationAsync.install(installer)
         } catch {
-            let message = InstallationErrorDiagnostics.message(for: error)
+            let message = InstallationErrorDiagnostics.message(
+                for: error,
+                guestRelease: installedRelease
+            )
             DebugLog.log("macOS installation failed for \(draft.name): \(message)")
             throw MacVMError.message(message)
         }

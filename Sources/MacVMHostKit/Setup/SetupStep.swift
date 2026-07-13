@@ -982,8 +982,8 @@ struct SetupStepRunner {
     func visibleScreen(_ goal: SetupStep.ScreenGoal, timeout: TimeInterval) async -> GuestTextMatch? {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            guard let screen = try? await captureScreen() else { return nil }
-            if let match = goal.match(in: screen) {
+            if let screen = try? await captureScreen(),
+               let match = goal.match(in: screen) {
                 return match
             }
             try? await Task.sleep(nanoseconds: 700_000_000)

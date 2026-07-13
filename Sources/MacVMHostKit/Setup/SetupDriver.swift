@@ -1,9 +1,8 @@
 import Foundation
 
 /// Strategy for getting a fresh guest from first boot to a logged-in desktop with
-/// the setup account created. Two implementations exist: the OCR-driven VNC path
-/// (the registered macOS 26 flow), and a dormant native provisioning path that
-/// can be selected by a future empirically validated flow.
+/// the setup account created. The VNC path drives Setup Assistant; the native
+/// path waits for Virtualization.framework provisioning and logs in if needed.
 protocol SetupDriver {
     func reachLoggedInDesktop(progress: VMOperationHandler?) async throws
 }
@@ -47,5 +46,25 @@ struct VNCSetupDriver: SetupDriver {
 
         progress?(.status("Driving Setup Assistant (\(steps.count) steps)"))
         try await runner.run(steps)
+    }
+}
+
+/// Native guest provisioning advances Setup Assistant without host input. Wait
+/// passively for its handoff to the login window or Finder, then reuse the VNC
+/// driver's verified login recovery for `--no-auto-login`.
+struct NativeGuestProvisioningSetupDriver: SetupDriver {
+    let runner: SetupStepRunner
+    let loginSteps: [SetupStep]
+    var timeout: TimeInterval = 360
+
+    func reachLoggedInDesktop(progress: VMOperationHandler?) async throws {
+        progress?(.status("Native provisioning: waiting for the login window or desktop"))
+        guard await runner.visibleScreen(.loginWindowOrDesktop, timeout: timeout) != nil else {
+            throw MacVMError.message(
+                "Native guest provisioning did not reach the login window or desktop within \(Int(timeout)) seconds."
+            )
+        }
+        try await VNCSetupDriver(runner: runner, steps: loginSteps)
+            .reachLoggedInDesktop(progress: progress)
     }
 }

@@ -206,6 +206,14 @@ static NSError *MacVMErrorMake(NSInteger code, NSString *message) {
         return NO;
     }
 
+    SEL setter = NSSelectorFromString(@"setGuestProvisioningOptions:error:");
+    if (![startOptions respondsToSelector:setter]) {
+        if (error) {
+            *error = MacVMErrorMake(21, @"VZMacOSVirtualMachineStartOptions does not expose setGuestProvisioningOptions:error: on this macOS build.");
+        }
+        return NO;
+    }
+
     id options = [[optionsClass alloc] init];
     @try {
         [options setValue:fullName forKey:@"fullName"];
@@ -213,10 +221,18 @@ static NSError *MacVMErrorMake(NSInteger code, NSString *message) {
         [options setValue:password forKey:@"password"];
         [options setValue:@(enablesRemoteLogin) forKey:@"enablesRemoteLogin"];
         [options setValue:@(logsInAutomatically) forKey:@"logsInAutomatically"];
-        [startOptions setValue:options forKey:@"guestProvisioningOptions"];
     } @catch (NSException *exception) {
         if (error) {
-            *error = MacVMErrorMake(21, [NSString stringWithFormat:@"Failed to apply guest provisioning options: %@", exception.reason]);
+            *error = MacVMErrorMake(22, [NSString stringWithFormat:@"Failed to configure guest provisioning options: %@", exception.reason]);
+        }
+        return NO;
+    }
+
+    typedef BOOL (*GuestProvisioningSetter)(id, SEL, id, NSError **);
+    GuestProvisioningSetter apply = (GuestProvisioningSetter)[startOptions methodForSelector:setter];
+    if (!apply(startOptions, setter, options, error)) {
+        if (error && *error == nil) {
+            *error = MacVMErrorMake(23, @"Virtualization.framework rejected the guest provisioning options.");
         }
         return NO;
     }

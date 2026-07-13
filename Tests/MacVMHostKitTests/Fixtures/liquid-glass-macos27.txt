@@ -1,0 +1,11 @@
+confidence  x,y wxh  text (framebuffer 2560x1440)
+1.00  2091,18 55x22  U.S.
+1.00  2254,18 137x22  Mon Jul 13
+1.00  2396,18 126x22  12:58AM
+1.00  825,252 204x38  Liquid Glass
+1.00  829,293 885x41  Slide from clear to tinted, to reveal content beneath or add
+1.00  825,337 216x40  more opacity.
+1.00  1090,464 133x22  Q Search
+1.00  859,896 465x26  Malenme tn Annle Dark
+1.00  569,1234 156x31  Accessibility
+1.00  1856,1233 112x26  Continue

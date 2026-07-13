@@ -115,16 +115,18 @@ Open `MacVM` from `/Applications` for a graphical VM manager. It can create and 
 
 MacVM can drive a fresh macOS install to an SSH-ready state:
 
-Automated setup is currently tested and supported for macOS 26 guests only. Other Virtualization.framework-compatible releases can still be installed and run, with Setup Assistant completed manually. An explicit `--script` or per-VM `Setup/steps.json` opts into custom automation for an otherwise unsupported release. If the latest image supported by the host is not macOS 26, pass a macOS 26 IPSW explicitly.
+Automated setup is tested and supported for macOS 26 and 27 guests. macOS 27 hosts prefer Virtualization.framework's native first-boot guest provisioning; macOS 26 hosts use the versioned OCR flow. Other Virtualization.framework-compatible releases can still be installed and run with Setup Assistant completed manually. An explicit `--script` or per-VM `Setup/steps.json` opts into custom VNC automation for an otherwise unsupported release.
+
+Installing a macOS beta guest can require the matching Xcode beta's first-launch components on the host, even when the standalone Device Support package is already installed. If Virtualization.framework reports that a software update is required, install or launch the matching Xcode, allow its additional components to finish, and retry with a fresh VM bundle.
 
 ```bash
-macvm create --name dev-02 --ipsw ~/Downloads/UniversalMac_26.x_Restore.ipsw --setup
+macvm create --name dev-02 --ipsw ~/Downloads/UniversalMac_27.x_Restore.ipsw --setup
 macvm ssh dev-02
 macvm inventory dev-02 > dev-02.inventory
 ansible -i dev-02.inventory all -m raw -a true
 ```
 
-Setup uses a verified OCR policy and keeps redacted decision traces under each VM bundle's `Setup/diagnostics/`. Contributors can run `make test-setup-e2e` to soak Setup Assistant against three fresh clones of one installed macOS 26 seed; set `MACVM_E2E_IPSW` to avoid downloading a restore image.
+Setup uses native guest provisioning where available and otherwise uses a verified OCR policy with redacted decision traces under each VM bundle's `Setup/diagnostics/`. Contributors can run `make test-setup-e2e` to soak three fresh clones of one installed seed; set `MACVM_E2E_IPSW` to select the guest release explicitly.
 
 By default setup creates an `admin` account with password `admin`. Override it when creating or setting up a VM:
 
