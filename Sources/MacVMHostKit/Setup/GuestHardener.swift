@@ -6,20 +6,37 @@ protocol GuestHardenerClient: Sendable {
     func nudgePointer() async throws
     func pressKey(_ keysym: UInt32, modifiers: [UInt32]) async throws
     func typeText(_ text: String, holdDelay: UInt64, gapDelay: UInt64) async throws
+    func setClipboardText(_ text: String) async throws
     func click(x: Int, y: Int, button: UInt8) async throws
     func captureFramebuffer() async throws -> Framebuffer
+    func captureTextObservations() async -> [TextObservation]?
 }
 
-extension RFBClient: GuestHardenerClient {}
+extension RFBClient: GuestHardenerClient {
+    func captureTextObservations() async -> [TextObservation]? {
+        guard let framebuffer = try? await captureFramebuffer() else {
+            return nil
+        }
+        return OCRService.observations(in: framebuffer)
+    }
+}
 
 struct GuestHardenerTiming: Sendable {
-    var spotlightDelay: UInt64 = 1_500_000_000
-    var appLaunchDelay: UInt64 = 4_000_000_000
     var finderDelay: UInt64 = 1_500_000_000
+    var searchDelay: UInt64 = 1_000_000_000
     var shortDelay: UInt64 = 700_000_000
+    var clipboardPropagationDelay: UInt64 = 300_000_000
     var statusPollDelay: UInt64 = 250_000_000
-    var startTimeout: TimeInterval = 12
+    var terminalActivationTimeout: TimeInterval = 6
+    var clipboardStartTimeout: TimeInterval = 3
+    var typedStartTimeout: TimeInterval = 5
     var completionTimeout: TimeInterval = 90
+}
+
+enum GuestForegroundState: Equatable {
+    case terminal
+    case other
+    case unreadable
 }
 
 enum GuestProvisioningStatus: Equatable {
@@ -46,10 +63,9 @@ enum GuestProvisioningStatus: Equatable {
 /// Runs the post-Setup-Assistant provisioning: stage a script + credentials into
 /// the shared folder, then open Terminal in the guest and run it.
 ///
-/// Only one fragile line is typed blindly (`bash …/provision.sh`); everything else
-/// lives in the staged script. This also survives the macOS 26 compositor bug that
-/// can leave guest windows unrendered over VNC — the keystrokes reach the guest
-/// even when Terminal doesn't visibly draw.
+/// The staged command is pasted atomically when possible, with conservative typing
+/// as a fallback. Shared status also preserves the macOS 26 compositor workaround:
+/// commands can still reach Terminal when its window does not visibly draw over VNC.
 struct GuestHardener {
     /// The guest-side mount point of the bundle's `Shared/Transfers` folder.
     static let guestTransfersPath = "/Volumes/My Shared Files/Transfers"
@@ -94,41 +110,29 @@ struct GuestHardener {
         // Owner-only: the script embeds authorized keys and account details.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: scriptURL.path)
 
-        progress?(.status("Guest configuration: opening Terminal with Spotlight"))
-        try await activateFinder()
-        try await openTerminalWithSpotlight()
-        if try await runProvisioningScript(statusFileURL: statusFileURL) {
-            return
-        }
-
         progress?(.status("Guest configuration: opening Terminal from Finder Utilities"))
-        try await activateFinder()
+        try await resetToFinder()
         try await openTerminalFromFinderUtilities()
-        if try await runProvisioningScript(statusFileURL: statusFileURL) {
-            return
+        if await terminalMayBeActive(after: "Finder Utilities") {
+            if try await runProvisioningScript(statusFileURL: statusFileURL) {
+                return
+            }
+        } else {
+            progress?(.status("Guest configuration: Finder Utilities did not activate Terminal; trying Apps"))
         }
 
-        DebugLog.log("Provisioning: keyboard launch paths did not start the script; falling back to Apps.")
-        for _ in 0..<2 {
+        for attempt in 1...2 {
             progress?(.status("Guest configuration: opening Terminal from Apps"))
-            try await activateFinder()
-            try await openTerminalFromLaunchpad()
-            if try await runProvisioningScript(statusFileURL: statusFileURL) {
+            try await resetToFinder()
+            guard try await openTerminalFromApps() else {
+                continue
+            }
+            if await terminalMayBeActive(after: "Apps attempt \(attempt)"),
+               try await runProvisioningScript(statusFileURL: statusFileURL) {
                 return
             }
         }
         throw MacVMError.message("Couldn't start the provisioning script in the guest.")
-    }
-
-    private func openTerminalWithSpotlight() async throws {
-        try await client.nudgePointer()
-        try await client.pressKey(Keysym.space, modifiers: [Keysym.command])
-        await sleep(timing.spotlightDelay)
-        try await client.typeText("Terminal", holdDelay: 35_000_000, gapDelay: 90_000_000)
-        await sleep(timing.spotlightDelay)
-        try await client.pressKey(Keysym.returnKey, modifiers: [])
-        await sleep(timing.appLaunchDelay)
-        await logTerminalDetection(for: "Spotlight")
     }
 
     private func openTerminalFromFinderUtilities() async throws {
@@ -136,37 +140,79 @@ struct GuestHardener {
         try await client.pressKey(0x75, modifiers: [Keysym.command, Keysym.shift]) // Command-Shift-U
         await sleep(timing.finderDelay)
         try await client.typeText("Terminal", holdDelay: 35_000_000, gapDelay: 90_000_000)
-        await sleep(timing.spotlightDelay)
+        await sleep(timing.searchDelay)
         try await client.pressKey(0x6f, modifiers: [Keysym.command]) // Command-O
-        await sleep(timing.appLaunchDelay)
-        await logTerminalDetection(for: "Finder Utilities")
     }
 
     private func runProvisioningScript(statusFileURL: URL) async throws -> Bool {
+        if let result = try await provisioningResult(statusFileURL: statusFileURL) {
+            return result
+        }
+
+        let command = "bash '\(Self.guestTransfersPath)/provision.sh'"
         progress?(.status("Guest configuration: starting setup script in the guest"))
+        let clipboardSubmitted: Bool
+        do {
+            try await client.setClipboardText(command)
+            await sleep(timing.clipboardPropagationDelay)
+            try await client.pressKey(0x76, modifiers: [Keysym.command]) // Command-V
+            try await client.pressKey(Keysym.returnKey, modifiers: [])
+            clipboardSubmitted = true
+        } catch {
+            clipboardSubmitted = false
+            DebugLog.log("Provisioning: VNC clipboard injection failed: \(error.localizedDescription)")
+        }
+
+        if clipboardSubmitted,
+           try await waitForProvisioningStart(
+               statusFileURL: statusFileURL,
+               timeout: timing.clipboardStartTimeout
+           ) {
+            return true
+        }
+
+        progress?(.status("Guest configuration: clipboard command did not start; retrying with keyboard"))
+        DebugLog.log("Provisioning: clipboard command did not start; retrying with keyboard input.")
+        try await client.pressKey(0x63, modifiers: [Keysym.control]) // Control-C
+        await sleep(timing.shortDelay)
         try await client.typeText(
-            "bash '\(Self.guestTransfersPath)/provision.sh'",
+            command,
             holdDelay: 35_000_000,
             gapDelay: 90_000_000
         )
         try await client.pressKey(Keysym.returnKey, modifiers: [])
+        return try await waitForProvisioningStart(
+            statusFileURL: statusFileURL,
+            timeout: timing.typedStartTimeout
+        )
+    }
 
-        let startDeadline = Date().addingTimeInterval(timing.startTimeout)
-        while Date() <= startDeadline {
-            switch GuestProvisioningStatus.read(from: statusFileURL) {
-            case .absent, .unknown:
-                await sleep(timing.statusPollDelay)
-            case .running:
-                progress?(.status("Guest configuration: setup script is running"))
-                return try await waitForProvisioningCompletion(statusFileURL: statusFileURL)
-            case .done:
-                progress?(.status("Guest configuration: setup script completed"))
-                return true
-            case .failed(let code):
-                throw MacVMError.message("Guest provisioning script failed with exit code \(code).")
+    private func waitForProvisioningStart(statusFileURL: URL, timeout: TimeInterval) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let result = try await provisioningResult(statusFileURL: statusFileURL) {
+                return result
             }
+            guard Date() < deadline else {
+                return false
+            }
+            await sleep(timing.statusPollDelay)
         }
-        return false
+    }
+
+    private func provisioningResult(statusFileURL: URL) async throws -> Bool? {
+        switch GuestProvisioningStatus.read(from: statusFileURL) {
+        case .absent, .unknown:
+            return nil
+        case .running:
+            progress?(.status("Guest configuration: setup script is running"))
+            return try await waitForProvisioningCompletion(statusFileURL: statusFileURL)
+        case .done:
+            progress?(.status("Guest configuration: setup script completed"))
+            return true
+        case .failed(let code):
+            throw MacVMError.message("Guest provisioning script failed with exit code \(code).")
+        }
     }
 
     private func waitForProvisioningCompletion(statusFileURL: URL) async throws -> Bool {
@@ -185,21 +231,42 @@ struct GuestHardener {
         throw MacVMError.message("Guest provisioning script started but did not complete within \(Int(timing.completionTimeout)) seconds.")
     }
 
-    private func logTerminalDetection(for method: String) async {
-        if await terminalIsActive() {
-            DebugLog.log("Provisioning: Terminal detected after \(method) launch.")
-        } else {
-            DebugLog.log("Provisioning: Terminal not visible after \(method) launch; relying on shared status.")
+    private func terminalMayBeActive(after method: String) async -> Bool {
+        let startedAt = Date()
+        let deadline = startedAt.addingTimeInterval(timing.terminalActivationTimeout)
+        var latestState = GuestForegroundState.unreadable
+
+        while true {
+            latestState = await foregroundState()
+            if latestState == .terminal {
+                DebugLog.log(
+                    "Provisioning: Terminal detected after \(method) launch in " +
+                    String(format: "%.2fs.", Date().timeIntervalSince(startedAt))
+                )
+                return true
+            }
+            guard Date() < deadline else {
+                break
+            }
+            await sleep(timing.statusPollDelay)
+        }
+
+        switch latestState {
+        case .other:
+            DebugLog.log("Provisioning: \(method) left another readable app in front; skipping command injection.")
+            return false
+        case .unreadable:
+            DebugLog.log("Provisioning: framebuffer unreadable after \(method); relying on shared status.")
+            return true
+        case .terminal:
+            return true
         }
     }
 
-    private func activateFinder() async throws {
-        if await menuBarShows("Finder") {
-            return
-        }
-
-        // Hide first-launch prompts from Messages/FaceTime/etc. before opening
-        // Spotlight. They are harmless to the VM but can steal typed commands.
+    private func resetToFinder() async throws {
+        // A Spotlight or first-launch overlay can retain keyboard focus while the
+        // menu bar still says Finder, so reset focus unconditionally.
+        try await client.nudgePointer()
         try await client.pressKey(Keysym.escape, modifiers: [])
         try await client.pressKey(0x68, modifiers: [Keysym.command]) // Command-H
         await sleep(timing.shortDelay)
@@ -210,40 +277,35 @@ struct GuestHardener {
         await sleep(timing.finderDelay)
     }
 
-    private func openTerminalFromLaunchpad() async throws {
+    private func openTerminalFromApps() async throws -> Bool {
         let size = try await currentFramebufferSize()
-        let launchpad = Self.launchpadDockPoint(width: size.width, height: size.height)
+        let apps = Self.appsDockPoint(width: size.width, height: size.height)
 
-        try await client.click(x: launchpad.x, y: launchpad.y, button: 1)
+        try await client.click(x: apps.x, y: apps.y, button: 1)
         await sleep(timing.finderDelay)
         if await foregroundAppMayStealProvisioningTyping() {
-            DebugLog.log("Provisioning: Launchpad dock click opened another app; closing it before retry.")
+            DebugLog.log("Provisioning: Apps dock click opened another app; closing it before retry.")
             try await closeForegroundPrompt()
-            return
-        }
-        try await client.typeText("Terminal", holdDelay: 35_000_000, gapDelay: 90_000_000)
-        await sleep(timing.spotlightDelay)
-        try await client.pressKey(Keysym.returnKey, modifiers: [])
-        await sleep(timing.appLaunchDelay)
-        await logTerminalDetection(for: "Apps")
-    }
-
-    private func terminalIsActive() async -> Bool {
-        await menuBarShows("Terminal")
-    }
-
-    private func menuBarShows(_ appName: String) async -> Bool {
-        guard let framebuffer = try? await client.captureFramebuffer() else {
             return false
         }
-        return Self.menuBarShows(appName, in: OCRService.observations(in: framebuffer))
+        try await client.typeText("Terminal", holdDelay: 35_000_000, gapDelay: 90_000_000)
+        await sleep(timing.searchDelay)
+        try await client.pressKey(Keysym.returnKey, modifiers: [])
+        return true
+    }
+
+    private func foregroundState() async -> GuestForegroundState {
+        guard let observations = await client.captureTextObservations() else {
+            return .unreadable
+        }
+        return Self.foregroundState(in: observations)
     }
 
     private func foregroundAppMayStealProvisioningTyping() async -> Bool {
-        guard let framebuffer = try? await client.captureFramebuffer() else {
+        guard let observations = await client.captureTextObservations() else {
             return false
         }
-        return Self.foregroundAppMayStealProvisioningTyping(in: OCRService.observations(in: framebuffer))
+        return Self.foregroundAppMayStealProvisioningTyping(in: observations)
     }
 
     private func closeForegroundPrompt() async throws {
@@ -262,6 +324,18 @@ struct GuestHardener {
             observation.string.caseInsensitiveCompare(appName) == .orderedSame &&
                 observation.rectInPixels.minY < 45
         }
+    }
+
+    static func foregroundState(in observations: [TextObservation]) -> GuestForegroundState {
+        if menuBarShows("Terminal", in: observations) {
+            return .terminal
+        }
+
+        let knownApps = ["Finder", "Messages", "FaceTime", "Mail", "Safari", "System Settings"]
+        if knownApps.contains(where: { menuBarShows($0, in: observations) }) {
+            return .other
+        }
+        return .unreadable
     }
 
     static func firstLaunchPromptIsVisible(in observations: [TextObservation]) -> Bool {
@@ -293,7 +367,7 @@ struct GuestHardener {
         )
     }
 
-    static func launchpadDockPoint(width: Int, height: Int) -> (x: Int, y: Int) {
+    static func appsDockPoint(width: Int, height: Int) -> (x: Int, y: Int) {
         (
             x: max(0, min(width - 1, Int(Double(width) * 0.102))),
             y: max(0, height - 48)

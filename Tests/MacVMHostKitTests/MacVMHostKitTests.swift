@@ -1831,30 +1831,52 @@ private actor GuestHardenerMockClient: GuestHardenerClient {
     private let statusFileURL: URL
     private let statusValue: String
     private let statusAfterCommandCount: Int?
-    private var lastTypedText = ""
+    private let foregroundApps: [String?]
+    private var foregroundAppIndex = 0
+    private var currentInput = ""
+    private var clipboardText = ""
     private var typedTexts: [String] = []
-    private var provisionCommandCount = 0
+    private var clipboardTexts: [String] = []
+    private var keyPresses: [(keysym: UInt32, modifiers: [UInt32])] = []
+    private var commandSubmissionCount = 0
 
-    init(statusFileURL: URL, statusValue: String, statusAfterCommandCount: Int?) {
+    init(
+        statusFileURL: URL,
+        statusValue: String,
+        statusAfterCommandCount: Int?,
+        foregroundApps: [String?]
+    ) {
         self.statusFileURL = statusFileURL
         self.statusValue = statusValue
         self.statusAfterCommandCount = statusAfterCommandCount
+        self.foregroundApps = foregroundApps
     }
 
     func nudgePointer() async throws {}
 
     func pressKey(_ keysym: UInt32, modifiers: [UInt32]) async throws {
-        if keysym == Keysym.returnKey, lastTypedText.hasPrefix("bash ") {
-            provisionCommandCount += 1
-            if provisionCommandCount == statusAfterCommandCount {
+        keyPresses.append((keysym, modifiers))
+        if keysym == 0x76, modifiers == [Keysym.command] {
+            currentInput = clipboardText
+        } else if keysym == 0x63, modifiers == [Keysym.control] {
+            currentInput = ""
+        } else if keysym == Keysym.returnKey, currentInput.hasPrefix("bash ") {
+            commandSubmissionCount += 1
+            if commandSubmissionCount == statusAfterCommandCount {
                 try statusValue.write(to: statusFileURL, atomically: true, encoding: .utf8)
             }
+            currentInput = ""
         }
     }
 
     func typeText(_ text: String, holdDelay: UInt64, gapDelay: UInt64) async throws {
-        lastTypedText = text
+        currentInput = text
         typedTexts.append(text)
+    }
+
+    func setClipboardText(_ text: String) async throws {
+        clipboardText = text
+        clipboardTexts.append(text)
     }
 
     func click(x: Int, y: Int, button: UInt8) async throws {}
@@ -1863,14 +1885,45 @@ private actor GuestHardenerMockClient: GuestHardenerClient {
         Framebuffer(width: 2560, height: 1440)
     }
 
+    func captureTextObservations() async -> [TextObservation]? {
+        guard !foregroundApps.isEmpty else {
+            return nil
+        }
+        let index = min(foregroundAppIndex, foregroundApps.count - 1)
+        foregroundAppIndex += 1
+        guard let appName = foregroundApps[index] else {
+            return nil
+        }
+        return [
+            TextObservation(
+                string: appName,
+                rectInPixels: CGRect(x: 48, y: 6, width: 90, height: 18),
+                confidence: 0.99
+            ),
+        ]
+    }
+
     func recordedTypedTexts() -> [String] {
         typedTexts
+    }
+
+    func recordedClipboardTexts() -> [String] {
+        clipboardTexts
+    }
+
+    func recordedKeyPresses() -> [(keysym: UInt32, modifiers: [UInt32])] {
+        keyPresses
+    }
+
+    func recordedCommandSubmissionCount() -> Int {
+        commandSubmissionCount
     }
 }
 
 private func makeGuestHardenerTestFixture(
     statusValue: String,
     statusAfterCommandCount: Int? = 1,
+    foregroundApps: [String?] = [],
     startTimeout: TimeInterval = 0.02,
     completionTimeout: TimeInterval = 0.02
 ) throws -> (
@@ -1888,15 +1941,18 @@ private func makeGuestHardenerTestFixture(
     let client = GuestHardenerMockClient(
         statusFileURL: statusURL,
         statusValue: statusValue,
-        statusAfterCommandCount: statusAfterCommandCount
+        statusAfterCommandCount: statusAfterCommandCount,
+        foregroundApps: foregroundApps
     )
     let timing = GuestHardenerTiming(
-        spotlightDelay: 0,
-        appLaunchDelay: 0,
         finderDelay: 0,
+        searchDelay: 0,
         shortDelay: 0,
+        clipboardPropagationDelay: 0,
         statusPollDelay: 1_000_000,
-        startTimeout: startTimeout,
+        terminalActivationTimeout: 0,
+        clipboardStartTimeout: startTimeout,
+        typedStartTimeout: startTimeout,
         completionTimeout: completionTimeout
     )
     return (
@@ -1921,8 +1977,10 @@ func guestHardenerUsesSharedStatusWhenFramebufferIsUnreadable() async throws {
     try await fixture.hardener.harden()
 
     let typedTexts = await fixture.client.recordedTypedTexts()
+    let clipboardTexts = await fixture.client.recordedClipboardTexts()
     #expect(typedTexts.contains("Terminal"))
-    #expect(typedTexts.contains("bash '/Volumes/My Shared Files/Transfers/provision.sh'"))
+    #expect(!typedTexts.contains("bash '/Volumes/My Shared Files/Transfers/provision.sh'"))
+    #expect(clipboardTexts == ["bash '/Volumes/My Shared Files/Transfers/provision.sh'"])
 }
 
 @Test
@@ -1939,15 +1997,38 @@ func guestHardenerReportsGuestScriptFailureFromSharedStatus() async throws {
 }
 
 @Test
-func guestHardenerFallsBackWhenSpotlightDoesNotStartTheScript() async throws {
+func guestHardenerFallsBackToKeyboardWhenClipboardDoesNotStartTheScript() async throws {
     let fixture = try makeGuestHardenerTestFixture(statusValue: "done\n", statusAfterCommandCount: 2)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     try await fixture.hardener.harden()
 
     let typedTexts = await fixture.client.recordedTypedTexts()
-    #expect(typedTexts.filter { $0.hasPrefix("bash ") }.count == 2)
+    let clipboardTexts = await fixture.client.recordedClipboardTexts()
+    let keyPresses = await fixture.client.recordedKeyPresses()
+    #expect(typedTexts.filter { $0.hasPrefix("bash ") }.count == 1)
+    #expect(typedTexts.filter { $0 == "Terminal" }.count == 1)
+    #expect(clipboardTexts.count == 1)
+    #expect(keyPresses.contains { $0.keysym == 0x63 && $0.modifiers == [Keysym.control] })
+}
+
+@Test
+func guestHardenerSkipsFailedFinderLauncherAndNeverUsesSpotlight() async throws {
+    let fixture = try makeGuestHardenerTestFixture(
+        statusValue: "done\n",
+        foregroundApps: ["Finder", "Finder", "Terminal"]
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    try await fixture.hardener.harden()
+
+    let typedTexts = await fixture.client.recordedTypedTexts()
+    let keyPresses = await fixture.client.recordedKeyPresses()
+    let commandSubmissionCount = await fixture.client.recordedCommandSubmissionCount()
     #expect(typedTexts.filter { $0 == "Terminal" }.count == 2)
+    #expect(commandSubmissionCount == 1)
+    #expect(!keyPresses.contains { $0.keysym == Keysym.space && $0.modifiers == [Keysym.command] })
+    #expect(keyPresses.contains { $0.keysym == 0x75 && $0.modifiers == [Keysym.command, Keysym.shift] })
 }
 
 @Test
@@ -2067,20 +2148,20 @@ func provisioningScriptContainsExpectedCommands() {
 @Test
 func guestHardenerUsesExpectedDockTargets() {
     #expect(GuestHardener.finderDockPoint(width: 2560, height: 1440) == (x: 151, y: 1392))
-    #expect(GuestHardener.launchpadDockPoint(width: 2560, height: 1440) == (x: 261, y: 1392))
+    #expect(GuestHardener.appsDockPoint(width: 2560, height: 1440) == (x: 261, y: 1392))
     #expect(GuestHardener.finderDockPoint(width: 1, height: 1) == (x: 0, y: 0))
-    #expect(GuestHardener.launchpadDockPoint(width: 1, height: 1) == (x: 0, y: 0))
+    #expect(GuestHardener.appsDockPoint(width: 1, height: 1) == (x: 0, y: 0))
 }
 
 @Test
-func guestHardenerLaunchpadTargetStaysOnSecondDockIconAtDefaultDisplaySize() {
+func guestHardenerAppsTargetStaysOnSecondDockIconAtDefaultDisplaySize() {
     let finder = GuestHardener.finderDockPoint(width: 1280, height: 720)
-    let launchpad = GuestHardener.launchpadDockPoint(width: 1280, height: 720)
+    let apps = GuestHardener.appsDockPoint(width: 1280, height: 720)
 
-    #expect(launchpad.x > finder.x)
-    #expect((launchpad.x - finder.x) >= 45)
-    #expect((launchpad.x - finder.x) <= 65)
-    #expect(launchpad.x < 170) // old value (~222) landed on later Dock apps.
+    #expect(apps.x > finder.x)
+    #expect((apps.x - finder.x) >= 45)
+    #expect((apps.x - finder.x) <= 65)
+    #expect(apps.x < 170) // old value (~222) landed on later Dock apps.
 }
 
 @Test
@@ -2101,6 +2182,28 @@ func guestHardenerRecognizesAppleAccountFirstLaunchPrompt() {
     #expect(GuestHardener.menuBarShows("Messages", in: observations))
     #expect(GuestHardener.firstLaunchPromptIsVisible(in: observations))
     #expect(GuestHardener.foregroundAppMayStealProvisioningTyping(in: observations))
+}
+
+@Test
+func guestHardenerClassifiesTerminalAndReadableWrongForegroundApps() {
+    let terminal = [
+        TextObservation(
+            string: "Terminal",
+            rectInPixels: CGRect(x: 48, y: 6, width: 72, height: 18),
+            confidence: 0.96
+        ),
+    ]
+    let finder = [
+        TextObservation(
+            string: "Finder",
+            rectInPixels: CGRect(x: 48, y: 6, width: 72, height: 18),
+            confidence: 0.96
+        ),
+    ]
+
+    #expect(GuestHardener.foregroundState(in: terminal) == .terminal)
+    #expect(GuestHardener.foregroundState(in: finder) == .other)
+    #expect(GuestHardener.foregroundState(in: []) == .unreadable)
 }
 
 @Test
