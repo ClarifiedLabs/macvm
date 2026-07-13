@@ -579,18 +579,18 @@ func cloneVMAppliesCPUAndMemoryOverridesIndependently() async throws {
     #expect(cpuClone.metadata.cpuCount == 4)
     #expect(cpuClone.metadata.memorySizeBytes == metadata.memorySizeBytes)
 
-    let memoryClone = try await service.cloneVM(from: source, named: "memory-copy", memoryGiB: 8)
+    let memoryClone = try await service.cloneVM(from: source, named: "memory-copy", memoryGiB: 4)
     #expect(memoryClone.metadata.cpuCount == metadata.cpuCount)
-    #expect(memoryClone.metadata.memorySizeBytes == 8 * oneGiB)
+    #expect(memoryClone.metadata.memorySizeBytes == 4 * oneGiB)
 
     let resizedClone = try await service.cloneVM(
         from: source,
         named: "resized-copy",
         cpuCount: 2,
-        memoryGiB: 4
+        memoryGiB: 2
     )
     #expect(resizedClone.metadata.cpuCount == 2)
-    #expect(resizedClone.metadata.memorySizeBytes == 4 * oneGiB)
+    #expect(resizedClone.metadata.memorySizeBytes == 2 * oneGiB)
     #expect(try Data(contentsOf: sourceBundle.metadataURL) == sourceMetadataData)
 }
 

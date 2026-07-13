@@ -610,10 +610,10 @@ func managerCloneWorkflowSelectsCompletedClone() async throws {
     #expect(store.cloneCommandPreview == "macvm clone template --name template-copy")
 
     store.cloneCPUCountOverride = 4
-    store.cloneMemoryGiBOverride = 8
+    store.cloneMemoryGiBOverride = 2
     #expect(
         store.cloneCommandPreview
-            == "macvm clone template --name template-copy --cpu 4 --memory-gi-b 8"
+            == "macvm clone template --name template-copy --cpu 4 --memory-gi-b 2"
     )
     store.submitClone()
 
@@ -624,10 +624,10 @@ func managerCloneWorkflowSelectsCompletedClone() async throws {
     #expect(store.alertMessage == nil)
     #expect(store.vm(named: "template-copy") != nil)
     #expect(store.vm(named: "template-copy")?.metadata.cpuCount == 4)
-    #expect(store.vm(named: "template-copy")?.metadata.memorySizeBytes == 8 * oneGiB)
+    #expect(store.vm(named: "template-copy")?.metadata.memorySizeBytes == 2 * oneGiB)
     #expect(store.selection == .vm("template-copy"))
     #expect(store.clones["template"] == nil)
-    #expect(store.lastCommand == "macvm clone template --name template-copy --cpu 4 --memory-gi-b 8")
+    #expect(store.lastCommand == "macvm clone template --name template-copy --cpu 4 --memory-gi-b 2")
 }
 
 @Test
