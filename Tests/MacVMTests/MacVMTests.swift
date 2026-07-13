@@ -156,6 +156,22 @@ func cliEquivalentRendersFixedActionCommands() {
 }
 
 @Test
+func cliEquivalentRendersCloneSizingOverridesInCLIOrder() {
+    #expect(
+        CLIEquivalent.clone("dev", name: "dev-copy", cpuCount: 8)
+            == "macvm clone dev --name dev-copy --cpu 8"
+    )
+    #expect(
+        CLIEquivalent.clone("dev", name: "dev-copy", memoryGiB: 16)
+            == "macvm clone dev --name dev-copy --memory-gi-b 16"
+    )
+    #expect(
+        CLIEquivalent.clone("dev", name: "dev-copy", cpuCount: 8, memoryGiB: 16)
+            == "macvm clone dev --name dev-copy --cpu 8 --memory-gi-b 16"
+    )
+}
+
+@Test
 func setupProgressPhaseStateShowsFailureInsteadOfSpinner() {
     #expect(SetupProgressCard.phaseState(phaseID: 2, currentPhaseID: 3, failureMessage: "failed") == .done)
     #expect(SetupProgressCard.phaseState(phaseID: 3, currentPhaseID: 3, failureMessage: nil) == .active)
@@ -585,8 +601,20 @@ func managerCloneWorkflowSelectsCompletedClone() async throws {
 
     let store = AppStore(service: MacVMService(rootDirectory: rootURL))
     let source = try #require(store.vm(named: "template"))
+    store.cloneCPUCountOverride = 12
+    store.cloneMemoryGiBOverride = 32
     store.requestClone(source)
     #expect(store.cloneName == "template-copy")
+    #expect(store.cloneCPUCountOverride == nil)
+    #expect(store.cloneMemoryGiBOverride == nil)
+    #expect(store.cloneCommandPreview == "macvm clone template --name template-copy")
+
+    store.cloneCPUCountOverride = 4
+    store.cloneMemoryGiBOverride = 8
+    #expect(
+        store.cloneCommandPreview
+            == "macvm clone template --name template-copy --cpu 4 --memory-gi-b 8"
+    )
     store.submitClone()
 
     for _ in 0..<40 where store.vm(named: "template-copy") == nil && store.alertMessage == nil {
@@ -595,9 +623,11 @@ func managerCloneWorkflowSelectsCompletedClone() async throws {
 
     #expect(store.alertMessage == nil)
     #expect(store.vm(named: "template-copy") != nil)
+    #expect(store.vm(named: "template-copy")?.metadata.cpuCount == 4)
+    #expect(store.vm(named: "template-copy")?.metadata.memorySizeBytes == 8 * oneGiB)
     #expect(store.selection == .vm("template-copy"))
     #expect(store.clones["template"] == nil)
-    #expect(store.lastCommand == "macvm clone template --name template-copy")
+    #expect(store.lastCommand == "macvm clone template --name template-copy --cpu 4 --memory-gi-b 8")
 }
 
 @Test

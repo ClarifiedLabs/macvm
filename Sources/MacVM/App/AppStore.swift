@@ -93,6 +93,8 @@ final class AppStore {
     var provisionInputValues: [String: [String: String]] = [:]
     var cloneSheetSourceName: String?
     var cloneName = ""
+    var cloneCPUCountOverride: Int?
+    var cloneMemoryGiBOverride: Int?
     private(set) var lastCommand = CLIEquivalent.list()
     private(set) var copiedKey: String?
     var alertMessage: String?
@@ -681,11 +683,18 @@ final class AppStore {
         }
         let occupied = Set(vms.map(\.metadata.name)).union(installs.keys)
         cloneName = Self.suggestedCloneName(source: vm.metadata.name, occupiedNames: occupied)
+        cloneCPUCountOverride = nil
+        cloneMemoryGiBOverride = nil
         cloneSheetSourceName = vm.metadata.name
     }
 
     var cloneCommandPreview: String {
-        CLIEquivalent.clone(cloneSheetSourceName ?? "<source>", name: cloneName)
+        CLIEquivalent.clone(
+            cloneSheetSourceName ?? "<source>",
+            name: cloneName,
+            cpuCount: cloneCPUCountOverride,
+            memoryGiB: cloneMemoryGiBOverride
+        )
     }
 
     func submitClone() {
@@ -699,7 +708,14 @@ final class AppStore {
         let destinationName = cloneName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !destinationName.isEmpty else { return }
 
-        let command = CLIEquivalent.clone(sourceName, name: destinationName)
+        let cpuCount = cloneCPUCountOverride
+        let memoryGiB = cloneMemoryGiBOverride
+        let command = CLIEquivalent.clone(
+            sourceName,
+            name: destinationName,
+            cpuCount: cpuCount,
+            memoryGiB: memoryGiB
+        )
         cloneSheetSourceName = nil
         clones[sourceName] = CloneProgress(
             destinationName: destinationName,
@@ -710,7 +726,12 @@ final class AppStore {
 
         Task { @MainActor in
             do {
-                let clonedVM = try await service.cloneVM(from: source, named: destinationName) { [weak self] event in
+                let clonedVM = try await service.cloneVM(
+                    from: source,
+                    named: destinationName,
+                    cpuCount: cpuCount,
+                    memoryGiB: memoryGiB
+                ) { [weak self] event in
                     guard case .status(let message) = event else { return }
                     DispatchQueue.main.async {
                         self?.clones[sourceName]?.status = message

@@ -551,6 +551,107 @@ func cloneVMPreservesPersistentStateAndRefreshesHostIdentity() async throws {
 }
 
 @Test
+func cloneVMAppliesCPUAndMemoryOverridesIndependently() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let sourceURL = root.appendingPathComponent("template.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let metadata = VMMetadata(
+        name: "template",
+        cpuCount: 6,
+        memorySizeBytes: 12 * oneGiB,
+        diskSizeBytes: 80 * oneGiB,
+        displayWidth: 1440,
+        displayHeight: 900,
+        bootstrapShareEnabled: false,
+        macAddress: "02:00:00:00:00:01"
+    )
+    let sourceBundle = VMBundle(url: sourceURL)
+    try sourceBundle.writeMetadata(metadata)
+    let sourceMetadataData = try Data(contentsOf: sourceBundle.metadataURL)
+
+    let service = MacVMService(rootDirectory: root)
+    let source = ManagedVM(bundleURL: sourceURL, metadata: metadata)
+
+    let cpuClone = try await service.cloneVM(from: source, named: "cpu-copy", cpuCount: 4)
+    #expect(cpuClone.metadata.cpuCount == 4)
+    #expect(cpuClone.metadata.memorySizeBytes == metadata.memorySizeBytes)
+
+    let memoryClone = try await service.cloneVM(from: source, named: "memory-copy", memoryGiB: 8)
+    #expect(memoryClone.metadata.cpuCount == metadata.cpuCount)
+    #expect(memoryClone.metadata.memorySizeBytes == 8 * oneGiB)
+
+    let resizedClone = try await service.cloneVM(
+        from: source,
+        named: "resized-copy",
+        cpuCount: 2,
+        memoryGiB: 4
+    )
+    #expect(resizedClone.metadata.cpuCount == 2)
+    #expect(resizedClone.metadata.memorySizeBytes == 4 * oneGiB)
+    #expect(try Data(contentsOf: sourceBundle.metadataURL) == sourceMetadataData)
+}
+
+@Test
+func cloneVMRejectsInvalidSizingBeforeCopying() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let sourceURL = root.appendingPathComponent("template.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let metadata = VMMetadata(
+        name: "template",
+        cpuCount: 6,
+        memorySizeBytes: 12 * oneGiB,
+        diskSizeBytes: 80 * oneGiB,
+        displayWidth: 1440,
+        displayHeight: 900,
+        bootstrapShareEnabled: false,
+        macAddress: "02:00:00:00:00:01"
+    )
+    let sourceBundle = VMBundle(url: sourceURL)
+    try sourceBundle.writeMetadata(metadata)
+    let sourceMetadataData = try Data(contentsOf: sourceBundle.metadataURL)
+
+    let service = MacVMService(rootDirectory: root)
+    let source = ManagedVM(bundleURL: sourceURL, metadata: metadata)
+    let maximumCPUCount = Int(VZVirtualMachineConfiguration.maximumAllowedCPUCount)
+    let maximumMemoryGiB = Int(VZVirtualMachineConfiguration.maximumAllowedMemorySize / oneGiB)
+    let invalidRequests: [(name: String, cpuCount: Int?, memoryGiB: Int?)] = [
+        ("zero-cpu", 0, nil),
+        ("too-many-cpus", maximumCPUCount + 1, nil),
+        ("zero-memory", nil, 0),
+        ("too-much-memory", nil, maximumMemoryGiB + 1),
+        ("overflow-memory", nil, Int.max),
+    ]
+
+    for request in invalidRequests {
+        do {
+            _ = try await service.cloneVM(
+                from: source,
+                named: request.name,
+                cpuCount: request.cpuCount,
+                memoryGiB: request.memoryGiB
+            )
+            Issue.record("Expected invalid clone sizing to be rejected for \(request.name)")
+        } catch {
+            #expect(!error.localizedDescription.isEmpty)
+        }
+
+        let destination = root.appendingPathComponent("\(request.name).macvm", isDirectory: true)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    #expect(try Data(contentsOf: sourceBundle.metadataURL) == sourceMetadataData)
+    let temporaryEntries = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        .filter { $0.hasPrefix(".clone-") }
+    #expect(temporaryEntries.isEmpty)
+}
+
+@Test
 func cloneVMSkipsUnreadableGuestSharedMetadataWithoutChangingSource() async throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)

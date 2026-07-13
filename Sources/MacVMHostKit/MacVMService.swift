@@ -348,15 +348,23 @@ public final class MacVMService: Sendable {
 
     /// Clone a stopped VM into a new bundle. Persistent guest and platform
     /// state is copied, while macvm's bundle identity, creation date, network
-    /// identity, and ephemeral runtime descriptors are refreshed.
+    /// identity, and ephemeral runtime descriptors are refreshed. CPU and
+    /// memory inherit from the source unless explicitly overridden.
     public func cloneVM(
         from source: ManagedVM,
         named name: String,
+        cpuCount: Int? = nil,
+        memoryGiB: Int? = nil,
         progress: VMOperationHandler? = nil
     ) async throws -> ManagedVM {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw MacVMError.invalidName
         }
+
+        if let cpuCount {
+            try Self.validateCloneCPUCount(cpuCount)
+        }
+        let memorySizeBytes = try memoryGiB.map(Self.cloneMemorySizeBytes(fromGiB:))
 
         try storage.ensureRootDirectories()
         let destinationURL = storage.bundleURL(for: name)
@@ -384,6 +392,12 @@ public final class MacVMService: Sendable {
         metadata.name = name
         metadata.createdAt = Date()
         metadata.macAddress = VZMACAddress.randomLocallyAdministered().string
+        if let cpuCount {
+            metadata.cpuCount = cpuCount
+        }
+        if let memorySizeBytes {
+            metadata.memorySizeBytes = memorySizeBytes
+        }
 
         progress?(.status("Cloning \(source.metadata.name)..."))
         return try await Task.detached {
@@ -406,6 +420,39 @@ public final class MacVMService: Sendable {
             progress?(.status("Clone complete."))
             return ManagedVM(bundleURL: destinationURL, metadata: metadata)
         }.value
+    }
+
+    private static func validateCloneCPUCount(_ cpuCount: Int) throws {
+        guard cpuCount > 0 else {
+            throw MacVMError.invalidCPUCount(cpuCount)
+        }
+
+        let minimum = Int(VZVirtualMachineConfiguration.minimumAllowedCPUCount)
+        let maximum = Int(VZVirtualMachineConfiguration.maximumAllowedCPUCount)
+        guard (minimum...maximum).contains(cpuCount) else {
+            throw MacVMError.message(
+                "CPU count must be between \(minimum) and \(maximum). Received: \(cpuCount)"
+            )
+        }
+    }
+
+    private static func cloneMemorySizeBytes(fromGiB memoryGiB: Int) throws -> UInt64 {
+        guard memoryGiB > 0 else {
+            throw MacVMError.invalidMemoryGiB(memoryGiB)
+        }
+
+        let (bytes, overflow) = UInt64(memoryGiB).multipliedReportingOverflow(by: oneGiB)
+        let minimumBytes = VZVirtualMachineConfiguration.minimumAllowedMemorySize
+        let maximumBytes = VZVirtualMachineConfiguration.maximumAllowedMemorySize
+        guard !overflow, (minimumBytes...maximumBytes).contains(bytes) else {
+            let minimumGiB = max(1, Int((minimumBytes + oneGiB - 1) / oneGiB))
+            let maximumGiB = Int(maximumBytes / oneGiB)
+            throw MacVMError.message(
+                "Memory size must be between \(minimumGiB) and \(maximumGiB) GiB. Received: \(memoryGiB) GiB"
+            )
+        }
+
+        return bytes
     }
 
     private static func diskSizeBytes(fromGiB diskGiB: Int) throws -> UInt64 {

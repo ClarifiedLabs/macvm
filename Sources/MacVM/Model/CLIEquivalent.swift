@@ -49,8 +49,20 @@ enum CLIEquivalent {
         "macvm rm \(name)"
     }
 
-    static func clone(_ source: String, name: String) -> String {
-        "macvm clone \(source) --name \(name.isEmpty ? "<name>" : name)"
+    static func clone(
+        _ source: String,
+        name: String,
+        cpuCount: Int? = nil,
+        memoryGiB: Int? = nil
+    ) -> String {
+        var command = "macvm clone \(source) --name \(name.isEmpty ? "<name>" : name)"
+        if let cpuCount {
+            command += " --cpu \(cpuCount)"
+        }
+        if let memoryGiB {
+            command += " --memory-gi-b \(memoryGiB)"
+        }
+        return command
     }
 
     static func autostartStatus(_ name: String) -> String {

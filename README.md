@@ -92,9 +92,13 @@ it instead of installing macOS again:
 
 ```bash
 macvm shutdown dev-01
-macvm clone dev-01 --name dev-02
+macvm clone dev-01 --name dev-02 --cpu 4 --memory-gi-b 8
 macvm run dev-02
 ```
+
+The `--cpu` and `--memory-gi-b` options can be used independently. Omit either
+option to inherit that value from the source VM. The MacVM app exposes the same
+controls in its clone sheet.
 
 On APFS, macvm uses copy-on-write clones for the installed disk and other
 files, so the initial clone is fast and shares unchanged storage blocks. Other
@@ -102,10 +106,11 @@ filesystems fall back to ordinary copies. Leave enough free space for both VMs
 to diverge over time.
 
 The clone inherits the guest accounts, tools, hostname, machine identifier,
-SSH state, VM sizing, setup metadata, and shared files. It receives a new
-macvm UUID, creation date, and MAC address. Runtime session files and launch on
-boot are not copied. The source must remain stopped for the duration of the
-clone, and Apple Account services may require reauthentication.
+SSH state, any VM sizing that was not overridden, setup metadata, and shared
+files. It receives a new macvm UUID, creation date, and MAC address. Runtime
+session files and launch on boot are not copied. The source must remain stopped
+for the duration of the clone, and Apple Account services may require
+reauthentication.
 
 ## MacVM App
 

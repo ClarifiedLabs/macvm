@@ -748,12 +748,23 @@ extension MacVMCommand {
         @Option(name: .long, help: "Name of the cloned VM bundle to create.")
         var name: String
 
+        @Option(name: .long, help: "Virtual CPU count. Inherits the source VM when omitted.")
+        var cpu: Int?
+
+        @Option(name: .long, help: "Memory size in GiB. Inherits the source VM when omitted.")
+        var memoryGiB: Int?
+
         func run() async throws {
             debugOptions.apply()
             let service = MacVMService(rootDirectory: storage.resolvedURL)
             let sourceVM = try service.resolveVM(identifier: source)
             let reporter = CLIReporter()
-            let clonedVM = try await service.cloneVM(from: sourceVM, named: name) { event in
+            let clonedVM = try await service.cloneVM(
+                from: sourceVM,
+                named: name,
+                cpuCount: cpu,
+                memoryGiB: memoryGiB
+            ) { event in
                 reporter.handle(event)
             }
 
