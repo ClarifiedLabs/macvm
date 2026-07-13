@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 struct CreateVMSheet: View {
     @Environment(AppStore.self) private var store
+    @State private var profilePickerPresented = false
 
     private static let displayOptions: [(label: String, width: Int, height: Int)] = [
         ("1280 × 720", 1280, 720),
@@ -14,137 +15,167 @@ struct CreateVMSheet: View {
 
     var body: some View {
         @Bindable var store = store
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 0) {
             Text("New Virtual Machine")
                 .font(.system(size: 15, weight: .semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 14)
 
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 12) {
-                GridRow {
-                    fieldLabel("Name:")
-                    TextField("dev-01", text: $store.draft.name)
-                        .textFieldStyle(.roundedBorder)
-                }
+            Divider()
 
-                GridRow(alignment: .top) {
-                    fieldLabel("Restore image:")
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            Picker("", selection: restoreImageSelection) {
-                                Text("Latest supported").tag("")
-                                ForEach(store.restoreImages) { entry in
-                                    Text(entry.name).tag(entry.url.path)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 12) {
+                        GridRow {
+                            fieldLabel("Name:")
+                            TextField("dev-01", text: $store.draft.name)
+                                .textFieldStyle(.roundedBorder)
+                        }
+
+                        GridRow(alignment: .top) {
+                            fieldLabel("Restore image:")
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 8) {
+                                    Picker("", selection: restoreImageSelection) {
+                                        Text("Latest supported").tag("")
+                                        ForEach(store.restoreImages) { entry in
+                                            Text(entry.name).tag(entry.url.path)
+                                        }
+                                        if let url = uncachedSelectedRestoreImage {
+                                            Text(url.lastPathComponent).tag(url.path)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .labelsHidden()
+                                    .frame(width: 240)
+
+                                    Button("Choose…") { chooseIPSW() }
+                                        .controlSize(.small)
+                                        .disabled(store.restoreImageImportInProgress)
+                                        .help("Import a local IPSW into the restore image cache")
                                 }
-                                if let url = uncachedSelectedRestoreImage {
-                                    Text(url.lastPathComponent).tag(url.path)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                            .frame(width: 240)
-
-                            Button("Choose…") { chooseIPSW() }
-                                .controlSize(.small)
-                                .disabled(store.restoreImageImportInProgress)
-                                .help("Import a local IPSW into the restore image cache")
-                        }
-                        Text(restoreImageSelectionDetail)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-
-                stepperRow(
-                    label: "CPU:",
-                    value: $store.draft.cpuCount,
-                    range: 2...12,
-                    step: 1,
-                    display: "\(store.draft.cpuCount)",
-                    hint: "host has \(ProcessInfo.processInfo.processorCount) cores"
-                )
-                stepperRow(
-                    label: "Memory:",
-                    value: $store.draft.memoryGiB,
-                    range: 4...64,
-                    step: 4,
-                    display: "\(store.draft.memoryGiB) GiB",
-                    hint: Self.hostMemoryHint()
-                )
-                stepperRow(
-                    label: "Disk:",
-                    value: $store.draft.diskGiB,
-                    range: 40...500,
-                    step: 20,
-                    display: "\(store.draft.diskGiB) GiB",
-                    hint: "fixed after create"
-                )
-
-                GridRow {
-                    fieldLabel("Display:")
-                    HStack(spacing: 8) {
-                        Picker("", selection: displaySelection) {
-                            ForEach(Self.displayOptions, id: \.label) { option in
-                                Text(option.label).tag(option.label)
+                                Text(restoreImageSelectionDetail)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.tertiary)
                             }
                         }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .fixedSize()
-                        Text("Retina 2x · \(store.draft.displayPixelWidth) × \(store.draft.displayPixelHeight) pixels")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
 
-                GridRow(alignment: .top) {
-                    Color.clear
-                        .frame(width: 110, height: 1)
-                        .gridColumnAlignment(.trailing)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle("Create shared folder with bootstrap script", isOn: $store.draft.createBootstrapShare)
-                        Toggle("Launch on boot", isOn: $store.draft.launchOnBoot)
-                        Toggle(isOn: $store.setupAfterInstall) {
-                            HStack(spacing: 4) {
-                                Text("Run setup after install")
-                                Text("— SSH-ready, admin/admin")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        if store.setupAfterInstall {
+                        stepperRow(
+                            label: "CPU:",
+                            value: $store.draft.cpuCount,
+                            range: 2...12,
+                            step: 1,
+                            display: "\(store.draft.cpuCount)",
+                            hint: "host has \(ProcessInfo.processInfo.processorCount) cores"
+                        )
+                        stepperRow(
+                            label: "Memory:",
+                            value: $store.draft.memoryGiB,
+                            range: 4...64,
+                            step: 4,
+                            display: "\(store.draft.memoryGiB) GiB",
+                            hint: Self.hostMemoryHint()
+                        )
+                        stepperRow(
+                            label: "Disk:",
+                            value: $store.draft.diskGiB,
+                            range: 40...500,
+                            step: 20,
+                            display: "\(store.draft.diskGiB) GiB",
+                            hint: "fixed after create"
+                        )
+
+                        GridRow {
+                            fieldLabel("Display:")
                             HStack(spacing: 8) {
-                                Text("Xcode:")
-                                    .foregroundStyle(.secondary)
-                                Picker("", selection: xcodeSelection) {
-                                    Text("Do not install").tag("")
-                                    ForEach(store.xcodeArchives) { entry in
-                                        Text(entry.name).tag(entry.url.path)
+                                Picker("", selection: displaySelection) {
+                                    ForEach(Self.displayOptions, id: \.label) { option in
+                                        Text(option.label).tag(option.label)
                                     }
                                 }
                                 .pickerStyle(.menu)
                                 .labelsHidden()
-                                .frame(width: 220)
-                                Button("Choose .xip…") { chooseXcode() }
-                                    .controlSize(.small)
-                                    .disabled(store.xcodeImportInProgress)
-                            }
-                            if let status = store.xcodeImportStatus, store.xcodeImportInProgress {
-                                Text(status)
+                                .fixedSize()
+                                Text("Retina 2x · \(store.draft.displayPixelWidth) × \(store.draft.displayPixelHeight) pixels")
                                     .font(.system(size: 11))
                                     .foregroundStyle(.tertiary)
                             }
-                            Divider()
-                                .padding(.vertical, 3)
-                            Text("Provisioning profiles")
-                                .font(.system(size: 12, weight: .semibold))
-                            ProvisioningProfilePicker()
+                        }
+
+                        GridRow(alignment: .top) {
+                            Color.clear
+                                .frame(width: 110, height: 1)
+                                .gridColumnAlignment(.trailing)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Toggle("Create shared folder with bootstrap script", isOn: $store.draft.createBootstrapShare)
+                                Toggle("Launch on boot", isOn: $store.draft.launchOnBoot)
+                                Toggle(isOn: $store.setupAfterInstall) {
+                                    HStack(spacing: 4) {
+                                        Text("Run setup after install")
+                                        Text("— SSH-ready, admin/admin")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                if store.setupAfterInstall {
+                                    HStack(spacing: 8) {
+                                        Text("Xcode:")
+                                            .foregroundStyle(.secondary)
+                                        Picker("", selection: xcodeSelection) {
+                                            Text("Do not install").tag("")
+                                            ForEach(store.xcodeArchives) { entry in
+                                                Text(entry.name).tag(entry.url.path)
+                                            }
+                                        }
+                                        .pickerStyle(.menu)
+                                        .labelsHidden()
+                                        .frame(width: 220)
+                                        Button("Choose .xip…") { chooseXcode() }
+                                            .controlSize(.small)
+                                            .disabled(store.xcodeImportInProgress)
+                                    }
+                                    if let status = store.xcodeImportStatus, store.xcodeImportInProgress {
+                                        Text(status)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    HStack(spacing: 8) {
+                                        Text("Profiles:")
+                                            .foregroundStyle(.secondary)
+                                        Button {
+                                            profilePickerPresented = true
+                                        } label: {
+                                            HStack(spacing: 6) {
+                                                Text(profileSelectionSummary)
+                                                    .lineLimit(1)
+                                                Spacer(minLength: 4)
+                                                Image(systemName: "chevron.down")
+                                                    .font(.system(size: 9, weight: .semibold))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .frame(width: 200)
+                                        }
+                                        .controlSize(.small)
+                                        .popover(isPresented: $profilePickerPresented) {
+                                            profilePickerPopover
+                                        }
+                                        .accessibilityLabel("Provisioning profiles, \(profileSelectionSummary)")
+                                        .help("Choose provisioning profiles")
+                                    }
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 13))
                         }
                     }
-                    .toggleStyle(.checkbox)
-                    .font(.system(size: 13))
+
+                    CLICommandStrip(command: store.createCommandPreview)
                 }
+                .padding(20)
             }
 
-            CLICommandStrip(command: store.createCommandPreview)
-
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") {
@@ -158,9 +189,21 @@ struct CreateVMSheet: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!createEnabled)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
-        .padding(20)
-        .frame(width: 500)
+        .frame(width: 500, height: 560)
+    }
+
+    nonisolated static func provisioningProfileSummary(selectedNames: [String]) -> String {
+        switch selectedNames.count {
+        case 0:
+            "None selected"
+        case 1:
+            selectedNames[0]
+        default:
+            "\(selectedNames.count) selected"
+        }
     }
 
     private var createEnabled: Bool {
@@ -182,6 +225,48 @@ struct CreateVMSheet: View {
         let bytesPerGiB = 1024.0 * 1024.0 * 1024.0
         let memoryGiB = Int((Double(physicalMemoryBytes) / bytesPerGiB).rounded())
         return "host has \(memoryGiB) GB"
+    }
+
+    private var profileSelectionSummary: String {
+        let selectedNames = store.selectedProfileIDs.map { id in
+            store.profileCatalog.profile(id: id)?.manifest.name ?? id
+        }
+        return Self.provisioningProfileSummary(selectedNames: selectedNames)
+    }
+
+    private var profilePickerPopover: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Provisioning Profiles")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text(profileSelectionSummary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .padding(16)
+
+            Divider()
+
+            ScrollView {
+                ProvisioningProfilePicker()
+                    .padding(16)
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Done") {
+                    profilePickerPresented = false
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .frame(width: 440, height: 460)
     }
 
     private func fieldLabel(_ text: String) -> some View {

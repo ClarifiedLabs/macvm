@@ -443,6 +443,17 @@ func createSheetMemoryHintReportsHostMemory() {
     #expect(CreateVMSheet.hostMemoryHint(physicalMemoryBytes: memoryBytes) == "host has 24 GB")
 }
 
+@Test
+func createSheetUsesBoundedProvisioningProfileSummary() {
+    #expect(CreateVMSheet.provisioningProfileSummary(selectedNames: []) == "None selected")
+    #expect(CreateVMSheet.provisioningProfileSummary(selectedNames: ["Codex"]) == "Codex")
+    #expect(
+        CreateVMSheet.provisioningProfileSummary(
+            selectedNames: ["Codex", "Go", "Python", "Rust"]
+        ) == "4 selected"
+    )
+}
+
 // MARK: - SidebarInitialFocusPolicy
 
 @Test
