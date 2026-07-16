@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression checks for installer package construction."""
+"""Regression checks for release artifact construction."""
 
 from __future__ import annotations
 
@@ -20,6 +20,32 @@ def main() -> None:
     )
     require_contains(package_script, 'APP_SCHEME="MacVM App"', "package-release.sh")
     require_contains(package_script, 'APP_NAME="MacVM"', "package-release.sh")
+    require_contains(
+        package_script,
+        'DMG_PATH="$OUTPUT_DIR/MacVM-$VERSION.dmg"',
+        "package-release.sh",
+    )
+    require_contains(package_script, "hdiutil create", "package-release.sh")
+    require_contains(
+        package_script,
+        'ditto --norsrc --noextattr "$APP_PATH" "$DMG_ROOT/$APP_NAME.app"',
+        "package-release.sh",
+    )
+    require_contains(
+        package_script,
+        'ln -s /Applications "$DMG_ROOT/Applications"',
+        "package-release.sh",
+    )
+    require_contains(
+        package_script,
+        'notarize_item "$DMG_PATH" "MacVM disk image"',
+        "package-release.sh",
+    )
+    require_contains(
+        package_script,
+        "spctl --assess --type open --context context:primary-signature",
+        "package-release.sh",
+    )
     require_contains(project, "PRODUCT_MODULE_NAME = MacVM;", "project.pbxproj")
     require_contains(project, "PRODUCT_NAME = MacVM;", "project.pbxproj")
     require_contains(project, "dstPath = Contents/Helpers;", "project.pbxproj")
@@ -39,6 +65,8 @@ def main() -> None:
         raise AssertionError("package-release.sh must not stage a standalone CLI product")
     if 'PAYLOAD_ROOT/usr/local/bin/$RESOURCE_BUNDLE_NAME' in package_script:
         raise AssertionError("package-release.sh must not stage a loose resource bundle")
+    if 'DMG_ROOT/usr/local/bin' in package_script:
+        raise AssertionError("Homebrew disk image must not contain the package CLI link")
 
     with component_plist_path.open("rb") as component_plist_file:
         components = plistlib.load(component_plist_file)

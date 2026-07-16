@@ -11,7 +11,7 @@ MacVM is an Xcode project for macOS virtualization. It is not SwiftPM-driven; do
 - `Tests/MacVMHostKitTests/` and `Tests/MacVMTests/`: Swift Testing tests
 - `Sources/MacVMHostKit/Resources/Bootstrap/`: guest bootstrap resources
 - `Support/macvm.entitlements`: virtualization entitlement used by CLI and app
-- `scripts/package-release.sh`: Developer ID signing, notarization, and installer packaging
+- `scripts/package-release.sh`: Developer ID signing, notarization, disk-image creation, and installer packaging
 
 ## Build And Test
 
@@ -28,9 +28,9 @@ make dist-app
 make package
 ```
 
-`make build`, `make build-cli`, and `make build-app` produce locally signed Debug products in Xcode's derived data without running tests. `make test` runs the Xcode test suite. Bare `make` and `make dist` run tests and stage Release builds of both `dist/macvm` and `dist/MacVM.app` with the local Xcode signing configuration. Use `make dist-cli` or `make dist-app` to test and stage only one product. `make package` builds a local unsigned installer package for payload testing.
+`make build`, `make build-cli`, and `make build-app` produce locally signed Debug products in Xcode's derived data without running tests. `make test` runs the Xcode test suite. Bare `make` and `make dist` run tests and stage Release builds of both `dist/macvm` and `dist/MacVM.app` with the local Xcode signing configuration. Use `make dist-cli` or `make dist-app` to test and stage only one product. `make package` builds local unsigned `.dmg` and `.pkg` release artifacts for layout testing.
 
-The public release package is produced in GitHub Actions with Developer ID signing and notarization.
+Public release artifacts are produced in GitHub Actions with Developer ID signing and notarization. Homebrew consumes the disk image; manual installations use the package.
 
 ## Signing
 
@@ -40,10 +40,13 @@ Public releases use `scripts/package-release.sh` with:
 
 - Developer ID Application signing for `/Applications/MacVM.app/Contents/Helpers/macvm`
 - Developer ID Application signing for `/Applications/MacVM.app` after its nested helper
+- Developer ID Application signing for `MacVM-<version>.dmg`
 - Developer ID Installer signing for `MacVM-<version>.pkg`
-- Apple notarization and stapling for the final package
+- Apple notarization and stapling for both release artifacts
 
-The package installs:
+The Homebrew disk image contains `MacVM.app`. Its cask moves the app into Homebrew's configured app directory and links `MacVM.app/Contents/Helpers/macvm` into `$(brew --prefix)/bin`.
+
+The manual package installs:
 
 ```text
 /Applications/MacVM.app
@@ -52,7 +55,7 @@ The package installs:
 /usr/local/bin/macvm -> ../../../Applications/MacVM.app/Contents/Helpers/macvm
 ```
 
-The app target embeds the CLI with Code Sign On Copy. Release packaging signs the helper first and the outer app last; `/usr/local/bin/macvm` is only a symlink, so the app and CLI cannot drift between versions.
+The app target embeds the CLI with Code Sign On Copy. Release packaging signs the helper first and the outer app last. Both installation channels link that same helper rather than copying another CLI, so the app and CLI cannot drift between versions.
 
 ## Versioning
 

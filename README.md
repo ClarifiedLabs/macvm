@@ -2,10 +2,10 @@
 
 MacVM creates and runs macOS virtual machines on Apple silicon Macs.
 
-It ships as a signed and notarized installer package with:
+It ships as a signed and notarized Mac app with:
 
 - `MacVM`, a native SwiftUI app installed in `/Applications`
-- `macvm`, its bundled command-line helper exposed at `/usr/local/bin/macvm`
+- `macvm`, its bundled command-line helper linked into Homebrew's bin directory or `/usr/local/bin`
 
 MacVM uses Apple's Virtualization framework, creates each VM from a macOS restore image, and stores VMs as ordinary bundles on disk.
 
@@ -25,15 +25,18 @@ Install with Homebrew:
 brew install --cask clarifiedlabs/tap/macvm
 ```
 
+Homebrew installs `MacVM.app` in its configured app directory (normally
+`/Applications`) and manages the `macvm` link in `$(brew --prefix)/bin`.
+
 To use the optional provisioning profiles, install Ansible on the host:
 
 ```bash
 brew install ansible
 ```
 
-Alternatively, download the latest `MacVM-<version>.pkg` from GitHub Releases, open it, and complete the installer.
+Alternatively, download the latest `MacVM-<version>.pkg` from GitHub Releases, open it, and complete the installer. The `.dmg` release artifact is the app image consumed by the Homebrew cask.
 
-The package installs:
+The manual package installs:
 
 ```text
 /Applications/MacVM.app
