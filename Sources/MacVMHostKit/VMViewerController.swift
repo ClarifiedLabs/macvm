@@ -4,13 +4,12 @@ import Foundation
 import MacVMPrivateVZ
 import Virtualization
 
-/// Owns one viewer window and its VM: the `NSWindow` + `VZVirtualMachineView`,
-/// the `VZVirtualMachine` lifecycle, window-geometry persistence, live display
-/// state publishing, and clipboard-over-RFB transfers.
+/// Owns one VM and its optional native display: the `VZVirtualMachine`
+/// lifecycle, VNC publication, lazily created `NSWindow` +
+/// `VZVirtualMachineView`, geometry persistence, and clipboard transfers.
 ///
-/// Deliberately free of `NSApplication` concerns so it can serve both the CLI
-/// viewer child process (`VMViewer` wraps it and owns the app lifecycle) and a
-/// host app that presents many viewer windows inside one `NSApplication`.
+/// Deliberately free of `NSApplication` lifecycle concerns so MacVM.app can
+/// retain many runtimes and add a native display after a headless start.
 @MainActor
 public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMenuItemValidation, NSWindowDelegate {
     private struct VMSnapshot {
@@ -28,6 +27,7 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     private let managedVM: ManagedVM
     private let bundle: VMBundle
     private let vmName: String
+    private let requestedVNCPort: UInt
     private var startInRecovery = false
     public private(set) var window: NSWindow?
     private var displayView: VZVirtualMachineView?
@@ -37,6 +37,7 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     private var vncSession: VNCSession?
     private var clipboardTransferInProgress = false
     private var startHeartbeatTimer: Timer?
+    private var startupFailureMessage: String?
     private var lastPublishedDisplaySize: DisplayRuntimeSize?
     private var lastPersistedWindowFrame: NSRect?
     private var finished = false
@@ -46,10 +47,15 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     /// closes the window and releases the controller.
     public var onStop: (@MainActor () -> Void)?
 
-    public init(managedVM: ManagedVM, processRuntimeRole: VMProcessRuntimeRole? = nil) {
+    public init(
+        managedVM: ManagedVM,
+        requestedVNCPort: UInt = 0,
+        processRuntimeRole: VMProcessRuntimeRole? = nil
+    ) {
         self.managedVM = managedVM
         self.bundle = VMBundle(url: managedVM.bundleURL)
         self.vmName = managedVM.metadata.name
+        self.requestedVNCPort = requestedVNCPort
         self.processRuntimeRole = processRuntimeRole
     }
 
@@ -59,6 +65,14 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
 
     public var isFinished: Bool {
         finished
+    }
+
+    public var hasWindow: Bool {
+        window != nil
+    }
+
+    public var publishedVNCSession: VNCSession? {
+        vncSession
     }
 
     /// Build the window (restoring persisted geometry) without starting the VM.
@@ -78,7 +92,28 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     /// Create the `VZVirtualMachine` and boot it into the existing window.
     public func start(startInRecovery: Bool = false) throws {
         self.startInRecovery = startInRecovery
+        startupFailureMessage = nil
         try createAndStartVirtualMachine()
+    }
+
+    /// Wait until Virtualization.framework reports that the VM is running, so
+    /// control clients receive startup failures rather than a premature success.
+    public func waitUntilRunning(timeout: TimeInterval = 30) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let startupFailureMessage {
+                throw MacVMError.message(startupFailureMessage)
+            }
+            if virtualMachine?.state == .running {
+                return
+            }
+            if finished {
+                throw MacVMError.message("The VM stopped before reaching the running state.")
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        } while Date() < deadline
+
+        throw MacVMError.message("Timed out waiting for \(vmName) to start.")
     }
 
     /// Convenience for hosts: build the window, boot the VM, and return the
@@ -87,6 +122,15 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     public func makeWindowAndStart(startInRecovery: Bool = false) throws -> NSWindow {
         let window = try makeWindow()
         try start(startInRecovery: startInRecovery)
+        return window
+    }
+
+    /// Lazily build and bring the native display window to the front. This can
+    /// attach a VZVirtualMachineView after a headless VM has already started.
+    @discardableResult
+    public func makeWindowAndShow() throws -> NSWindow {
+        let window = try makeWindow()
+        window.makeKeyAndOrderFront(nil)
         return window
     }
 
@@ -106,8 +150,13 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
 
     /// Force the VM to power off without asking the guest OS to shut down.
     public func stop() async {
-        if let virtualMachine, virtualMachine.state == .running || virtualMachine.state == .paused {
-            try? await VirtualizationAsync.stop(virtualMachine)
+        try? await stopReportingErrors()
+    }
+
+    /// Force-stop variant used by acknowledged app control requests.
+    public func stopReportingErrors() async throws {
+        if let virtualMachine, virtualMachine.canStop {
+            try await VirtualizationAsync.stop(virtualMachine)
         }
         finish()
     }
@@ -141,7 +190,10 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         DebugLog.log("VM stopped with error for \(vmName): \(error.localizedDescription)")
         fputs("VM stopped with error: \(error.localizedDescription)\n", stderr)
         DispatchQueue.main.async {
-            MainActor.assumeIsolated { self.finish() }
+            MainActor.assumeIsolated {
+                self.startupFailureMessage = error.localizedDescription
+                self.finish()
+            }
         }
     }
 
@@ -184,6 +236,7 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         displayView.capturesSystemKeys = true
         displayView.automaticallyReconfiguresDisplay = true
         self.displayView = displayView
+        displayView.virtualMachine = virtualMachine
 
         let baseWidth = min(CGFloat(managedVM.metadata.displayWidth), 1600)
         let baseHeight = min(CGFloat(managedVM.metadata.displayHeight), 1000)
@@ -330,7 +383,11 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         // _VZVNCServer binds all interfaces, so every viewer session must use
         // a per-run password even when its primary display is a local window.
         let password = Self.randomVNCPassword()
-        let server = try MacVMVNCServer(virtualMachine: virtualMachine, port: 0, password: password)
+        let server = try MacVMVNCServer(
+            virtualMachine: virtualMachine,
+            port: requestedVNCPort,
+            password: password
+        )
         do {
             let port = try server.start().intValue
             vncServer = server
@@ -348,6 +405,17 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
                     role: processRuntimeRole,
                     pid: getpid(),
                     startedAt: session.startedAt
+                ))
+            }
+            if displayView == nil {
+                try bundle.writeDisplayRuntimeState(VMDisplayRuntimeState(
+                    width: managedVM.metadata.displayWidth,
+                    height: managedVM.metadata.displayHeight,
+                    pixelWidth: managedVM.metadata.displayPixelWidth,
+                    pixelHeight: managedVM.metadata.displayPixelHeight,
+                    source: .headless,
+                    pid: getpid(),
+                    updatedAt: Date()
                 ))
             }
         } catch {
@@ -380,7 +448,10 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
             DebugLog.log("Failed to start VM \(vmName): \(error.localizedDescription)")
             fputs("Failed to start VM: \(error.localizedDescription)\n", stderr)
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self.finish() }
+                MainActor.assumeIsolated {
+                    self.startupFailureMessage = error.localizedDescription
+                    self.finish()
+                }
             }
         }
 

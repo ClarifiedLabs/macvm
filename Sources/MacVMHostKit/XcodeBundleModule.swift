@@ -6,6 +6,14 @@ extension Bundle {
         let bundleName = "macvm_MacVMHostKit"
         let bundleFileName = "\(bundleName).bundle"
         let fileManager = FileManager.default
+        let executableURL = CommandLine.arguments.first.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath()
+        }
+        let embeddedAppResourcesURL = executableURL.map {
+            $0.deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Resources", isDirectory: true)
+        }
 
         let candidates = [
             Bundle.main.resourceURL,
@@ -14,7 +22,8 @@ extension Bundle {
             Bundle(for: BundleFinder.self).resourceURL,
             Bundle(for: BundleFinder.self).bundleURL,
             Bundle(for: BundleFinder.self).bundleURL.deletingLastPathComponent(),
-            CommandLine.arguments.first.map { URL(fileURLWithPath: $0).deletingLastPathComponent() },
+            executableURL?.deletingLastPathComponent(),
+            embeddedAppResourcesURL,
         ].compactMap { $0 }
 
         for candidate in candidates {

@@ -38,20 +38,21 @@ Local Debug and Release builds use ad-hoc signing with `Support/macvm.entitlemen
 
 Public releases use `scripts/package-release.sh` with:
 
-- Developer ID Application signing for `/usr/local/bin/macvm`
-- Developer ID Application signing for `/Applications/MacVM.app`
+- Developer ID Application signing for `/Applications/MacVM.app/Contents/Helpers/macvm`
+- Developer ID Application signing for `/Applications/MacVM.app` after its nested helper
 - Developer ID Installer signing for `MacVM-<version>.pkg`
 - Apple notarization and stapling for the final package
 
 The package installs:
 
 ```text
-/usr/local/bin/macvm
-/usr/local/bin/macvm_MacVMHostKit.bundle
 /Applications/MacVM.app
+/Applications/MacVM.app/Contents/Helpers/macvm
+/Applications/MacVM.app/Contents/Resources/macvm_MacVMHostKit.bundle
+/usr/local/bin/macvm -> ../../../Applications/MacVM.app/Contents/Helpers/macvm
 ```
 
-The resource bundle is installed beside the CLI because `MacVMHostKit` loads bootstrap resources relative to the executable.
+The app target embeds the CLI with Code Sign On Copy. Release packaging signs the helper first and the outer app last; `/usr/local/bin/macvm` is only a symlink, so the app and CLI cannot drift between versions.
 
 ## Versioning
 
@@ -63,8 +64,8 @@ The Xcode project owns the release version through `MARKETING_VERSION`.
 
 ## Runtime Ownership Invariants
 
-`run`, `run --headless`, and `setup` own a `VZVirtualMachine`. Every owner publishes a password-protected `Runtime/vnc-session.json`. Entitlement-free client commands such as `attach`, `screenshot`, `type`, `keys`, `vnc`, `wait-text`, and `click-text` attach to that live session over loopback RFB and should error if no session is live. The private server itself binds beyond loopback, so the password is mandatory.
+`MacVM.app` owns every ordinary `run` and `run --headless` VM in-process. The CLI resolves the VM to a canonical full bundle path and uses the per-user file-backed control queue for acknowledged run, attach, and stop requests. `--headless` controls only the initial presentation: `attach` adds a `VZVirtualMachineView` to the existing VM without restarting it. Setup can still use its dedicated `HeadlessRunner` ownership path.
 
-`MacVM` hosts VMs in-process through `VMViewerController`, `HeadlessRunner`, and `MacVMService.provisionSetup`. These runtimes use the `manager` owner role so an external `macvm stop` never terminates the multi-VM app. App power actions call the specific in-process owner. `VMViewer` remains the CLI child-process wrapper around `VMViewerController`; keep `macvm run` behavior identical when touching either. Native display close requests always hide the window without ending the VM.
+Every owner publishes a password-protected `Runtime/vnc-session.json`. Entitlement-free automation commands such as `screenshot`, `type`, `keys`, `vnc`, `wait-text`, and `click-text` attach to that live session over loopback RFB and should error if no session is live. The private server itself binds beyond loopback, so the password is mandatory. App runtimes use the `manager` owner role; never signal that PID to stop one VM. Route the request to the app and stop its path-keyed `VMViewerController` instead. Native display close requests always hide the window without ending the VM.
 
 All private Virtualization.framework symbols must stay isolated in `Sources/MacVMPrivateVZ/` and be resolved at runtime.

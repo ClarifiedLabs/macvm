@@ -1,15 +1,27 @@
 import AppKit
+import MacVMHostKit
 import SwiftUI
 
 @main
 struct MacVMApp: App {
-    @State private var store = AppStore()
+    @NSApplicationDelegateAdaptor(MacVMApplicationDelegate.self) private var applicationDelegate
+    @State private var store: AppStore
+    private let controlOnlyLaunch: Bool
 
     init() {
-        // Unbundled executable launches have no app bundle, so AppKit starts
-        // with the accessory activation policy.
-        if Bundle.main.bundleIdentifier == nil {
-            DispatchQueue.main.async {
+        let controlOnlyLaunch = CommandLine.arguments.contains(
+            MacVMAppControlQueue.controlOnlyArgument
+        )
+        self.controlOnlyLaunch = controlOnlyLaunch
+        let store = AppStore(controlQueue: MacVMAppControlQueue())
+        _store = State(initialValue: store)
+        MacVMApplicationDelegate.store = store
+        MacVMApplicationDelegate.controlOnlyLaunch = controlOnlyLaunch
+
+        DispatchQueue.main.async {
+            if controlOnlyLaunch {
+                NSApplication.shared.setActivationPolicy(.accessory)
+            } else if Bundle.main.bundleIdentifier == nil {
                 NSApplication.shared.setActivationPolicy(.regular)
                 NSApplication.shared.activate(ignoringOtherApps: true)
             }
@@ -33,6 +45,11 @@ struct MacVMApp: App {
                 }
                 .disabled(!(store.activeViewer?.isRunning ?? false))
             }
+        }
+
+        Settings {
+            MacVMSettingsView()
+                .environment(store)
         }
     }
 }

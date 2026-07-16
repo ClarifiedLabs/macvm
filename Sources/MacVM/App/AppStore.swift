@@ -69,6 +69,11 @@ enum VMShutdownRoute: Equatable {
     case ssh
 }
 
+private struct AppRuntimeError: LocalizedError {
+    var message: String
+    var errorDescription: String? { message }
+}
+
 /// Single source of truth for the manager window: the VM list, per-VM liveness,
 /// in-app operations (install / setup / viewer windows), the create-sheet draft,
 /// and the CLI-equivalent bar.
@@ -122,17 +127,25 @@ final class AppStore {
     private(set) var xcodeImportStatus: String?
     private(set) var xcodeImportInProgress = false
 
-    private var viewers: [String: VMViewerController] = [:]
+    private var runtimes: [String: VMViewerController] = [:]
     private var headlessRunners: [String: HeadlessRunner] = [:]
+    private let controlQueue: MacVMAppControlQueue?
     private var refreshTimer: Timer?
+    private var controlTimer: Timer?
+    private var isProcessingControlRequest = false
+    private var isTerminating = false
     private var copyResetTask: Task<Void, Never>?
     private var didTriggerLocalNetworkPrivacyAlert = false
 
     init(
-        service: MacVMService = MacVMService(),
+        service: MacVMService = MacVMService(
+            rootDirectory: MacVMSettings.shared.configuredVMRootDirectory
+        ),
+        controlQueue: MacVMAppControlQueue? = nil,
         triggerLocalNetworkPrivacyAlert: @escaping () -> Void = LocalNetworkPrivacy.triggerAlert
     ) {
         self.service = service
+        self.controlQueue = controlQueue
         self.triggerLocalNetworkPrivacyAlert = triggerLocalNetworkPrivacyAlert
         self.draft = service.defaultDraft()
         self.profileCatalog = service.provisioningCatalog()
@@ -141,6 +154,9 @@ final class AppStore {
         selection = vms.first.map { .vm($0.metadata.name) } ?? .images
         updateCommandForSelection()
         startRefreshTimer()
+        if controlQueue != nil {
+            startControlTimer()
+        }
     }
 
     func managerWindowDidAppear() {
@@ -171,7 +187,7 @@ final class AppStore {
             cloning: clones[name] != nil,
             installing: installs[name] != nil,
             settingUp: setups[name] != nil,
-            viewerActive: viewers[name] != nil,
+            viewerActive: runtimeController(forName: name) != nil,
             liveProcess: liveProcesses[name],
             liveDisplay: liveDisplays[name],
             liveSession: liveSessions[name]
@@ -201,12 +217,60 @@ final class AppStore {
 
     /// The viewer controller whose window is key, for the VM menu commands.
     var activeViewer: VMViewerController? {
-        viewers.values.first { $0.window?.isKeyWindow == true }
-            ?? (viewers.count == 1 ? viewers.values.first : nil)
+        let viewers = runtimes.values.filter(\.hasWindow)
+        return viewers.first { $0.window?.isKeyWindow == true }
+            ?? (viewers.count == 1 ? viewers.first : nil)
     }
 
     func hasViewer(forName name: String) -> Bool {
-        viewers[name] != nil
+        runtimeController(forName: name)?.hasWindow == true
+    }
+
+    private func runtimeKey(for vm: ManagedVM) -> String {
+        vm.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private func runtimeController(for vm: ManagedVM) -> VMViewerController? {
+        runtimes[runtimeKey(for: vm)]
+    }
+
+    private func runtimeController(forName name: String) -> VMViewerController? {
+        vm(named: name).flatMap(runtimeController(for:))
+    }
+
+    var ownedRuntimeCount: Int {
+        runtimes.count + headlessRunners.count
+    }
+
+    func prepareForTermination() {
+        isTerminating = true
+        controlTimer?.invalidate()
+        controlTimer = nil
+
+        guard let controlQueue,
+              let requests = try? controlQueue.pendingRequests() else { return }
+        for request in requests {
+            let response = controlFailure(
+                request,
+                "MacVM is quitting and did not handle this command."
+            )
+            try? controlQueue.complete(request, with: response)
+        }
+    }
+
+    func stopAllOwnedRuntimes() async {
+        let controllers = Array(runtimes.values)
+        let runners = Array(headlessRunners.values)
+        for controller in controllers {
+            await controller.stop()
+        }
+        for runner in runners {
+            await runner.stop()
+        }
+        runtimes.removeAll()
+        headlessRunners.removeAll()
+        setups.removeAll()
+        refresh()
     }
 
     /// The VM instance owned by an in-process setup runner. Setup UI can attach
@@ -227,12 +291,124 @@ final class AppStore {
         refreshTimer = timer
     }
 
+    private func startControlTimer() {
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.processPendingControlRequest()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        controlTimer = timer
+    }
+
+    private func processPendingControlRequest() {
+        guard !isTerminating, !isProcessingControlRequest else { return }
+
+        guard let controlQueue else { return }
+        let request: MacVMAppControlRequest
+        do {
+            guard let pending = try controlQueue.pendingRequests().first else { return }
+            request = pending
+        } catch {
+            DebugLog.log("Unable to read app control requests: \(error.localizedDescription)")
+            return
+        }
+
+        isProcessingControlRequest = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let response = await handleControlRequest(request)
+            do {
+                try controlQueue.complete(request, with: response)
+            } catch {
+                DebugLog.log("Unable to complete app control request: \(error.localizedDescription)")
+            }
+            isProcessingControlRequest = false
+            processPendingControlRequest()
+        }
+    }
+
+    private func handleControlRequest(_ request: MacVMAppControlRequest) async -> MacVMAppControlResponse {
+        guard !isTerminating else {
+            return controlFailure(request, "MacVM is quitting and cannot handle this command.")
+        }
+        guard request.protocolVersion == MacVMAppControlRequest.currentProtocolVersion else {
+            return controlFailure(request, "The CLI uses an incompatible MacVM control protocol.")
+        }
+        guard Date().timeIntervalSince(request.createdAt) < MacVMAppControlRequest.validityInterval else {
+            return controlFailure(request, "The MacVM command request expired before the app could handle it.")
+        }
+
+        do {
+            let resolved = try service.resolveVM(identifier: request.bundlePath)
+            switch request.operation {
+            case .run(let headless, let recovery, let vncPort):
+                let vm = headless ? try service.ensureNetworkIdentity(resolved) : resolved
+                let controller = try startRuntime(
+                    vm,
+                    headless: headless,
+                    recovery: recovery,
+                    requestedVNCPort: vncPort
+                )
+                do {
+                    try await controller.waitUntilRunning()
+                } catch {
+                    await controller.stop()
+                    throw error
+                }
+                return MacVMAppControlResponse(
+                    requestID: request.id,
+                    succeeded: true,
+                    message: headless ? "Booting headless in MacVM." : "Opening in MacVM.",
+                    vmName: vm.metadata.name,
+                    vncURL: controller.publishedVNCSession?.vncURLString,
+                    ownerPID: getpid()
+                )
+
+            case .attach:
+                try attachRuntime(resolved)
+                return MacVMAppControlResponse(
+                    requestID: request.id,
+                    succeeded: true,
+                    message: "Attached in MacVM.",
+                    vmName: resolved.metadata.name,
+                    vncURL: service.liveVNCSession(for: resolved)?.vncURLString,
+                    ownerPID: getpid()
+                )
+
+            case .stop:
+                let ownerPID = service.liveVMProcessRuntimeState(for: resolved)?.pid
+                try await stopRuntime(resolved)
+                return MacVMAppControlResponse(
+                    requestID: request.id,
+                    succeeded: true,
+                    message: "Stopped in MacVM.",
+                    vmName: resolved.metadata.name,
+                    ownerPID: ownerPID
+                )
+            }
+        } catch {
+            return controlFailure(request, error.localizedDescription)
+        }
+    }
+
+    private func controlFailure(
+        _ request: MacVMAppControlRequest,
+        _ message: String
+    ) -> MacVMAppControlResponse {
+        MacVMAppControlResponse(
+            requestID: request.id,
+            succeeded: false,
+            message: message
+        )
+    }
+
     func refresh() {
         // Terminal callbacks normally remove local owners immediately. This is
         // a defensive reconciliation in case a callback was missed.
-        let finishedViewerNames = viewers.compactMap { $0.value.isFinished ? $0.key : nil }
-        for name in finishedViewerNames {
-            viewers[name] = nil
+        let finishedRuntimeKeys = runtimes.compactMap { $0.value.isFinished ? $0.key : nil }
+        for key in finishedRuntimeKeys {
+            runtimes[key] = nil
         }
         let finishedRunnerNames = headlessRunners.compactMap { $0.value.isFinished ? $0.key : nil }
         for name in finishedRunnerNames {
@@ -426,55 +602,111 @@ final class AppStore {
     }
 
     func attach(_ vm: ManagedVM) {
-        let name = vm.metadata.name
-        let route = Self.attachmentRoute(
-            hasNativeViewer: viewers[name] != nil,
-            session: liveSessions[name] ?? service.liveVNCSession(for: vm),
-            vmName: name
-        )
-        lastCommand = CLIEquivalent.attach(name)
-        switch route {
-        case .nativeViewer:
-            viewers[name]?.showWindow()
-        case .vnc(let vncURL):
-            guard let url = URL(string: vncURL), NSWorkspace.shared.open(url) else {
-                alertMessage = "Unable to open \(vncURL) with the system default handler."
-                return
-            }
-        case .unavailable(let message):
-            alertMessage = message
+        do {
+            try attachRuntime(vm)
+            lastCommand = CLIEquivalent.attach(vm.metadata.name)
+        } catch {
+            alertMessage = error.localizedDescription
         }
     }
 
     // MARK: - Run / viewer / power
 
     func runViewer(_ vm: ManagedVM, recovery: Bool = false) {
-        let name = vm.metadata.name
-        guard viewers[name] == nil else {
-            openViewer(vm)
-            return
-        }
         do {
-            let controller = VMViewerController(managedVM: vm, processRuntimeRole: .manager)
-            controller.onStop = { [weak self] in
-                guard let self else { return }
-                self.viewers[name]?.window?.orderOut(nil)
-                self.viewers[name] = nil
-                self.refresh()
+            if runtimeController(for: vm) != nil {
+                try attachRuntime(vm)
+            } else {
+                _ = try startRuntime(
+                    vm,
+                    headless: false,
+                    recovery: recovery,
+                    requestedVNCPort: 0
+                )
             }
-            let window = try controller.makeWindowAndStart(startInRecovery: recovery)
-            viewers[name] = controller
-            window.makeKeyAndOrderFront(nil)
-            lastCommand = CLIEquivalent.run(name, recovery: recovery)
+            lastCommand = CLIEquivalent.run(vm.metadata.name, recovery: recovery)
         } catch {
-            alertMessage = "Failed to start \(name): \(error.localizedDescription)"
+            alertMessage = "Failed to start \(vm.metadata.name): \(error.localizedDescription)"
         }
     }
 
     func openViewer(_ vm: ManagedVM) {
+        attach(vm)
+        lastCommand = CLIEquivalent.run(vm.metadata.name)
+    }
+
+    @discardableResult
+    private func startRuntime(
+        _ vm: ManagedVM,
+        headless: Bool,
+        recovery: Bool,
+        requestedVNCPort: UInt
+    ) throws -> VMViewerController {
+        let key = runtimeKey(for: vm)
+        guard runtimes[key] == nil, !service.hasLiveRuntime(for: vm) else {
+            throw AppRuntimeError(message:
+                "'\(vm.metadata.name)' is already running. Stop it first with: macvm stop \(vm.metadata.name)"
+            )
+        }
+
+        let controller = VMViewerController(
+            managedVM: vm,
+            requestedVNCPort: requestedVNCPort,
+            processRuntimeRole: .manager
+        )
+        controller.onStop = { [weak self] in
+            guard let self else { return }
+            self.runtimes[key]?.window?.orderOut(nil)
+            self.runtimes[key] = nil
+            self.refresh()
+        }
+        runtimes[key] = controller
+
+        do {
+            if !headless {
+                _ = try controller.makeWindow()
+            }
+            try controller.start(startInRecovery: recovery)
+            if !headless {
+                try presentRuntimeWindow(controller)
+            }
+            refresh()
+            return controller
+        } catch {
+            runtimes[key] = nil
+            controller.tearDown()
+            throw error
+        }
+    }
+
+    private func attachRuntime(_ vm: ManagedVM) throws {
+        if let controller = runtimeController(for: vm) {
+            try presentRuntimeWindow(controller)
+            return
+        }
+
         let name = vm.metadata.name
-        viewers[name]?.showWindow()
-        lastCommand = CLIEquivalent.run(name)
+        let route = Self.attachmentRoute(
+            hasNativeViewer: false,
+            session: liveSessions[name] ?? service.liveVNCSession(for: vm),
+            vmName: name
+        )
+        switch route {
+        case .nativeViewer:
+            break
+        case .vnc(let vncURL):
+            guard let url = URL(string: vncURL), NSWorkspace.shared.open(url) else {
+                throw AppRuntimeError(message: "Unable to open \(vncURL) with the system default handler.")
+            }
+        case .unavailable(let message):
+            throw AppRuntimeError(message: message)
+        }
+    }
+
+    private func presentRuntimeWindow(_ controller: VMViewerController) throws {
+        NSApplication.shared.setActivationPolicy(.regular)
+        _ = try controller.makeWindowAndShow()
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     func setLaunchOnBoot(_ enabled: Bool, for vm: ManagedVM) {
@@ -514,12 +746,17 @@ final class AppStore {
         let name = vm.metadata.name
         lastCommand = CLIEquivalent.stop(name)
 
-        if let controller = viewers[name] {
+        if let controller = runtimeController(for: vm) {
+            let key = runtimeKey(for: vm)
             Task { @MainActor in
-                await controller.stop()
-                viewers[name] = nil
-                setups[name] = nil
-                refresh()
+                do {
+                    try await controller.stopReportingErrors()
+                    runtimes[key] = nil
+                    setups[name] = nil
+                    refresh()
+                } catch {
+                    alertMessage = "Failed to stop \(name): \(error.localizedDescription)"
+                }
             }
             return
         }
@@ -572,6 +809,33 @@ final class AppStore {
         }
     }
 
+    private func stopRuntime(_ vm: ManagedVM) async throws {
+        let name = vm.metadata.name
+        if let controller = runtimeController(for: vm) {
+            let key = runtimeKey(for: vm)
+            try await controller.stopReportingErrors()
+            runtimes[key] = nil
+            setups[name] = nil
+            refresh()
+            return
+        }
+
+        if let runner = headlessRunners[name],
+           runner.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path == runtimeKey(for: vm) {
+            await runner.stop()
+            headlessRunners[name] = nil
+            setups[name] = nil
+            refresh()
+            return
+        }
+
+        let service = self.service
+        _ = try await Task.detached {
+            try service.stopVM(vm)
+        }.value
+        refresh()
+    }
+
     private func hasFailedInProcessSetupWithNoRuntime(_ name: String) -> Bool {
         guard let setupState = liveSetupStates[name],
               setupState.pid == getpid(),
@@ -589,11 +853,11 @@ final class AppStore {
         lastCommand = CLIEquivalent.shutDown(name)
 
         switch Self.shutdownRoute(
-            hasNativeViewer: viewers[name] != nil,
+            hasNativeViewer: runtimeController(for: vm) != nil,
             hasInProcessRunner: headlessRunners[name] != nil
         ) {
         case .nativeViewer:
-            guard let controller = viewers[name] else { return }
+            guard let controller = runtimeController(for: vm) else { return }
             do {
                 try controller.requestGuestStop()
             } catch {

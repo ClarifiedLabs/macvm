@@ -4,7 +4,7 @@ MacVM can configure a fresh macOS 15, 26, or 27 VM unattended and reach it over 
 
 ## Setup Flow
 
-`macvm run --headless` boots a VM without a window, records the owner PID under the bundle's `Runtime/`, and starts a VNC server so tools can attach. `macvm setup` uses the same headless machinery to take a fresh VM from first boot to an SSH-ready state with an Ansible inventory:
+`macvm run --headless` asks MacVM.app to boot a VM without an initial display window, records the app owner PID under the bundle's `Runtime/`, and starts a VNC server so tools can attach. A logged-in GUI session is required for this handoff. `macvm setup` uses its dedicated headless runner to take a fresh VM from first boot to an SSH-ready state with an Ansible inventory:
 
 1. Boot headless and connect an in-process RFB client.
 2. For macOS 27, prefer native first-boot guest provisioning when the host exposes it. Otherwise drive Setup Assistant with OCR in a perceive → decide → act → verify loop: Vision reads the screen, a pure policy (`SetupPolicy`) picks the tactic for the modal or pane that is actually visible, and one fresh RFB connection captures, acts, and verifies the result.
@@ -25,7 +25,7 @@ Python-based Ansible modules such as `ping` require a real Python interpreter in
 
 ## VNC Automation Commands
 
-These commands attach to the VNC session published by any live viewer, `--headless`, or `setup` owner:
+These commands attach to the VNC session published by any live MacVM display, `--headless`, or `setup` owner:
 
 ```bash
 macvm vnc dev-01

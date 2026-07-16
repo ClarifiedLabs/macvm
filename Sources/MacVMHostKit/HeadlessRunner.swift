@@ -6,7 +6,7 @@ import Virtualization
 /// Boots a VM headlessly (no AppKit window) and publishes a private VNC server so
 /// automation and remote viewers can attach over RFB.
 ///
-/// This mirrors `VMViewer`'s VM lifecycle but drops everything AppKit: there is no
+/// This mirrors the VM runtime lifecycle but drops everything AppKit: there is no
 /// `NSApplication`, no window, and no `VZVirtualMachineView`. It relies on the
 /// top-level `dispatchMain()` in `MacVMCommand.main()` to drain the main queue so
 /// the main-queue `VZVirtualMachine` callbacks fire.
@@ -68,6 +68,10 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     /// observe state. Nil before `start()` or after the VM stops.
     public var runningVirtualMachine: VZVirtualMachine? {
         virtualMachine
+    }
+
+    public var bundleURL: URL {
+        managedVM.bundleURL
     }
 
     public var isFinished: Bool {

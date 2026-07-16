@@ -6,17 +6,13 @@ import MacVMHostKit
 struct StorageOptions: ParsableArguments {
     @Option(
         name: .long,
-        help: "Base directory for VM bundles. Defaults to ~/VirtualMachines/MacVMHost."
+        help: "Base directory for VM bundles. Overrides the shared MacVM setting."
     )
     var root: String?
 
     var resolvedURL: URL? {
-        guard let root else {
-            return nil
-        }
-
-        let expanded = NSString(string: root).expandingTildeInPath
-        return URL(fileURLWithPath: expanded)
+        root.map(MacVMSettings.directoryURL(forPath:))
+            ?? MacVMSettings.shared.configuredVMRootDirectory
     }
 }
 
@@ -190,198 +186,6 @@ func readStandardInputString() throws -> String {
     throw ValidationError("Standard input is not valid plain text.")
 }
 
-enum ViewerAppBundle {
-    private static let relaunchEnvironmentKey = "MACVM_BUNDLED_VIEWER"
-    private static let iconResourceName = "AppIcon"
-    private static let iconResourceExtension = "icns"
-    private static let resourceBundleName = "macvm_MacVMHostKit.bundle"
-    private static let resourcesDirectoryName = "Resources"
-
-    static func launchDetached(logURL: URL) throws -> Bool {
-        if ProcessInfo.processInfo.environment[relaunchEnvironmentKey] == "1" {
-            return false
-        }
-
-        if Bundle.main.bundleIdentifier != nil, Bundle.main.bundleURL.pathExtension == "app" {
-            return false
-        }
-
-        let fileManager = FileManager.default
-        let bundleURL = try wrapperBundleURL()
-        let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
-        let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
-        let resourcesURL = contentsURL.appendingPathComponent(resourcesDirectoryName, isDirectory: true)
-        let executableURL = macOSURL.appendingPathComponent("macvm", isDirectory: false)
-        let infoPlistURL = contentsURL.appendingPathComponent("Info.plist", isDirectory: false)
-
-        try fileManager.createDirectory(at: macOSURL, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
-        try writeInfoPlist(to: infoPlistURL)
-        try copyIconResource(to: resourcesURL)
-        try replaceExecutableLink(at: executableURL, with: try currentExecutableURL())
-
-        let process = Process()
-        process.executableURL = executableURL
-        process.arguments = Array(CommandLine.arguments.dropFirst())
-        process.currentDirectoryURL = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
-        process.environment = ProcessInfo.processInfo.environment.merging([
-            relaunchEnvironmentKey: "1",
-            VMOwnerProcessEnvironment.detachedOwnerKey: "1",
-            VMOwnerProcessEnvironment.logPathKey: logURL.path,
-        ]) { _, new in new }
-        let logHandle = try VMOwnerProcessEnvironment.openLogHandle(at: logURL)
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = logHandle
-        process.standardError = logHandle
-        try process.run()
-        try? logHandle.close()
-
-        return true
-    }
-
-    private static func wrapperBundleURL() throws -> URL {
-        let base = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Caches", isDirectory: true)
-            .appendingPathComponent("macvm", isDirectory: true)
-
-        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appendingPathComponent("macvm-viewer", isDirectory: true).appendingPathExtension("app")
-    }
-
-    private static func currentExecutableURL() throws -> URL {
-        if let url = Bundle.main.executableURL {
-            return url
-        }
-
-        let executablePath = NSString(string: CommandLine.arguments[0]).expandingTildeInPath
-        return URL(fileURLWithPath: executablePath)
-    }
-
-    private static func replaceExecutableLink(at destinationURL: URL, with sourceURL: URL) throws {
-        let fileManager = FileManager.default
-
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
-        }
-
-        try fileManager.createSymbolicLink(at: destinationURL, withDestinationURL: sourceURL)
-    }
-
-    private static func writeInfoPlist(to url: URL) throws {
-        let info: [String: String] = [
-            "CFBundleDevelopmentRegion": "en",
-            "CFBundleExecutable": "macvm",
-            "CFBundleIdentifier": "dev.macvm.macvm.viewer",
-            "CFBundleIconFile": iconResourceName,
-            "CFBundleInfoDictionaryVersion": "6.0",
-            "CFBundleName": "macvm",
-            "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "1.0",
-            "CFBundleVersion": "1",
-        ]
-
-        let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
-        try data.write(to: url, options: .atomic)
-    }
-
-    private static func copyIconResource(to resourcesURL: URL) throws {
-        let fileManager = FileManager.default
-
-        guard let iconURL = try bundledIconURL(fileManager: fileManager) else {
-            DebugLog.log("Missing bundled viewer icon resource: \(iconResourceName).\(iconResourceExtension)")
-            return
-        }
-
-        let destinationURL = resourcesURL.appendingPathComponent(
-            "\(iconResourceName).\(iconResourceExtension)",
-            isDirectory: false
-        )
-
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
-        }
-
-        try fileManager.copyItem(at: iconURL, to: destinationURL)
-    }
-
-    private static func bundledIconURL(fileManager: FileManager) throws -> URL? {
-        let executableURL = try currentExecutableURL()
-        let candidateDirectories = [
-            executableURL.deletingLastPathComponent(),
-            executableURL.resolvingSymlinksInPath().deletingLastPathComponent(),
-        ]
-
-        var seenPaths = Set<String>()
-        for directoryURL in candidateDirectories where seenPaths.insert(directoryURL.path).inserted {
-            let iconURL = directoryURL
-                .appendingPathComponent(resourceBundleName, isDirectory: true)
-                .appendingPathComponent(resourcesDirectoryName, isDirectory: true)
-                .appendingPathComponent("\(iconResourceName).\(iconResourceExtension)", isDirectory: false)
-
-            if fileManager.fileExists(atPath: iconURL.path) {
-                return iconURL
-            }
-        }
-
-        return nil
-    }
-}
-
-enum VMOwnerProcessEnvironment {
-    static let headlessOwnerKey = "MACVM_HEADLESS_OWNER"
-    static let detachedOwnerKey = "MACVM_DETACHED_OWNER"
-    static let logPathKey = "MACVM_OWNER_LOG_PATH"
-
-    static var isHeadlessOwner: Bool {
-        ProcessInfo.processInfo.environment[headlessOwnerKey] == "1"
-    }
-
-    static var isDetachedOwner: Bool {
-        ProcessInfo.processInfo.environment[detachedOwnerKey] == "1"
-    }
-
-    static var logPath: String? {
-        ProcessInfo.processInfo.environment[logPathKey]
-    }
-
-    static func logURL(for vm: ManagedVM, role: VMProcessRuntimeRole) throws -> URL {
-        let runtimeDirectory = vm.bundleURL.appendingPathComponent("Runtime", isDirectory: true)
-        try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
-        let basename: String
-        switch role {
-        case .viewer:
-            basename = "viewer.log"
-        case .headless:
-            basename = "headless.log"
-        case .manager:
-            basename = "manager.log"
-        }
-        return runtimeDirectory.appendingPathComponent(basename, isDirectory: false)
-    }
-
-    static func openLogHandle(at url: URL) throws -> FileHandle {
-        let fileManager = FileManager.default
-        let directory = url.deletingLastPathComponent()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        if !fileManager.fileExists(atPath: url.path) {
-            _ = fileManager.createFile(atPath: url.path, contents: nil)
-        }
-        let handle = try FileHandle(forWritingTo: url)
-        try handle.seekToEnd()
-        return handle
-    }
-
-    static func currentExecutableURL() throws -> URL {
-        if let url = Bundle.main.executableURL {
-            return url
-        }
-
-        let executablePath = NSString(string: CommandLine.arguments[0]).expandingTildeInPath
-        return URL(fileURLWithPath: executablePath)
-    }
-}
-
 @main
 struct MacVMCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -397,6 +201,7 @@ struct MacVMCommand: AsyncParsableCommand {
             Run.self,
             Attach.self,
             Stop.self,
+            Config.self,
             Autostart.self,
             Shutdown.self,
             IP.self,
@@ -419,61 +224,6 @@ struct MacVMCommand: AsyncParsableCommand {
         ],
         defaultSubcommand: List.self
     )
-
-    /// Synchronous entry point that bypasses Swift concurrency for the viewer
-    /// child process. NSApplication.run() must enter the AppKit run loop at
-    /// the top level of the main thread so GCD's main queue drains normally —
-    /// VZVirtualMachineView depends on this for framebuffer delivery.
-    static func main() {
-        if ProcessInfo.processInfo.environment["MACVM_BUNDLED_VIEWER"] == "1" {
-            viewerMain()
-            return
-        }
-
-        Task {
-            do {
-                var command = try parseAsRoot()
-                if var asyncCommand = command as? AsyncParsableCommand {
-                    try await asyncCommand.run()
-                } else {
-                    try command.run()
-                }
-            } catch {
-                exit(withError: error)
-            }
-            Darwin.exit(0)
-        }
-        dispatchMain()
-    }
-
-    private static func viewerMain() {
-        MainActor.assumeIsolated {
-            do {
-                guard let command = try parseAsRoot() as? Run else {
-                    fputs("Expected 'run' command in viewer process.\n", stderr)
-                    Darwin.exit(1)
-                }
-                command.debugOptions.apply()
-                let service = MacVMService(rootDirectory: command.storage.resolvedURL)
-                let vm = try service.resolveVM(identifier: command.identifier)
-
-                print("Opening \(vm.metadata.name).")
-                print("Stop it with: macvm stop \(vm.metadata.name)")
-
-                let detached = VMOwnerProcessEnvironment.isDetachedOwner
-                let viewer = VMViewer(
-                    managedVM: vm,
-                    monitorsParent: !detached,
-                    processRuntimeRole: detached ? .viewer : nil,
-                    processLogPath: VMOwnerProcessEnvironment.logPath
-                )
-                try viewer.run(startInRecovery: command.recovery)
-            } catch {
-                fputs("\(error)\n", stderr)
-                Darwin.exit(1)
-            }
-        }
-    }
 }
 
 extension MacVMCommand {
@@ -774,7 +524,7 @@ extension MacVMCommand {
     }
 
     struct Run: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Boot an existing VM in a background owner process.")
+        static let configuration = CommandConfiguration(abstract: "Ask MacVM.app to boot an existing VM.")
 
         @OptionGroup var storage: StorageOptions
         @OptionGroup var debugOptions: DebugOptions
@@ -785,7 +535,7 @@ extension MacVMCommand {
         @Flag(name: .long, help: "Start the VM in macOS recovery.")
         var recovery = false
 
-        @Flag(name: .long, help: "Boot without a window and publish a VNC server for headless/remote access.")
+        @Flag(name: .long, help: "Boot without initially opening a native display window.")
         var headless = false
 
         @Option(name: .long, help: "VNC port for --headless. Defaults to an auto-assigned port.")
@@ -793,112 +543,38 @@ extension MacVMCommand {
 
         func run() async throws {
             debugOptions.apply()
+            guard vncPort == nil || headless else {
+                throw ValidationError("--vnc-port requires --headless.")
+            }
+            guard (vncPort ?? 0) >= 0, (vncPort ?? 0) <= Int(UInt16.max) else {
+                throw ValidationError("--vnc-port must be between 0 and \(UInt16.max).")
+            }
+
             let service = MacVMService(rootDirectory: storage.resolvedURL)
             let resolved = try service.resolveVM(identifier: identifier)
-
-            if headless {
-                let virtualMachine = try service.ensureNetworkIdentity(resolved)
-                if VMOwnerProcessEnvironment.isHeadlessOwner {
-                    try await runHeadlessOwner(virtualMachine)
-                } else {
-                    try await launchHeadlessOwner(service: service, virtualMachine: virtualMachine)
-                }
-                return
-            }
-
-            if service.hasLiveRuntime(for: resolved) {
-                throw ValidationError("'\(resolved.metadata.name)' is already running. Stop it first with: macvm stop \(resolved.metadata.name)")
-            }
-
-            let logURL = try VMOwnerProcessEnvironment.logURL(for: resolved, role: .viewer)
-            if try ViewerAppBundle.launchDetached(logURL: logURL) {
-                DebugLog.log("Launched detached viewer owner.")
-                let process = try await waitForOwnerProcess(service: service, virtualMachine: resolved, role: .viewer)
-                print("Opening \(resolved.metadata.name) in a background viewer.")
-                print("Owner PID: \(process.pid)")
-                print("Log: \(logURL.path)")
-                print("Stop it with: macvm stop \(resolved.metadata.name)")
-                return
-            }
-
-            print("Opening \(resolved.metadata.name).")
-            print("Stop it with: macvm stop \(resolved.metadata.name)")
-
-            try await MainActor.run {
-                let viewer = VMViewer(managedVM: resolved)
-                try viewer.run(startInRecovery: recovery)
-            }
-        }
-
-        private func runHeadlessOwner(_ virtualMachine: ManagedVM) async throws {
-            let runner = await HeadlessRunner(
-                managedVM: virtualMachine,
-                requestedPort: UInt(vncPort ?? 0),
-                processRuntimeRole: .headless,
-                processLogPath: VMOwnerProcessEnvironment.logPath
+            let vm = headless ? try service.ensureNetworkIdentity(resolved) : resolved
+            let response = try await AppControlClient().send(
+                operation: .run(
+                    headless: headless,
+                    recovery: recovery,
+                    vncPort: UInt(vncPort ?? 0)
+                ),
+                for: vm
             )
-            let session = try await runner.start()
 
-            print("Booting \(virtualMachine.metadata.name) headless.")
-            print("VNC: \(session.vncURLString)")
-            print("Stop it with: macvm stop \(virtualMachine.metadata.name)")
-            fflush(stdout) // long-running foreground command: flush before we block
-
-            try await runner.waitUntilStopped()
-            print("\(virtualMachine.metadata.name) stopped.")
-        }
-
-        private func launchHeadlessOwner(service: MacVMService, virtualMachine: ManagedVM) async throws {
-            if service.hasLiveRuntime(for: virtualMachine) {
-                throw ValidationError("'\(virtualMachine.metadata.name)' is already running. Stop it first with: macvm stop \(virtualMachine.metadata.name)")
+            print(headless ? "Booting \(vm.metadata.name) headless in MacVM." : "Opening \(vm.metadata.name) in MacVM.")
+            if let ownerPID = response.ownerPID {
+                print("Owner PID: \(ownerPID)")
             }
-
-            let logURL = try VMOwnerProcessEnvironment.logURL(for: virtualMachine, role: .headless)
-            let logHandle = try VMOwnerProcessEnvironment.openLogHandle(at: logURL)
-            let process = Process()
-            process.executableURL = try VMOwnerProcessEnvironment.currentExecutableURL()
-            process.arguments = Array(CommandLine.arguments.dropFirst())
-            process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-            process.environment = ProcessInfo.processInfo.environment.merging([
-                VMOwnerProcessEnvironment.headlessOwnerKey: "1",
-                VMOwnerProcessEnvironment.detachedOwnerKey: "1",
-                VMOwnerProcessEnvironment.logPathKey: logURL.path,
-            ]) { _, new in new }
-            process.standardInput = FileHandle.nullDevice
-            process.standardOutput = logHandle
-            process.standardError = logHandle
-            try process.run()
-            try? logHandle.close()
-
-            let state = try await waitForOwnerProcess(service: service, virtualMachine: virtualMachine, role: .headless)
-            let vncURL = try service.vncURL(for: virtualMachine)
-            print("Booting \(virtualMachine.metadata.name) headless in the background.")
-            print("Owner PID: \(state.pid)")
-            print("VNC: \(vncURL)")
-            print("Log: \(logURL.path)")
-            print("Stop it with: macvm stop \(virtualMachine.metadata.name)")
-        }
-
-        private func waitForOwnerProcess(
-            service: MacVMService,
-            virtualMachine: ManagedVM,
-            role: VMProcessRuntimeRole,
-            timeout: TimeInterval = 15
-        ) async throws -> VMProcessRuntimeState {
-            let deadline = Date().addingTimeInterval(timeout)
-            repeat {
-                if let process = service.liveVMProcessRuntimeState(for: virtualMachine), process.role == role {
-                    return process
-                }
-                try await Task.sleep(nanoseconds: 100_000_000)
-            } while Date() < deadline
-
-            throw ValidationError("Timed out waiting for \(virtualMachine.metadata.name) to publish its owner process.")
+            if headless, let vncURL = response.vncURL {
+                print("VNC: \(vncURL)")
+            }
+            print("Stop it with: macvm stop \(vm.metadata.name)")
         }
     }
 
-    struct Stop: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Force-stop a VM by terminating its background owner process.")
+    struct Stop: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Ask MacVM.app to force-stop a running VM.")
 
         @OptionGroup var storage: StorageOptions
         @OptionGroup var debugOptions: DebugOptions
@@ -906,18 +582,22 @@ extension MacVMCommand {
         @Argument(help: "VM name, bundle basename, or full bundle path.")
         var identifier: String
 
-        func run() throws {
+        func run() async throws {
             debugOptions.apply()
             let service = MacVMService(rootDirectory: storage.resolvedURL)
-            let virtualMachine = try service.resolveVM(identifier: identifier)
-            let process = try service.stopVM(virtualMachine)
-            print("Stopped \(virtualMachine.metadata.name) (pid \(process.pid)).")
+            let vm = try service.resolveVM(identifier: identifier)
+            let response = try await AppControlClient().send(operation: .stop, for: vm)
+            if let ownerPID = response.ownerPID {
+                print("Stopped \(vm.metadata.name) (owner PID \(ownerPID)).")
+            } else {
+                print("Stopped \(vm.metadata.name).")
+            }
         }
     }
 
     struct Attach: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Open the display of a running VM in macOS Screen Sharing."
+            abstract: "Show a native display window for a VM owned by MacVM.app."
         )
 
         @OptionGroup var storage: StorageOptions
@@ -929,18 +609,55 @@ extension MacVMCommand {
         func run() async throws {
             debugOptions.apply()
             let service = MacVMService(rootDirectory: storage.resolvedURL)
-            let virtualMachine = try service.resolveVM(identifier: identifier)
-            let vncURL = try service.vncURL(for: virtualMachine)
-            print(vncURL)
+            let vm = try service.resolveVM(identifier: identifier)
+            _ = try await AppControlClient().send(operation: .attach, for: vm)
+            print("Attached \(vm.metadata.name) in MacVM.")
+        }
+    }
 
-            guard let url = URL(string: vncURL) else {
-                throw ValidationError("Invalid VNC URL: \(vncURL)")
+    struct Config: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Show or change settings shared with MacVM.app.",
+            subcommands: [Show.self, SetRoot.self, ResetRoot.self],
+            defaultSubcommand: Show.self
+        )
+
+        struct Show: ParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Show the effective VM root directory.")
+
+            func run() {
+                let settings = MacVMSettings.shared
+                print("VM root: \(settings.effectiveVMRootDirectory.path)")
+                print("Source: \(settings.configuredVMRootDirectory == nil ? "built-in default" : "shared setting")")
             }
-            let opened = await MainActor.run {
-                NSWorkspace.shared.open(url)
+        }
+
+        struct SetRoot: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "set-root",
+                abstract: "Set the default VM root directory for the app and CLI."
+            )
+
+            @Argument(help: "Directory that contains MacVM bundles.")
+            var path: String
+
+            func run() throws {
+                let url = MacVMSettings.directoryURL(forPath: path)
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                MacVMSettings.shared.setVMRootDirectory(url)
+                print("VM root: \(url.path)")
             }
-            guard opened else {
-                throw ValidationError("Unable to open \(vncURL) with the system default handler.")
+        }
+
+        struct ResetRoot: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "reset-root",
+                abstract: "Restore the built-in VM root directory."
+            )
+
+            func run() {
+                MacVMSettings.shared.setVMRootDirectory(nil)
+                print("VM root: \(MacVMSettings.shared.effectiveVMRootDirectory.path)")
             }
         }
     }

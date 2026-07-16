@@ -4,8 +4,8 @@ MacVM creates and runs macOS virtual machines on Apple silicon Macs.
 
 It ships as a signed and notarized installer package with:
 
-- `macvm`, a command-line tool installed at `/usr/local/bin/macvm`
 - `MacVM`, a native SwiftUI app installed in `/Applications`
+- `macvm`, its bundled command-line helper exposed at `/usr/local/bin/macvm`
 
 MacVM uses Apple's Virtualization framework, creates each VM from a macOS restore image, and stores VMs as ordinary bundles on disk.
 
@@ -36,9 +36,9 @@ Alternatively, download the latest `MacVM-<version>.pkg` from GitHub Releases, o
 The package installs:
 
 ```text
-/usr/local/bin/macvm
-/usr/local/bin/macvm_MacVMHostKit.bundle
 /Applications/MacVM.app
+/Applications/MacVM.app/Contents/Helpers/macvm
+/usr/local/bin/macvm -> ../../../Applications/MacVM.app/Contents/Helpers/macvm
 ```
 
 The installer marks the app bundle as non-relocatable so PackageKit always
@@ -83,7 +83,15 @@ macvm stop dev-01
 macvm rm dev-01
 ```
 
-VMs are stored under `~/VirtualMachines/MacVMHost` by default.
+VMs are stored under `~/VirtualMachines/MacVMHost` by default. Change the shared app/CLI default in **MacVM > Settings** or from the CLI:
+
+```bash
+macvm config
+macvm config set-root ~/VirtualMachines/MyMacVMs
+macvm config reset-root
+```
+
+A command-specific `--root` still overrides the shared setting.
 
 ## Clone a VM
 
@@ -114,7 +122,9 @@ reauthentication.
 
 ## MacVM App
 
-Open `MacVM` from `/Applications` for a graphical VM manager. It can create and clone VMs, list existing VMs, start viewer windows, run setup, manage restore images, and track Xcode `.xip` archives used for guest provisioning. Closing a VM display hides it without stopping the VM; use **Attach** to restore a Manager-owned native window or open another running owner in macOS Screen Sharing. Use the Clone button or a stopped VM's sidebar context menu to create a copy.
+Open `MacVM` from `/Applications` for a graphical VM manager. It can create and clone VMs, list existing VMs, own multiple running VMs, run setup, manage restore images, and track Xcode `.xip` archives used for guest provisioning. `macvm run`, `macvm run --headless`, `macvm attach`, and `macvm stop` are control commands for this same app process. Closing a VM display hides it without stopping the VM; use **Attach** to restore it. Use the Clone button or a stopped VM's sidebar context menu to create a copy.
+
+Because MacVM owns ordinary running VMs in-process, quitting or crashing the app affects every VM it currently owns. Headless handoff also requires a logged-in macOS GUI session.
 
 ## Automated Setup
 
@@ -166,7 +176,7 @@ real-VM smoke test.
 
 ## Display and VNC Access
 
-Every running VM owner publishes a temporary password-protected VNC session. Closing a native viewer window leaves its VM running. Reopen the viewer from its Dock icon, use **Attach** in MacVM, or attach from the CLI:
+Every running VM owner publishes a temporary password-protected VNC session. Closing a native display window leaves its VM running. Use **Attach** in MacVM or `macvm attach` to show a native window; a VM started with `--headless` gets its first native display lazily without restarting:
 
 ```bash
 macvm run dev-02
@@ -183,7 +193,7 @@ macvm type dev-02 "hello"
 macvm keys dev-02 return tab
 ```
 
-`macvm attach` prints the live `vnc://` URL and opens it with the system handler; `macvm vnc` remains useful when you only want the URL. The private VNC server binds beyond loopback and uses a random password embedded in that URL. Treat the session as reachable from your local network while the VM is running.
+`macvm attach` asks MacVM to show its native display. Use `macvm vnc` when you want the live `vnc://` URL or macOS Screen Sharing instead. The private VNC server binds beyond loopback and uses a random password embedded in that URL. Treat the session as reachable from your local network while the VM is running.
 
 ## Launch On Boot
 
@@ -194,7 +204,7 @@ macvm create --name dev-03 --launch-on-boot
 macvm autostart enable dev-02
 ```
 
-Launch-on-boot is per user and starts at login, not before login. It uses the same headless/VNC access path as `macvm run --headless`. The first login after enabling it may ask for Local Network access; allow `macvm` so the guest can use its virtual network. You can change this later in **System Settings > Privacy & Security > Local Network**.
+Launch-on-boot is per user and starts at login, not before login. It uses the same MacVM-owned headless/VNC path as `macvm run --headless`. The first login after enabling it may ask for Local Network access; allow MacVM so the guest can use its virtual network. You can change this later in **System Settings > Privacy & Security > Local Network**.
 
 ## Shared Files
 

@@ -22,6 +22,23 @@ def main() -> None:
     require_contains(package_script, 'APP_NAME="MacVM"', "package-release.sh")
     require_contains(project, "PRODUCT_MODULE_NAME = MacVM;", "project.pbxproj")
     require_contains(project, "PRODUCT_NAME = MacVM;", "project.pbxproj")
+    require_contains(project, "dstPath = Contents/Helpers;", "project.pbxproj")
+    require_contains(project, "CodeSignOnCopy", "project.pbxproj")
+    require_contains(project, 'name = "MacVM CLI";', "project.pbxproj")
+    require_contains(
+        package_script,
+        'EMBEDDED_CLI_PRODUCT="$APP_PRODUCT/Contents/Helpers/$CLI_NAME"',
+        "package-release.sh",
+    )
+    require_contains(
+        package_script,
+        'ln -s "../../../Applications/$APP_NAME.app/Contents/Helpers/$CLI_NAME" "$CLI_LINK_PATH"',
+        "package-release.sh",
+    )
+    if 'ditto --norsrc --noextattr "$CLI_PRODUCT"' in package_script:
+        raise AssertionError("package-release.sh must not stage a standalone CLI product")
+    if 'PAYLOAD_ROOT/usr/local/bin/$RESOURCE_BUNDLE_NAME' in package_script:
+        raise AssertionError("package-release.sh must not stage a loose resource bundle")
 
     with component_plist_path.open("rb") as component_plist_file:
         components = plistlib.load(component_plist_file)
