@@ -60,9 +60,14 @@ def main() -> None:
         "MACVM_SIGN_RELEASE=1",
         "MACVM_NOTARIZE=1",
         "./scripts/package-release.sh",
+        "MacVM-${{ steps.version.outputs.version }}.pkg",
+        "MacVM-${{ steps.version.outputs.version }}.dmg",
         "gh release create",
+        '"$package_path" "$disk_image_path"',
         "if: startsWith(github.ref, 'refs/tags/v')",
-        "Upload package artifact",
+        "Upload installer package artifact",
+        "Upload Homebrew disk image artifact",
+        "DMG_SHA256=",
     ):
         require_contains(release_workflow, needle, "release.yml")
 

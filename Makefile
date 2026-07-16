@@ -31,7 +31,7 @@ help:
 		'make dist          Run tests and build the signed CLI and app in dist/' \
 		'make dist-cli      Run tests and build the signed dist/macvm binary' \
 		'make dist-app      Run tests and build the signed "dist/MacVM.app"' \
-		'make package       Build a local unsigned installer package for payload testing' \
+		'make package       Build local unsigned DMG and PKG release artifacts' \
 		'make release       Create a GitHub release tag (VERSION=patch|minor|major|X.Y.Z)' \
 		'make release-list  List the current release tag' \
 		'make test-release  Run release tooling regression checks' \

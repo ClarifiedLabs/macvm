@@ -29,6 +29,7 @@
 		A000000000000000000000B5 /* libMacVMPrivateVZ.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000020 /* libMacVMPrivateVZ.a */; };
 		A000000000000000000000B6 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = A000000000000000000000C1 /* ArgumentParser */; };
 		A000000000000000000000B7 /* Support/AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000087 /* Support/AppIcon.icon */; };
+		A000000000000000000000B8 /* macvm in Embed macvm CLI */ = {isa = PBXBuildFile; fileRef = A00000000000000000000022 /* macvm */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -116,7 +117,28 @@
 			remoteGlobalIDString = A00000000000000000000034;
 			remoteInfo = MacVM;
 		};
+		A00000000000000000000079 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000033;
+			remoteInfo = "MacVM CLI";
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A00000000000000000000059 /* Embed macvm CLI */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Helpers;
+			dstSubfolderSpec = 1;
+			files = (
+				A000000000000000000000B8 /* macvm in Embed macvm CLI */,
+			);
+			name = "Embed macvm CLI";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A00000000000000000000020 /* libMacVMPrivateVZ.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libMacVMPrivateVZ.a; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -354,6 +376,7 @@
 				A0000000000000000000004B /* Frameworks */,
 				A0000000000000000000004C /* Resources */,
 				A0000000000000000000004E /* Copy MacVMHostKit Resources */,
+				A00000000000000000000059 /* Embed macvm CLI */,
 			);
 			buildRules = (
 			);
@@ -361,6 +384,7 @@
 				A0000000000000000000006A /* PBXTargetDependency */,
 				A0000000000000000000006C /* PBXTargetDependency */,
 				A0000000000000000000006E /* PBXTargetDependency */,
+				A0000000000000000000007A /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A00000000000000000000014 /* Sources/MacVM */,
@@ -657,6 +681,12 @@
 			name = MacVM;
 			target = A00000000000000000000034 /* MacVM */;
 			targetProxy = A00000000000000000000077 /* PBXContainerItemProxy */;
+		};
+		A0000000000000000000007A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = "MacVM CLI";
+			target = A00000000000000000000033 /* MacVM CLI */;
+			targetProxy = A00000000000000000000079 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 

@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/dist}"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/.build/release}"
 PAYLOAD_ROOT="$BUILD_DIR/payload"
+DMG_ROOT="$BUILD_DIR/dmg"
 PROJECT_PATH="$ROOT_DIR/macvm.xcodeproj"
 DERIVED_DATA_PATH="${XCODE_DERIVED_DATA:-$ROOT_DIR/.build/xcode-derived}"
 SOURCE_PACKAGES_PATH="${XCODE_SOURCE_PACKAGES:-$ROOT_DIR/.build/xcode-source-packages}"
@@ -13,8 +14,6 @@ CONFIGURATION="Release"
 APP_SCHEME="MacVM App"
 APP_NAME="MacVM"
 CLI_NAME="macvm"
-CLI_SCHEME="MacVM CLI"
-RESOURCE_BUNDLE_NAME="macvm_MacVMHostKit.bundle"
 BASE_BUNDLE_IDENTIFIER="dev.macvm.macvm"
 CLI_BUNDLE_IDENTIFIER="$BASE_BUNDLE_IDENTIFIER.cli"
 PKG_IDENTIFIER="$BASE_BUNDLE_IDENTIFIER.pkg"
@@ -124,7 +123,7 @@ sign_release_payload() {
     --entitlements "$ENTITLEMENTS_PATH" \
     --identifier "$CLI_BUNDLE_IDENTIFIER" \
     --sign "$developer_id_application" \
-    "$CLI_PATH"
+    "$EMBEDDED_CLI_PATH"
 
   codesign --force \
     --timestamp \
@@ -133,8 +132,8 @@ sign_release_payload() {
     --sign "$developer_id_application" \
     "$APP_PATH"
 
-  codesign --verify --strict --verbose=2 "$CLI_PATH"
-  codesign --verify --strict --verbose=2 "$APP_PATH"
+  codesign --verify --strict --verbose=2 "$EMBEDDED_CLI_PATH"
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 }
 
 notarytool_args=()
@@ -173,6 +172,33 @@ notarize_item() {
   xcrun notarytool submit "$item_path" --wait "${notarytool_args[@]}"
 }
 
+build_disk_image() {
+  local developer_id_application="${MACVM_DEVELOPER_ID_APPLICATION:-${DEVELOPER_ID_APPLICATION:-}}"
+
+  rm -rf "$DMG_ROOT"
+  rm -f "$DMG_PATH"
+  mkdir -p "$DMG_ROOT"
+  ditto --norsrc --noextattr "$APP_PATH" "$DMG_ROOT/$APP_NAME.app"
+  ln -s /Applications "$DMG_ROOT/Applications"
+  hdiutil create \
+    -quiet \
+    -volname "$APP_NAME" \
+    -srcfolder "$DMG_ROOT" \
+    -format UDZO \
+    -imagekey zlib-level=9 \
+    -ov \
+    "$DMG_PATH"
+
+  if enabled "$SIGN_RELEASE"; then
+    require_nonempty "$developer_id_application" "MACVM_DEVELOPER_ID_APPLICATION"
+    codesign --force \
+      --timestamp \
+      --sign "$developer_id_application" \
+      "$DMG_PATH"
+    codesign --verify --strict --verbose=2 "$DMG_PATH"
+  fi
+}
+
 build_installer_package() {
   local component_pkg="$BUILD_DIR/MacVM-component.pkg"
   local unsigned_pkg="$BUILD_DIR/MacVM-$VERSION.unsigned.pkg"
@@ -200,8 +226,14 @@ build_installer_package() {
   fi
 }
 
+notarize_disk_image() {
+  notarize_item "$DMG_PATH" "MacVM disk image"
+  xcrun stapler staple "$DMG_PATH"
+  xcrun stapler validate "$DMG_PATH"
+  spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
+}
+
 notarize_installer_package() {
-  resolve_notarytool_args
   notarize_item "$PKG_PATH" "MacVM installer package"
   xcrun stapler staple "$PKG_PATH"
   xcrun stapler validate "$PKG_PATH"
@@ -211,36 +243,40 @@ notarize_installer_package() {
 rm -rf "$BUILD_DIR"
 mkdir -p "$OUTPUT_DIR" "$PAYLOAD_ROOT/usr/local/bin" "$PAYLOAD_ROOT/Applications"
 
-build_scheme "$CLI_SCHEME"
 build_scheme "$APP_SCHEME"
 
 PRODUCTS_DIR="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION"
-CLI_PRODUCT="$PRODUCTS_DIR/$CLI_NAME"
 APP_PRODUCT="$PRODUCTS_DIR/$APP_NAME.app"
-RESOURCE_BUNDLE_PRODUCT="$PRODUCTS_DIR/$RESOURCE_BUNDLE_NAME"
+EMBEDDED_CLI_PRODUCT="$APP_PRODUCT/Contents/Helpers/$CLI_NAME"
 
-require_file "$CLI_PRODUCT" "CLI product"
 require_file "$APP_PRODUCT" "manager app product"
-require_file "$RESOURCE_BUNDLE_PRODUCT" "MacVMHostKit resource bundle"
+require_file "$EMBEDDED_CLI_PRODUCT" "embedded CLI product"
 
-CLI_PATH="$PAYLOAD_ROOT/usr/local/bin/$CLI_NAME"
+CLI_LINK_PATH="$PAYLOAD_ROOT/usr/local/bin/$CLI_NAME"
 APP_PATH="$PAYLOAD_ROOT/Applications/$APP_NAME.app"
+EMBEDDED_CLI_PATH="$APP_PATH/Contents/Helpers/$CLI_NAME"
+DMG_PATH="$OUTPUT_DIR/MacVM-$VERSION.dmg"
 PKG_PATH="$OUTPUT_DIR/MacVM-$VERSION.pkg"
 
-ditto --norsrc --noextattr "$CLI_PRODUCT" "$CLI_PATH"
-ditto --norsrc --noextattr "$RESOURCE_BUNDLE_PRODUCT" "$PAYLOAD_ROOT/usr/local/bin/$RESOURCE_BUNDLE_NAME"
 ditto --norsrc --noextattr "$APP_PRODUCT" "$APP_PATH"
+require_file "$EMBEDDED_CLI_PATH" "staged embedded CLI"
 
 if enabled "$SIGN_RELEASE"; then
   sign_release_payload
 else
-  echo "Skipping Developer ID signing. Set MACVM_SIGN_RELEASE=1 for public release packages."
+  echo "Skipping Developer ID signing. Set MACVM_SIGN_RELEASE=1 for public release artifacts."
 fi
 
+ln -s "/Applications/$APP_NAME.app/Contents/Helpers/$CLI_NAME" "$CLI_LINK_PATH"
+
+build_disk_image
 build_installer_package
 
 if enabled "$NOTARIZE_RELEASE"; then
+  resolve_notarytool_args
+  notarize_disk_image
   notarize_installer_package
 fi
 
+echo "Built $DMG_PATH"
 echo "Built $PKG_PATH"
