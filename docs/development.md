@@ -71,6 +71,10 @@ The Xcode project owns the release version through `MARKETING_VERSION`.
 
 `MacVM.app` owns every ordinary `run` and `run --headless` VM in-process. The CLI resolves the VM to a canonical full bundle path and uses the per-user file-backed control queue for acknowledged run, attach, and stop requests. `--headless` controls only the initial presentation: `attach` adds a `VZVirtualMachineView` to the existing VM without restarting it. Setup can still use its dedicated `HeadlessRunner` ownership path.
 
+Because ordinary VMs share the app process, quitting or crashing MacVM affects
+every VM it currently owns. Headless handoff to the app also requires a
+logged-in macOS GUI session.
+
 Every owner publishes a password-protected `Runtime/vnc-session.json`. VNC client automation commands such as `screenshot`, `type`, `keys`, `vnc`, `wait-text`, and `click-text` attach to that live session over loopback RFB and should error if no session is live; they do not instantiate a `VZVirtualMachine`, although the bundled CLI is still signed with the virtualization entitlement. The private server itself binds beyond loopback, so the password is mandatory. App runtimes use the `manager` owner role; never signal that PID to stop one VM. Route the request to the app and stop its path-keyed `VMViewerController` instead. Native display close requests always hide the window without ending the VM.
 
 When `VMMetadata.dockerSidecar` is enabled, `VMViewerController` also owns a
@@ -127,5 +131,35 @@ Real-guest release checks are required for:
   when Rosetta is unavailable or not installed
 - clone source/destination concurrent use, Docker engine ID refresh, recovery
   bypass, degraded startup, disable preservation, and destructive reset
+
+## Clone Invariants
+
+Cloning requires the source VM to remain stopped. APFS uses copy-on-write clones
+for installed disks and other bundle files; filesystems without clone support
+fall back to ordinary copies.
+
+A clone inherits guest accounts and tools, hostname, machine identifier, SSH
+state, setup metadata, shared files, and any CPU or memory value that was not
+overridden. It receives a new MacVM UUID, creation date, and MAC address. Runtime
+session files and launch-on-boot state are not copied.
+
+For a Docker-enabled VM, cloning copies the complete nested appliance and then
+refreshes its generic machine identity, Docker engine identity, and NAT MAC
+address. Pairing state and Docker data remain usable while the new identities
+allow source and clone to run concurrently.
+
+## Memory Pressure Invariants
+
+Every macOS and Docker VM configuration includes one traditional virtio memory
+balloon. Register a VM with the process-local `MemoryPressureCoordinator` only
+after it starts successfully, and unregister it on every stop or failure path.
+The coordinator records requested targets because Virtualization.framework does
+not report the amount of memory actually returned by a guest.
+
+Keep target calculation independent from monitoring and timers so its pressure
+levels, guest floors, cooldown, and round-robin recovery remain deterministic in
+tests. The externally documented policy is in
+[Resource Management](resource-management.md); update that guide whenever these
+values or behaviors change.
 
 All private Virtualization.framework symbols must stay isolated in `Sources/MacVMPrivateVZ/` and be resolved at runtime.

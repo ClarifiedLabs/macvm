@@ -13,10 +13,7 @@ MacVM uses Apple's Virtualization framework, creates each VM from a macOS restor
 
 - Apple silicon Mac
 - macOS 26 or newer
-- Enough free disk space for the guest OS and VM disk
-- Internet access during default automated setup to install Homebrew; use `--no-homebrew` for an offline/minimal setup
-- Internet access while enabling, resetting, or updating Docker to refresh checksum-verified Fedora CoreOS, and again on the next normal VM start if Homebrew must install the Docker tools
-- Optional: Rosetta for Linux for `linux/amd64` containers; MacVM only installs it after an explicit CLI or app action
+- Internet access during automated setup and when enabling, resetting, or updating Docker
 
 MacVM can fetch the latest macOS restore image supported by your host. You can also pass a local `.ipsw` restore image.
 
@@ -29,7 +26,7 @@ brew install --cask clarifiedlabs/tap/macvm
 ```
 
 Homebrew installs `MacVM.app` in its configured app directory (normally
-`/Applications`) and manages the `macvm` link in `$(brew --prefix)/bin`.
+`/Applications`) and links `macvm` into `$(brew --prefix)/bin`.
 
 To use the optional provisioning profiles, install Ansible on the host:
 
@@ -37,25 +34,24 @@ To use the optional provisioning profiles, install Ansible on the host:
 brew install ansible
 ```
 
-Alternatively, download the latest `MacVM-<version>.pkg` from GitHub Releases, open it, and complete the installer. The `.dmg` release artifact is the app image consumed by the Homebrew cask.
-
-The manual package installs:
-
-```text
-/Applications/MacVM.app
-/Applications/MacVM.app/Contents/Helpers/macvm
-/usr/local/bin/macvm -> ../../../Applications/MacVM.app/Contents/Helpers/macvm
-```
-
-The installer marks the app bundle as non-relocatable so PackageKit always
-installs it at `/Applications/MacVM.app`, even when another build with
-the same bundle identifier exists elsewhere on the host.
+Alternatively, download the latest `MacVM-<version>.pkg` from GitHub Releases,
+open it, and complete the installer. The package installs `MacVM.app` in
+`/Applications` and links `macvm` into `/usr/local/bin`.
 
 If `/usr/local/bin` is not on your shell `PATH`, add it before running the CLI.
 
 ## Quick Start
 
-Create and boot a VM:
+MacVM has a CLI tool, `macvm`, and a GUI, `MacVM.app`, with equivalent functionality.
+
+### MacVM.app GUI
+
+Open `MacVM.app`, click **New VM**, choose a name and VM settings, then click
+**Create**. The default **Latest supported** restore image is downloaded
+automatically, or you can choose a local `.ipsw`. When installation finishes,
+select the VM and click **Run**.
+
+### `macvm` CLI
 
 ```bash
 macvm create --name dev-01
@@ -65,16 +61,13 @@ macvm run dev-01
 Create a larger VM:
 
 ```bash
-macvm create --name xcode-01 --cpu 6 --memory-gi-b 12 --disk-gi-b 200
+macvm create --name bigdev-01 --cpu 6 --memory-gi-b 12 --disk-gi-b 200
 ```
 
-Configured memory is the VM's maximum: while a VM is running, MacVM
-automatically asks macOS guests and Docker sidecars to return unused memory
-when the host reports warning or critical memory pressure. Warning pressure
-targets 75% of configured memory and critical pressure targets 50%, with floors
-of 4 GiB for macOS and 2 GiB for Docker sidecars. Guests may decline a request.
-After pressure clears for 30 seconds, MacVM restores 1 GiB every 10 seconds,
-round-robin across its running guests, until each reaches its configured maximum.
+Configured memory is the VM's maximum. MacVM can reclaim unused guest memory
+when the host is under pressure; see [Resource Management](docs/resource-management.md).
+
+## Common CLI Usage
 
 Use a restore image you already downloaded:
 
@@ -98,7 +91,8 @@ macvm stop dev-01
 macvm rm dev-01
 ```
 
-VMs are stored under `~/VirtualMachines/MacVMHost` by default. Change the shared app/CLI default in **MacVM > Settings** or from the CLI:
+VMs are stored under `~/VirtualMachines/MacVMHost` by default. Change the shared
+app/CLI default in **MacVM > Settings** or from the CLI:
 
 ```bash
 macvm config
@@ -106,7 +100,10 @@ macvm config set-root ~/VirtualMachines/MyMacVMs
 macvm config reset-root
 ```
 
-A command-specific `--root` still overrides the shared setting. Bare `shutdown` returns after the guest accepts the request; add `--wait` (and optionally `--timeout`) when the next operation requires a fully stopped VM. `stop` is the force-stop/control operation and is not a substitute for a clean guest shutdown.
+A command-specific `--root` overrides the shared setting. Bare `shutdown`
+returns after the guest accepts the request; add `--wait` (and optionally
+`--timeout`) when the next operation requires a fully stopped VM. `stop` is a
+force-stop operation and is not a substitute for a clean guest shutdown.
 
 ## Clone a VM
 
@@ -119,154 +116,61 @@ macvm clone dev-01 --name dev-02 --cpu 4 --memory-gi-b 8
 macvm run dev-02
 ```
 
-The `--cpu` and `--memory-gi-b` options can be used independently. Omit either
-option to inherit that value from the source VM. The MacVM app exposes the same
-controls in its clone sheet.
+The CPU and memory options are independent; omitted values are inherited from
+the source VM. The source must remain stopped while cloning. APFS provides fast
+copy-on-write clones, while other filesystems use ordinary copies. Leave enough
+free space for the VMs to diverge, and expect Apple Account services to require
+reauthentication in a clone.
 
-On APFS, macvm uses copy-on-write clones for the installed disk and other
-files, so the initial clone is fast and shares unchanged storage blocks. Other
-filesystems fall back to ordinary copies. Leave enough free space for both VMs
-to diverge over time.
+## Docker Inside the macOS Guest
 
-The clone inherits the guest accounts, tools, hostname, machine identifier,
-SSH state, any VM sizing that was not overridden, setup metadata, and shared
-files. It receives a new macvm UUID, creation date, and MAC address. Runtime
-session files and launch on boot are not copied. The source must remain stopped
-for the duration of the clone, and Apple Account services may require
-reauthentication.
-
-If Docker is enabled, the clone also copies the complete sidecar appliance — its
-Fedora CoreOS state, Docker images/layers, containers, volumes, data disk, EFI
-state, and pairing configuration. MacVM refreshes the sidecar's generic machine
-identity and NAT MAC address so source and clone can run concurrently. APFS
-copy-on-write behavior applies to these disks too.
-
-## Docker inside the macOS guest
-
-Apple-silicon macOS guests cannot run Docker's Linux VM nested inside MacVM.
-MacVM can instead create one hidden Fedora CoreOS **aarch64 AppleHV** sidecar
-for each macOS VM. The app owns both VMs as one lifecycle; the
-Linux sidecar is never listed, attached, run, stopped, or removed independently.
-
-Creation-time setup is the simplest path:
+Add Docker support while creating a VM:
 
 ```bash
 macvm create --name docker-dev --docker
-# --docker implies --setup and performs a clean shutdown before appliance creation
 macvm run docker-dev
 ```
 
-Existing SSH-ready VMs can enable it while stopped:
+`--docker` implies automated setup. For an existing SSH-ready VM, shut it down
+before enabling or changing Docker:
 
 ```bash
 macvm docker enable docker-dev
 macvm docker status docker-dev
 macvm docker configure docker-dev --cpu 4 --memory-gi-b 8 --disk-gi-b 128
-macvm docker update docker-dev             # updates FCOS, preserves Docker state
-macvm docker disable docker-dev            # preserves all sidecar data
-macvm docker reset docker-dev              # destructive; asks for confirmation
+macvm docker update docker-dev
+macvm docker disable docker-dev
+macvm docker reset docker-dev
 ```
 
-Docker guest tooling requires Homebrew in the macOS VM. Automated setup installs
-it by default; for another SSH-ready VM, run
-`macvm provision docker-dev --profile homebrew` while it is running before
-enabling Docker. Enable, reset, and update may need network access to refresh the
-Fedora CoreOS cache. The Docker CLI formulae are installed later, on the next
-normal VM start, so that first start also needs network access unless the formulae
-are already installed or cached.
+Automated setup installs the required Homebrew dependency. For another
+SSH-ready VM, run `macvm provision docker-dev --profile homebrew` while it is
+running before enabling Docker. Docker defaults to 2 vCPUs, 4 GiB RAM, and a
+sparse 64 GiB data disk. Disk capacity can grow but cannot shrink; `reset`
+destroys Docker images, containers, and volumes.
 
-Defaults are 2 vCPUs, 4 GiB RAM, a sparse 64 GiB Docker data disk, and
-`linux/amd64` support requested. Disk configuration can grow but not shrink;
-use the destructive reset operation for a smaller fresh disk. Settings can only
-change while the macOS VM is stopped. Install Rosetta for Linux explicitly when
-needed:
+Install Rosetta for Linux explicitly when `linux/amd64` containers need it:
 
 ```bash
 macvm docker configure docker-dev --amd64 --install-rosetta
-# or: macvm docker enable docker-dev --install-rosetta
 ```
 
-On first normal start, MacVM uses Homebrew to install the `docker`,
-`docker-buildx`, and `docker-compose` formulae plus its separately signed guest
-helper, which has no Virtualization.framework entitlement. MacVM adds
-`/opt/homebrew/lib/docker/cli-plugins` to the setup account's
-`~/.docker/config.json` without replacing other Docker settings.
-`/var/run/docker.sock` belongs to a
-dedicated `docker` group containing the setup account. The helper reaches Moby
-through a per-VM SSH local forward; Docker TCP is never exposed on either VM
-NIC. The VMs share a retained datagram socketpair as a private Ethernet segment,
-while the Linux appliance has its own NAT NIC for image pulls. Automatic Fedora
-CoreOS reboots are disabled so mounts cannot disappear beneath restart-policy
-containers. Use `macvm docker update` while the macOS VM is stopped to replace
-the Fedora CoreOS system appliance while preserving its machine identity and
-the separate `/var/lib/docker` data disk. The update is staged with APFS
-copy-on-write clones when available. Existing appliances are committed with a
-Darwin atomic directory exchange and a recovery journal; startup, status, clone,
-and later Docker mutations finish an interrupted commit or rollback. If the VM
-bundle's filesystem does not support atomic directory exchange, replacement
-fails without removing the old appliance. `macvm docker reset` remains the
-destructive way to create a completely fresh Docker data disk.
-
-MacVM automatically checks Fedora's stable stream before creating, resetting,
-or updating an appliance. A successfully refreshed image is recorded as the
-verified current cache entry. If the host is offline, MacVM verifies and uses
-that cached image instead. Cache management is available independently of any
-VM:
-
-```bash
-macvm docker image status
-macvm docker image refresh                 # requires network access
-macvm docker image auto-refresh off        # use only the verified cache
-macvm docker image auto-refresh on         # default; offline fallback remains enabled
-```
-
-With automatic refresh disabled, creation, reset, and update require an
-existing verified cache entry. Run the explicit refresh once while connected
-before taking the host offline.
-
-Bind sources are paths in the **macOS guest**, exactly as written in ordinary
-Docker syntax:
+Inside the guest, use ordinary Docker commands and macOS guest paths for bind
+mount sources:
 
 ```bash
 macvm ssh docker-dev
 docker run --rm -v "$PWD:/work" -w /work alpine ls
-docker run --rm --mount type=bind,src=/private/tmp,dst=/tmp alpine ls /tmp
 ```
 
-A schema-aware Docker API proxy rewrites supported bind fields to narrowly scoped
-mounts under `/run/macvm-macos`. It exposes each requested directory subtree;
-an exact-file bind uses an isolated one-entry export instead of mounting the
-file's parent directory into the Docker namespace. SSHFS travels over the
-isolated reverse SSH tunnel and also supports mounted paths under `/Volumes`.
-Persisted mappings are remounted after helper or sidecar reconnects. This
-Docker-visible scoping is not containment against a compromised sidecar root,
-which owns the restricted SSHFS credential. The proxy does not blindly replace
-strings in arbitrary JSON. Container-published IPv4 TCP and UDP ports
-are relayed inside the macOS guest and follow running container lifecycle;
-IPv6-only and ambiguous same-port/multi-address publications are reported as
-unsupported rather than exposed incorrectly.
-
-Recovery boots skip the sidecar. A synchronous sidecar configuration, integrity,
-transaction-recovery, or lock failure aborts the macOS start before its start
-request is submitted. A later sidecar-readiness or guest-helper integration
-failure can leave macOS running and is reported as degraded Docker status.
-`disable` preserves data;
-`reset` destroys Docker images, containers, and volumes. Removing the owner
-bundle removes the nested sidecar automatically.
-
-## MacVM App
-
-Open `MacVM` from `/Applications` for a graphical VM manager. It can create and clone VMs, list existing VMs, own multiple running VMs, run setup, manage restore images, and track Xcode `.xip` archives used for guest provisioning. `macvm run`, `macvm run --headless`, `macvm attach`, and `macvm stop` are control commands for this same app process. Closing a VM display hides it without stopping the VM; use **Attach** to restore it. Use the Clone button or a stopped VM's sidebar context menu to create a copy.
-
-Because MacVM owns ordinary running VMs in-process, quitting or crashing the app affects every VM it currently owns. Headless handoff also requires a logged-in macOS GUI session.
+See [Docker](docs/docker.md) for image caching, offline use, bind mounts,
+published-port support, data lifecycle, troubleshooting, and architecture.
 
 ## Automated Setup
 
-MacVM can drive a fresh macOS install to an SSH-ready state:
-
-Automated setup is tested and supported for macOS 15, 26, and 27 guests. macOS 27 hosts prefer Virtualization.framework's native first-boot guest provisioning; macOS 15 and 26 guests use versioned OCR flows. Other Virtualization.framework-compatible releases can still be installed and run with Setup Assistant completed manually. An explicit `--script` or per-VM `Setup/steps.json` opts into custom VNC automation for an otherwise unsupported release.
-
-Installing a macOS beta guest can require the matching Xcode beta's first-launch components on the host, even when the standalone Device Support package is already installed. If Virtualization.framework reports that a software update is required, install or launch the matching Xcode, allow its additional components to finish, and retry with a fresh VM bundle.
+MacVM can drive a fresh macOS install to an SSH-ready state. Automated setup is
+tested and supported for macOS 15, 26, and 27 guests. Other compatible releases
+can be installed and completed manually.
 
 ```bash
 macvm create --name dev-02 --ipsw ~/Downloads/UniversalMac_27.x_Restore.ipsw --setup
@@ -275,34 +179,24 @@ macvm inventory dev-02 > dev-02.inventory
 ansible -i dev-02.inventory all -m raw -a true
 ```
 
-After successful CLI setup, MacVM performs a clean guest shutdown and reboot into
-`MacVM.app` ownership, then returns after the app confirms that the VM is running.
-This is an ownership handoff with a reboot, not a live transfer, and requires a
-logged-in GUI session. A failed clean shutdown is bounded and force-stopped rather
-than hanging indefinitely. If the app handoff is not acknowledged, setup reports
-whether a live owner appeared; check `macvm show` before retrying an ambiguous
-request. Pass `--shutdown-after` to leave the VM stopped deliberately and skip the
-app handoff.
-
-Setup uses native guest provisioning where available and otherwise uses a verified OCR policy with redacted decision traces under each VM bundle's `Setup/diagnostics/`. Contributors can run `make test-setup-e2e` to soak three fresh clones of one installed seed; set `MACVM_E2E_IPSW` to select the guest release explicitly.
-
-By default setup creates an `admin` account with password `admin`. Override it when creating or setting up a VM:
+Setup starts the completed VM through `MacVM.app` by default. Pass
+`--shutdown-after` to leave it stopped instead. The default account is
+`admin` / `admin`; override it when creating or setting up a VM:
 
 ```bash
 macvm setup dev-02 --username developer --password 'secret' --shutdown-after
 ```
 
-Setup also installs Homebrew by default and configures it for zsh login shells.
-Use `--no-homebrew` for an offline or minimal guest. Docker setup requires
-Homebrew and cannot be combined with `--no-homebrew`.
+Setup installs Homebrew by default. Use `--no-homebrew` for an offline or
+minimal guest. Docker setup requires Homebrew.
 
-To install Xcode during setup, pass a local `.xip` archive:
+Install Xcode during setup by passing a local `.xip` archive:
 
 ```bash
 macvm create --name xcode-02 --setup --xcode ~/Downloads/Xcode_26.3.xip
 ```
 
-Apply one or more bundled provisioning profiles during creation:
+Apply bundled provisioning profiles during creation:
 
 ```bash
 macvm profiles list
@@ -315,20 +209,19 @@ Profiles imply `--setup`. To provision an existing SSH-ready VM, start it and ru
 macvm provision dev-03 --profile typescript --profile claude-code
 ```
 
-Local profiles are discovered from `~/Library/Application Support/macvm/Profiles`,
-`~/.config/macvm/profiles`, the VM root's `.profiles` directory, and a VM bundle's
-`Setup/Profiles` directory. See [Provisioning Profiles](docs/provisioning.md) for
-the manifest format, inputs, security model, GitHub runner example, and opt-in
-real-VM smoke test.
+See [Automation](docs/automation.md) for setup support and troubleshooting, and
+[Provisioning Profiles](docs/provisioning.md) for profile discovery, formats,
+inputs, and security.
 
 ## Display and VNC Access
 
-Every running VM owner publishes a temporary password-protected VNC session. Closing a native display window leaves its VM running. Use **Attach** in MacVM or `macvm attach` to show a native window; a VM started with `--headless` gets its first native display lazily without restarting:
+Closing a native display window leaves its VM running. Use **Attach** in MacVM
+or `macvm attach` to show it again. A headless VM can gain its first native
+display without restarting:
 
 ```bash
 macvm run dev-02
 macvm attach dev-02
-macvm vnc dev-02
 
 macvm run dev-02 --headless
 macvm attach dev-02
@@ -340,9 +233,11 @@ macvm type dev-02 "hello"
 macvm keys dev-02 return tab
 ```
 
-`macvm attach` asks MacVM to show its native display. Bare `macvm vnc <vm>` prints the live `vnc://` URL; `macvm vnc --open <vm>` opens it in macOS Screen Sharing. The private VNC server binds beyond loopback and uses a random password embedded in that URL. Treat the session as reachable from your local network while the VM is running.
+Bare `macvm vnc <vm>` prints the live `vnc://` URL; `macvm vnc --open <vm>`
+opens it in macOS Screen Sharing. VNC sessions use temporary credentials and
+may be reachable from the local network, so treat the URL as a secret.
 
-## Launch On Boot
+## Launch on Boot
 
 Launch a VM headless when your macOS user logs in:
 
@@ -351,27 +246,24 @@ macvm create --name dev-03 --launch-on-boot
 macvm autostart enable dev-02
 ```
 
-Launch-on-boot is per user and starts at login, not before login. It uses the same MacVM-owned headless/VNC path as `macvm run --headless`. The first login after enabling it may ask for Local Network access; allow MacVM so the guest can use its virtual network. You can change this later in **System Settings > Privacy & Security > Local Network**.
+Launch-on-boot is per user and starts at login, not before login. The first
+login after enabling it may ask for Local Network access; allow MacVM so the
+guest can use its virtual network. You can change this later in **System
+Settings > Privacy & Security > Local Network**.
 
 ## Shared Files
 
-By default, each VM's host-side `Shared` directory is mounted as the guest share
-root:
+Each VM's host-side `Shared` directory is mounted in the guest at:
 
 ```text
 /Volumes/My Shared Files
 ```
 
-Its `Transfers` directory therefore appears in the guest at:
-
-```text
-/Volumes/My Shared Files/Transfers
-```
-
-For a VM named `dev-01`, the corresponding host path is:
+For a VM named `dev-01`, the host and guest transfer paths are:
 
 ```text
 ~/VirtualMachines/MacVMHost/dev-01.macvm/Shared/Transfers
+/Volumes/My Shared Files/Transfers
 ```
 
 VMs created with `--no-bootstrap` do not attach this share automatically.
@@ -379,11 +271,13 @@ VMs created with `--no-bootstrap` do not attach this share automatically.
 ## Notes
 
 - iCloud sign-in must be completed interactively in the guest.
-- Moving a VM to another Mac, or running clones of the same VM on the same Mac, can require iCloud reauthentication.
-- Python-backed Ansible modules need a real Python interpreter in the guest. Install Command Line Tools or Xcode first.
+- Moving or cloning a VM can require iCloud reauthentication.
 
 ## More Documentation
 
-- [Automation details](docs/automation.md)
+- [Docker](docs/docker.md)
+- [Resource management](docs/resource-management.md)
+- [Automation](docs/automation.md)
+- [Provisioning profiles](docs/provisioning.md)
 - [Development guide](docs/development.md)
 - [Release process](docs/release.md)

@@ -109,3 +109,7 @@ pkgutil --payload-files "dist/MacVM-${VERSION}.pkg"
 ```
 
 The disk image contains `MacVM.app` for the Homebrew `app` artifact. The package additionally installs the `/usr/local/bin/macvm` link for manual users. Unsigned local artifacts are for payload inspection only; public artifacts must come from the GitHub release workflow.
+
+The package marks `MacVM.app` as non-relocatable so PackageKit always installs
+it at `/Applications/MacVM.app`, even when another build with the same bundle
+identifier exists elsewhere on the host.

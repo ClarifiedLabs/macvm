@@ -31,8 +31,6 @@ stopped and skips the handoff. A handoff response can fail after the app accepte
 the request, so follow the reported live-owner status and check `macvm show`
 before retrying.
 
-Python-based Ansible modules such as `ping` require a real Python interpreter in the guest. A bare macOS install exposes `/usr/bin/python3` as a Command Line Tools stub, so install Command Line Tools or Xcode first.
-
 ## VNC Automation Commands
 
 These commands attach to the VNC session published by any live MacVM display, `--headless`, or `setup` owner:
