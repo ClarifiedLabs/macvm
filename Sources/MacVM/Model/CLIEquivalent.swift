@@ -91,6 +91,7 @@ enum CLIEquivalent {
         _ draft: VMCreationDraft,
         defaults: VMCreationDraft,
         setupAfter: Bool,
+        installHomebrew: Bool = true,
         xcodeXIPURL: URL? = nil,
         profileIDs: [String] = [],
         profileInputs: [String: [String: String]] = [:]
@@ -119,6 +120,9 @@ enum CLIEquivalent {
         }
         if setupAfter {
             command += " --setup"
+            if !installHomebrew {
+                command += " --no-homebrew"
+            }
             if let xcodeXIPURL {
                 command += " --xcode \(abbreviatePath(xcodeXIPURL.path))"
             }

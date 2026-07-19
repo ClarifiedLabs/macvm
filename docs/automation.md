@@ -89,11 +89,11 @@ Beta restore images may require the matching Xcode beta's first-launch MobileDev
 
 ## Native Guest Provisioning
 
-The `macos-27` plan asks `HeadlessRunner` to apply `VZMacGuestProvisioningOptions` on hosts whose Virtualization.framework exposes the API. The guest creates the requested account and optionally enables auto-login and Remote Login during its first boot after restore. MacVM then verifies the login window or Finder before applying its SSH key, sudo, sleep, Xcode, and provisioning-profile configuration. On older hosts, or when Virtualization.framework rejects the options, the same plan falls back to its macOS 27 OCR flow. Native provisioning is first-boot-only; it cannot reconfigure a guest that has already completed Setup Assistant.
+The `macos-27` plan asks `HeadlessRunner` to apply `VZMacGuestProvisioningOptions` on hosts whose Virtualization.framework exposes the API. The guest creates the requested account and optionally enables auto-login and Remote Login during its first boot after restore. MacVM then verifies the login window or Finder before applying its SSH key, sudo, sleep, Xcode, Homebrew, and provisioning-profile configuration. Homebrew is installed by default; pass `--no-homebrew` for an offline or minimal setup. On older hosts, or when Virtualization.framework rejects the options, the same plan falls back to its macOS 27 OCR flow. Native provisioning is first-boot-only; it cannot reconfigure a guest that has already completed Setup Assistant.
 
 ## Bootstrap Script
 
-The generated `bootstrap-tools.sh` script prepares a guest for common first-run setup tasks:
+The generated `bootstrap-tools.sh` script remains available for manual setup and prepares a guest for common first-run tasks:
 
 - install Homebrew if needed
 - install `git`, `gh`, `jq`, and `gnu-tar`
@@ -112,3 +112,7 @@ For create-time provisioning, pass an Xcode `.xip` directly:
 ```bash
 macvm create --setup --xcode ~/Downloads/Xcode_26.3.xip
 ```
+
+Automated setup installs Homebrew independently of this bootstrap script. The
+script's Homebrew step is idempotent and remains useful when automated setup was
+skipped.

@@ -375,6 +375,17 @@ func homebrewPlaybookRestoresXcodeSelectionAroundInstaller() throws {
 }
 
 @Test
+func builtInHomebrewInstallerIsNoninteractiveAndConfiguresLoginShells() {
+    let script = HomebrewGuestInstaller.installScript
+
+    #expect(script.contains("NONINTERACTIVE=1"))
+    #expect(script.contains("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"))
+    #expect(script.contains("sudo -n /usr/bin/xcode-select --switch"))
+    #expect(script.contains(#"eval "$(/opt/homebrew/bin/brew shellenv)""#))
+    #expect(!script.contains("brew update"))
+}
+
+@Test
 func appleDevelopmentPlaybookReselectsXcodeBeforeVerifying() throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
     let catalog = ProvisioningCatalog.load(rootDirectory: root)
@@ -1493,8 +1504,8 @@ func setupFlowDrivesEarlyOnboardingPanesReactivelyBeforeAccountCreation() throws
 func setupPlanExposesPhasesWithAnchors() {
     let plan = try! SetupFlows.builtIn(for: macOS26Release, options: SetupOptions())
 
-    #expect(plan.phases.count == 9)
-    #expect(plan.phases.map(\.id) == Array(0..<9))
+    #expect(plan.phases.count == 10)
+    #expect(plan.phases.map(\.id) == Array(0..<10))
     #expect(plan.phases.map(\.title) == [
         "Boot headless, connect RFB client",
         "Language and region",
@@ -1505,17 +1516,20 @@ func setupPlanExposesPhasesWithAnchors() {
         "Reach the desktop",
         "Enable SSH, install per-VM key",
         "Wait for IP and SSH",
+        "Install Homebrew",
     ])
     #expect(plan.phases[2].anchor == #"advanceUntilText "Create a.*Account""#)
     #expect(plan.phases[3].anchor == "createAccount")
     #expect(plan.phases[4].anchor == "advanceUntilScreen loginWindowOrDesktop")
     #expect(plan.phases[8].anchor == "dhcpd_leases")
+    #expect(plan.phases[9].anchor == "install Homebrew")
 
     // Pipeline-owned phases carry no step index; OCR phases point into the flow
     // in step order.
     #expect(plan.phases[0].firstStepIndex == nil)
     #expect(plan.phases[7].firstStepIndex == nil)
     #expect(plan.phases[8].firstStepIndex == nil)
+    #expect(plan.phases[9].firstStepIndex == nil)
     let stepIndexes = plan.phases.compactMap(\.firstStepIndex)
     #expect(stepIndexes.count == 6)
     #expect(stepIndexes == stepIndexes.sorted())
@@ -1530,35 +1544,59 @@ func setupPlanAddsXcodePhaseOnlyWhenRequested() {
         options: SetupOptions(xcodeXIPURL: URL(fileURLWithPath: "/tmp/Xcode.xip"))
     )
 
-    #expect(plain.phases.map(\.title).last == "Wait for IP and SSH")
+    #expect(plain.phases.map(\.title).last == "Install Homebrew")
     #expect(withXcode.phases.count == plain.phases.count + 1)
     #expect(withXcode.phases.map(\.id) == Array(0..<withXcode.phases.count))
-    #expect(withXcode.phases.suffix(2).map(\.title) == ["Wait for IP and SSH", "Install Xcode"])
-    #expect(withXcode.phases.last?.anchor == "bootstrap-tools --install-xcode")
+    #expect(withXcode.phases.suffix(2).map(\.title) == ["Install Xcode", "Install Homebrew"])
+    #expect(withXcode.phases.dropLast().last?.anchor == "bootstrap-tools --install-xcode")
+    #expect(withXcode.phases.last?.anchor == "install Homebrew")
     #expect(withXcode.phases.last?.firstStepIndex == nil)
+}
+
+@Test
+func setupPlanOmitsHomebrewPhaseWhenDisabled() {
+    let plan = try! SetupFlows.builtIn(
+        for: macOS26Release,
+        options: SetupOptions(installHomebrew: false)
+    )
+
+    #expect(plan.phases.count == 9)
+    #expect(plan.phases.last?.title == "Wait for IP and SSH")
 }
 
 @Test
 func setupPlanAddsResolvedProvisioningProfilesInExecutionOrder() throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
-    let profiles = try ProvisioningCatalog.load(rootDirectory: root).resolve(["codex"])
-    let plan = try SetupFlows.builtIn(
-        for: macOS26Release,
+    let bundleURL = root.appendingPathComponent("test.macvm", isDirectory: true)
+    let vm = ManagedVM(
+        bundleURL: bundleURL,
+        metadata: VMMetadata(
+            name: "test",
+            cpuCount: 2,
+            memorySizeBytes: 4 * oneGiB,
+            diskSizeBytes: 40 * oneGiB,
+            displayWidth: 1280,
+            displayHeight: 720,
+            bootstrapShareEnabled: false,
+            installedMacOSRelease: macOS26Release
+        )
+    )
+    let plan = try MacVMService(rootDirectory: root).setupPlan(
+        for: vm,
         options: SetupOptions(
             xcodeXIPURL: URL(fileURLWithPath: "/tmp/Xcode.xip"),
             provisioningSelection: ProvisioningSelection(profileIDs: ["codex"])
-        ),
-        provisioningProfiles: profiles
+        )
     )
 
     #expect(plan.phases.map(\.id) == Array(0..<plan.phases.count))
     #expect(plan.phases.suffix(3).map(\.title) == [
         "Install Xcode",
-        "Provisioning: Homebrew",
+        "Install Homebrew",
         "Provisioning: Codex",
     ])
     #expect(plan.phases.suffix(2).map(\.anchor) == [
-        "ansible-playbook homebrew",
+        "install Homebrew",
         "ansible-playbook codex",
     ])
 }
@@ -1567,7 +1605,7 @@ func setupPlanAddsResolvedProvisioningProfilesInExecutionOrder() throws {
 func setupPhasesForCustomFlowLeaveUnmatchedMarkersWithoutStepIndexes() {
     let phases = SetupFlows.phases(for: [.waitText("Custom"), .clickText("Go")])
 
-    #expect(phases.count == 9)
+    #expect(phases.count == 10)
     #expect(phases[1].firstStepIndex == 0)
     #expect(phases[2].firstStepIndex == nil)
     #expect(phases[4].firstStepIndex == nil)

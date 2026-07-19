@@ -14,7 +14,8 @@ MacVM uses Apple's Virtualization framework, creates each VM from a macOS restor
 - Apple silicon Mac
 - macOS 26 or newer
 - Enough free disk space for the guest OS and VM disk
-- Internet access while enabling Docker (Fedora CoreOS, Docker CLI, and Compose are checksum-verified before use)
+- Internet access during default automated setup to install Homebrew; use `--no-homebrew` for an offline/minimal setup
+- Internet access while enabling Docker to download checksum-verified Fedora CoreOS and install Docker tools with Homebrew
 - Optional: Rosetta for Linux for `linux/amd64` containers; MacVM only installs it after an explicit CLI or app action
 
 MacVM can fetch the latest macOS restore image supported by your host. You can also pass a local `.ipsw` restore image.
@@ -157,6 +158,11 @@ macvm docker disable docker-dev            # preserves all sidecar data
 macvm docker reset docker-dev              # destructive; asks for confirmation
 ```
 
+Docker guest tooling requires Homebrew in the macOS VM. Automated setup installs
+it by default; for another SSH-ready VM, run
+`macvm provision docker-dev --profile homebrew` while it is running before
+enabling Docker.
+
 Defaults are 2 vCPUs, 4 GiB RAM, a sparse 64 GiB Docker data disk, and
 `linux/amd64` support requested. Disk configuration can grow but not shrink;
 use the destructive reset operation for a smaller fresh disk. Settings can only
@@ -168,9 +174,11 @@ macvm docker configure docker-dev --amd64 --install-rosetta
 # or: macvm docker enable docker-dev --install-rosetta
 ```
 
-On first normal start, MacVM installs checksum-pinned arm64 Docker CLI and
-Compose binaries plus its separately signed guest helper, which has no
-Virtualization.framework entitlement.
+On first normal start, MacVM uses Homebrew to install the `docker`,
+`docker-buildx`, and `docker-compose` formulae plus its separately signed guest
+helper, which has no Virtualization.framework entitlement. MacVM adds
+`/opt/homebrew/lib/docker/cli-plugins` to the setup account's
+`~/.docker/config.json` without replacing other Docker settings.
 `/var/run/docker.sock` belongs to a
 dedicated `docker` group containing the setup account. The helper reaches Moby
 through a per-VM SSH local forward; Docker TCP is never exposed on either VM
@@ -254,6 +262,10 @@ By default setup creates an `admin` account with password `admin`. Override it w
 ```bash
 macvm setup dev-02 --username developer --password 'secret' --shutdown-after
 ```
+
+Setup also installs Homebrew by default and configures it for zsh login shells.
+Use `--no-homebrew` for an offline or minimal guest. Docker setup requires
+Homebrew and cannot be combined with `--no-homebrew`.
 
 To install Xcode during setup, pass a local `.xip` archive:
 

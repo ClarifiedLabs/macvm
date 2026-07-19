@@ -123,7 +123,7 @@ public enum DockerGuestProvisioningState: String, Codable, Equatable, Sendable {
 
 public struct DockerSidecarSettings: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 1
-    public static let currentGuestProvisioningVersion = 8
+    public static let currentGuestProvisioningVersion = 9
     public static let defaultCPUCount = 2
     public static let defaultMemoryGiB = 4
     public static let defaultDiskGiB = 64
@@ -310,6 +310,8 @@ public struct SetupOptions: Sendable {
     public var scriptOverride: URL?
     /// Optional host-side Xcode .xip to stage and install during setup.
     public var xcodeXIPURL: URL?
+    /// Install Homebrew as a first-class setup phase after SSH becomes ready.
+    public var installHomebrew: Bool
     /// Composable Ansible profiles to apply after SSH becomes ready.
     public var provisioningSelection: ProvisioningSelection
 
@@ -324,6 +326,7 @@ public struct SetupOptions: Sendable {
         shutdownAfter: Bool = false,
         scriptOverride: URL? = nil,
         xcodeXIPURL: URL? = nil,
+        installHomebrew: Bool = true,
         provisioningSelection: ProvisioningSelection = ProvisioningSelection()
     ) {
         self.username = username
@@ -336,6 +339,7 @@ public struct SetupOptions: Sendable {
         self.shutdownAfter = shutdownAfter
         self.scriptOverride = scriptOverride
         self.xcodeXIPURL = xcodeXIPURL
+        self.installHomebrew = installHomebrew
         self.provisioningSelection = provisioningSelection
     }
 }

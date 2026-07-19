@@ -459,6 +459,21 @@ func createCommandIncludesOverridesInCLIOrder() {
 }
 
 @Test
+func createCommandRendersHomebrewSetupOptOut() {
+    let defaults = makeDraft(name: "")
+    let draft = makeDraft(name: "minimal")
+
+    #expect(
+        CLIEquivalent.create(
+            draft,
+            defaults: defaults,
+            setupAfter: true,
+            installHomebrew: false
+        ) == "macvm create --name minimal --setup --no-homebrew"
+    )
+}
+
+@Test
 func createCommandRendersLocalIPSWPath() {
     let defaults = makeDraft(name: "")
     var draft = makeDraft(name: "local")
@@ -789,7 +804,7 @@ func managerReconstructsXcodeSetupProgressFromRuntimeState() throws {
             xcodeXIPURL: URL(fileURLWithPath: "Xcode.xip")
         )
     )
-    let xcodePhase = try #require(plan.phases.last)
+    let xcodePhase = try #require(plan.phases.first { $0.title == "Install Xcode" })
     try bundle.writeSetupRuntimeState(VMSetupRuntimeState(
         username: "admin",
         fullName: "Administrator",
@@ -811,7 +826,7 @@ func managerReconstructsXcodeSetupProgressFromRuntimeState() throws {
     #expect(setup.currentPhaseID == xcodePhase.id)
     #expect(setup.statusMessage == "Xcode: installing Xcode.xip in the guest")
     #expect(setup.logMessages == ["Waiting for SSH", "Xcode: installing Xcode.xip in the guest"])
-    #expect(setup.phases.map(\.title).last == "Install Xcode")
+    #expect(setup.phases.suffix(2).map(\.title) == ["Install Xcode", "Install Homebrew"])
     #expect(setup.phases.count == plan.phases.count)
 }
 

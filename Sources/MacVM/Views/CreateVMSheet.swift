@@ -129,6 +129,8 @@ struct CreateVMSheet: View {
                                     }
                                 }
                                 if store.setupAfterInstall {
+                                    Toggle("Install Homebrew", isOn: $store.installHomebrewAfterSetup)
+                                        .disabled(store.draft.dockerEnabled)
                                     HStack(spacing: 8) {
                                         Text("Xcode:")
                                             .foregroundStyle(.secondary)
@@ -315,7 +317,10 @@ struct CreateVMSheet: View {
             get: { store.draft.dockerEnabled },
             set: { enabled in
                 store.draft.dockerEnabled = enabled
-                if enabled { store.setupAfterInstall = true }
+                if enabled {
+                    store.setupAfterInstall = true
+                    store.installHomebrewAfterSetup = true
+                }
             }
         )
     }

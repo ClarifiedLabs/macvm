@@ -53,6 +53,9 @@ struct SetupArguments: ParsableArguments {
     @Option(name: .long, help: "Path to a custom setup step-list (JSON) overriding the built-in flow.")
     var script: String?
 
+    @Flag(name: .customLong("homebrew"), inversion: .prefixedNo, help: "Install Homebrew during setup.")
+    var homebrew = true
+
     @Option(name: .long, help: "Provisioning profile to apply after setup. Repeat for multiple profiles.")
     var profile: [String] = []
 
@@ -75,6 +78,7 @@ struct SetupArguments: ParsableArguments {
             shutdownAfter: shutdownAfter,
             scriptOverride: script.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) },
             xcodeXIPURL: xcodeXIPURL,
+            installHomebrew: homebrew,
             provisioningSelection: try provisioningSelection(profileIDs: profileIDs, values: profileInput)
         )
     }
@@ -411,6 +415,9 @@ extension MacVMCommand {
                 throw ValidationError("Use either --display or --display-pixels, not both.")
             }
             if docker {
+                guard setupArguments.homebrew else {
+                    throw ValidationError("--docker requires Homebrew; remove --no-homebrew.")
+                }
                 guard dockerCPU > 0 else {
                     throw ValidationError("Docker CPU count must be greater than zero.")
                 }
@@ -455,6 +462,7 @@ extension MacVMCommand {
                 try service.preflightProvisioning(
                     selection: setupOptions.provisioningSelection,
                     xcodeXIPURL: xcodeURL,
+                    setupInstallsHomebrew: setupOptions.installHomebrew,
                     freshVM: true
                 )
             }
@@ -1398,7 +1406,11 @@ extension MacVMCommand {
             let resolved = try service.resolveVM(identifier: identifier)
             let virtualMachine = try service.ensureNetworkIdentity(resolved)
             let options = try setup.makeOptions()
-            try service.preflightProvisioning(selection: options.provisioningSelection, vm: virtualMachine)
+            try service.preflightProvisioning(
+                selection: options.provisioningSelection,
+                vm: virtualMachine,
+                setupInstallsHomebrew: options.installHomebrew
+            )
             try await performSetup(service: service, virtualMachine: virtualMachine, options: options)
         }
     }

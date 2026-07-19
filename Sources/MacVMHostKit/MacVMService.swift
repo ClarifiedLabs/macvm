@@ -143,7 +143,7 @@ public final class MacVMService: Sendable {
     }
 
     public func setupPlan(for vm: ManagedVM, options: SetupOptions) throws -> SetupPlan {
-        let profiles = try provisioningCatalog(for: vm).validate(options.provisioningSelection)
+        let profiles = try setupProvisioningProfiles(for: vm, options: options)
         return try SetupFlows.resolvePlan(
             bundle: VMBundle(url: vm.bundleURL),
             options: options,
@@ -184,18 +184,32 @@ public final class MacVMService: Sendable {
         selection: ProvisioningSelection,
         xcodeXIPURL: URL? = nil,
         vm: ManagedVM? = nil,
+        setupInstallsHomebrew: Bool = false,
         freshVM: Bool = false
     ) throws {
         guard !selection.profileIDs.isEmpty else { return }
+        let profiles = try provisioningCatalog(for: vm).validate(selection)
+        let effectiveProfiles = setupInstallsHomebrew
+            ? profiles.filter { $0.id != "homebrew" }
+            : profiles
+        guard !effectiveProfiles.isEmpty else { return }
         guard AnsibleProvisioner.findExecutable() != nil else {
             throw MacVMError.message("ansible-playbook was not found on this host. Install it with: brew install ansible")
         }
-        let profiles = try provisioningCatalog(for: vm).validate(selection)
         if freshVM,
-           profiles.contains(where: { $0.manifest.requirements.contains("xcode") }),
+           effectiveProfiles.contains(where: { $0.manifest.requirements.contains("xcode") }),
            xcodeXIPURL == nil {
             throw MacVMError.message("The selected provisioning profiles require Xcode. Pass an Xcode .xip with --xcode.")
         }
+    }
+
+    private func setupProvisioningProfiles(
+        for vm: ManagedVM,
+        options: SetupOptions
+    ) throws -> [ProvisioningProfile] {
+        let profiles = try provisioningCatalog(for: vm).validate(options.provisioningSelection)
+        guard options.installHomebrew else { return profiles }
+        return profiles.filter { $0.id != "homebrew" }
     }
 
     public func provision(
@@ -933,7 +947,7 @@ public final class MacVMService: Sendable {
             _ = try Self.normalizedXcodeXIPURL(xcodeXIPURL)
         }
         let bundle = VMBundle(url: vm.bundleURL)
-        let profiles = try provisioningCatalog(for: vm).validate(options.provisioningSelection)
+        let profiles = try setupProvisioningProfiles(for: vm, options: options)
         DebugLog.log(
             "Using setup flow \(plan.flowIdentifier) for \(plan.guestRelease?.displayDescription ?? "unidentified guest")"
         )
@@ -1020,11 +1034,18 @@ public final class MacVMService: Sendable {
             }
             try await installXcodeIfRequested(for: vm, bundle: bundle, options: options, setupResult: result, progress: setupProgress)
 
-            var metadata = vm.metadata
-            metadata.setupUsername = options.username
-            metadata.setupFullName = options.fullName
-            metadata.setupCompletedAt = Date()
-            try bundle.writeMetadata(metadata)
+            if options.installHomebrew {
+                emitPhaseWithAnchor(SetupFlows.homebrewInstallAnchor)
+                guard let host = result.ipAddress else {
+                    throw MacVMError.message("Homebrew installation requires the guest IP address discovered during setup.")
+                }
+                let ssh = GuestSSH(
+                    host: host,
+                    user: options.username,
+                    identityFile: guestIdentityFile(for: vm)
+                )
+                try await HomebrewGuestInstaller.install(over: ssh, bundle: bundle, progress: setupProgress)
+            }
 
             let profilePhases: [String: SetupStepProgress] = Dictionary(
                 uniqueKeysWithValues: profiles.compactMap { profile in
@@ -1047,6 +1068,12 @@ public final class MacVMService: Sendable {
                 progress: setupProgress,
                 profilePhases: profilePhases
             )
+
+            var metadata = vm.metadata
+            metadata.setupUsername = options.username
+            metadata.setupFullName = options.fullName
+            metadata.setupCompletedAt = Date()
+            try bundle.writeMetadata(metadata)
             runtimePublisher.clear()
 
             return result

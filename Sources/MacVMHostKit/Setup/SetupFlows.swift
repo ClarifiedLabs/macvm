@@ -81,6 +81,7 @@ public enum SetupFlows {
     static let provisioningAnchor = "provisioning script"
     static let sshReadyAnchor = "dhcpd_leases"
     static let xcodeInstallAnchor = "bootstrap-tools --install-xcode"
+    static let homebrewInstallAnchor = "install Homebrew"
 
     static func profileAnchor(_ profileID: String) -> String {
         "ansible-playbook \(profileID)"
@@ -133,6 +134,7 @@ public enum SetupFlows {
             phases: phases(
                 for: steps,
                 includeXcodeInstall: options.xcodeXIPURL != nil,
+                includeHomebrewInstall: options.installHomebrew,
                 provisioningProfiles: provisioningProfiles
             ),
             automationStrategy: automationStrategy,
@@ -169,6 +171,7 @@ public enum SetupFlows {
                 phases: phases(
                     for: steps,
                     includeXcodeInstall: options.xcodeXIPURL != nil,
+                    includeHomebrewInstall: options.installHomebrew,
                     provisioningProfiles: provisioningProfiles
                 ),
                 ruleSet: SetupPolicy.macOS26RuleSet
@@ -184,6 +187,7 @@ public enum SetupFlows {
                 phases: phases(
                     for: steps,
                     includeXcodeInstall: options.xcodeXIPURL != nil,
+                    includeHomebrewInstall: options.installHomebrew,
                     provisioningProfiles: provisioningProfiles
                 ),
                 ruleSet: SetupPolicy.macOS26RuleSet
@@ -226,6 +230,7 @@ public enum SetupFlows {
     public static func phases(
         for steps: [SetupStep],
         includeXcodeInstall: Bool = false,
+        includeHomebrewInstall: Bool = true,
         provisioningProfiles: [ProvisioningProfile] = []
     ) -> [SetupPhase] {
         func firstIndex(_ action: SetupStep.Action, containing marker: String) -> Int? {
@@ -257,6 +262,15 @@ public enum SetupFlows {
                 id: phases.count,
                 title: "Install Xcode",
                 anchor: xcodeInstallAnchor,
+                firstStepIndex: nil
+            ))
+        }
+
+        if includeHomebrewInstall {
+            phases.append(SetupPhase(
+                id: phases.count,
+                title: "Install Homebrew",
+                anchor: homebrewInstallAnchor,
                 firstStepIndex: nil
             ))
         }

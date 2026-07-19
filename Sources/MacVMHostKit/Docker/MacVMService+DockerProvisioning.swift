@@ -72,9 +72,29 @@ extension MacVMService {
                 identityFile: identity,
                 knownHostsFile: bundle.dockerGuestKnownHostsURL
             )
-            let tools = try await DockerGuestToolsProvider(
-                cacheDirectory: storage.dockerImageCacheDirectory.appendingPathComponent("guest-tools", isDirectory: true)
-            ).prepare(progress: progress)
+            let hasHomebrew = try await ssh.runQuietAsync(remoteCommand: [
+                "test", "-x", DockerGuestToolInstaller.homebrewExecutablePath,
+            ]) == 0
+            guard hasHomebrew else {
+                throw MacVMError.message(
+                    "Homebrew is required to install Docker guest tools. Run `macvm provision \(currentVM.metadata.name) --profile homebrew` while the VM is running, then shut down and restart the VM."
+                )
+            }
+
+            progress?(.status("Installing Docker CLI, Buildx, and Compose with Homebrew..."))
+            let dockerToolsLog = bundle.runtimeDirectoryURL.appendingPathComponent("docker-tools-provisioning.log")
+            let dockerToolsStatus = try await ssh.runLoggedAsync(
+                remoteCommand: [
+                    "/bin/bash", "-c", GuestProvisioningScript.shellQuote(DockerGuestToolInstaller.installScript),
+                ],
+                logFile: dockerToolsLog,
+                timeout: 30 * 60
+            )
+            guard dockerToolsStatus == 0 else {
+                throw MacVMError.message(
+                    "Homebrew Docker tool installation failed inside macOS (status \(dockerToolsStatus)). See \(dockerToolsLog.path)."
+                )
+            }
             try Task.checkCancellation()
             guard let helper = Bundle.module.url(
                 forResource: "macvm-docker-guest",
@@ -84,7 +104,7 @@ extension MacVMService {
                 throw MacVMError.message("The bundled macvm-docker-guest executable is missing.")
             }
 
-            progress?(.status("Installing Docker CLI, Compose, and the path-aware guest API proxy..."))
+            progress?(.status("Installing the path-aware Docker guest API proxy..."))
             let temporaryDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
                 "macvm-docker-provision-\(UUID().uuidString)",
                 isDirectory: true
@@ -112,8 +132,6 @@ extension MacVMService {
             }
             var stagedFiles: [(URL, String)] = [
                 (helper, "macvm-docker-guest"),
-                (tools.dockerCLITarball, "docker-cli.tgz"),
-                (tools.composePlugin, "docker-compose"),
                 (configURL, "docker-guest.json"),
                 (plistURL, "dev.macvm.docker-guest.plist"),
             ]
@@ -144,15 +162,11 @@ extension MacVMService {
             let installScript = """
             set -euo pipefail
             stage=\(GuestProvisioningScript.shellQuote(remoteDirectory))
-            install -d -m 0755 /usr/local/libexec /usr/local/bin /usr/local/lib/docker/cli-plugins
+            install -d -m 0755 /usr/local/libexec
             install -d -m 0700 '/Library/Application Support/MacVM/Identity'
             install -d -m 0755 '/Library/Application Support/MacVM'
             install -m 0755 "$stage/macvm-docker-guest" /usr/local/libexec/macvm-docker-guest
             \(installPairingKeys)
-            rm -rf "$stage/docker"
-            tar -xzf "$stage/docker-cli.tgz" -C "$stage"
-            install -m 0755 "$stage/docker/docker" /usr/local/bin/docker
-            install -m 0755 "$stage/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose
             dseditgroup -o create docker >/dev/null 2>&1 || true
             dseditgroup -o edit -a \(GuestProvisioningScript.shellQuote(user)) -t user docker
             install -m 0644 "$stage/docker-guest.json" '/Library/Application Support/MacVM/docker-guest.json'
@@ -248,7 +262,8 @@ extension MacVMService {
 
     private func waitForDockerGuestHealth(over ssh: GuestSSH) async throws {
         let deadline = Date().addingTimeInterval(90)
-        let command = "test -S /var/run/docker.sock && sudo -n launchctl print system/dev.macvm.docker-guest >/dev/null && sudo -n /usr/local/bin/docker version >/dev/null"
+        let docker = DockerGuestToolInstaller.dockerExecutablePath
+        let command = "test -S /var/run/docker.sock && sudo -n launchctl print system/dev.macvm.docker-guest >/dev/null && \(docker) version >/dev/null && \(docker) buildx version >/dev/null && \(docker) compose version >/dev/null"
         while Date() < deadline {
             try Task.checkCancellation()
             if (try? await ssh.runQuietAsync(remoteCommand: [

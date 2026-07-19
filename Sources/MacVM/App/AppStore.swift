@@ -90,6 +90,7 @@ final class AppStore {
     var sheetPresented = false
     var draft: VMCreationDraft
     var setupAfterInstall = false
+    var installHomebrewAfterSetup = true
     var selectedXcodeXIPURL: URL?
     var selectedProfileIDs: Set<String> = []
     var profileInputValues: [String: [String: String]] = [:]
@@ -1138,6 +1139,7 @@ final class AppStore {
     func openCreateSheet(prefillIPSW url: URL? = nil, prefillXcode xcodeURL: URL? = nil) {
         draft = service.defaultDraft()
         setupAfterInstall = false
+        installHomebrewAfterSetup = true
         selectedXcodeXIPURL = nil
         selectedProfileIDs = []
         profileInputValues = [:]
@@ -1159,6 +1161,7 @@ final class AppStore {
             draft,
             defaults: service.defaultDraft(),
             setupAfter: setupAfterInstall || draft.dockerEnabled,
+            installHomebrew: installHomebrewAfterSetup,
             xcodeXIPURL: setupAfterInstall ? selectedXcodeXIPURL : nil,
             profileIDs: Array(selectedProfileIDs),
             profileInputs: profileInputValues
@@ -1192,6 +1195,7 @@ final class AppStore {
             try service.preflightProvisioning(
                 selection: provisioningSelection,
                 xcodeXIPURL: selectedXcodeXIPURL,
+                setupInstallsHomebrew: installHomebrewAfterSetup,
                 freshVM: true
             )
         } catch {
@@ -1202,6 +1206,7 @@ final class AppStore {
             draft,
             defaults: service.defaultDraft(),
             setupAfter: shouldSetup,
+            installHomebrew: installHomebrewAfterSetup,
             xcodeXIPURL: shouldSetup ? selectedXcodeXIPURL : nil,
             profileIDs: Array(effectiveProfileIDs),
             profileInputs: profileInputValues
@@ -1214,6 +1219,7 @@ final class AppStore {
 
         let runSetupAfter = shouldSetup
         let setupXcodeXIPURL = shouldSetup ? selectedXcodeXIPURL : nil
+        let setupInstallHomebrew = installHomebrewAfterSetup
         if draft.dockerEnabled {
             pendingDockerEnables[name] = DockerSidecarResourceConfiguration(
                 cpuCount: draft.dockerCPUCount,
@@ -1228,6 +1234,7 @@ final class AppStore {
             do {
                 let creationSetupOptions = runSetupAfter ? SetupOptions(
                     xcodeXIPURL: setupXcodeXIPURL,
+                    installHomebrew: setupInstallHomebrew,
                     provisioningSelection: setupSelection
                 ) : nil
                 let vm = try await service.createVM(
@@ -1264,6 +1271,7 @@ final class AppStore {
                         options: SetupOptions(
                             shutdownAfter: draft.dockerEnabled,
                             xcodeXIPURL: setupXcodeXIPURL,
+                            installHomebrew: setupInstallHomebrew,
                             provisioningSelection: setupSelection
                         )
                     )

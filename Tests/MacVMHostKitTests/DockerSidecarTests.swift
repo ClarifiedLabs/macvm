@@ -7,6 +7,29 @@ import Virtualization
 
 private struct DockerImageUnavailable: Error {}
 
+private func runDockerConfigurationScript(home: URL) throws -> Int32 {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/bash")
+    process.arguments = ["-c", DockerGuestToolInstaller.configurationScript]
+    var environment = ProcessInfo.processInfo.environment
+    environment["HOME"] = home.path
+    process.environment = environment
+    let standardOutput = Pipe()
+    let standardError = Pipe()
+    process.standardOutput = standardOutput
+    process.standardError = standardError
+    try process.run()
+    process.waitUntilExit()
+    _ = standardOutput.fileHandleForReading.readDataToEndOfFile()
+    _ = standardError.fileHandleForReading.readDataToEndOfFile()
+    return process.terminationStatus
+}
+
+private func dockerConfigObject(at url: URL) throws -> [String: Any] {
+    let data = try Data(contentsOf: url)
+    return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
 private struct DockerImageTestDownloader: DockerImageDownloading {
     let streamData: Data?
     let compressedImageData: Data?
@@ -98,6 +121,67 @@ private func dockerTestSettings(enabled: Bool = true) -> DockerSidecarSettings {
         imageVersion: dockerTestImage.release,
         mobyVersion: "28.3.2"
     )
+}
+
+@Test
+func dockerGuestToolsUseHomebrewFormulae() {
+    #expect(DockerGuestToolInstaller.packageInstallScript.contains(
+        "/opt/homebrew/bin/brew install docker docker-buildx docker-compose"
+    ))
+    #expect(DockerGuestToolInstaller.dockerExecutablePath == "/opt/homebrew/bin/docker")
+    #expect(!DockerGuestToolInstaller.installScript.contains("download.docker.com"))
+}
+
+@Test
+func dockerPluginConfigIsCreatedForHomebrew() throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: home) }
+
+    #expect(try runDockerConfigurationScript(home: home) == 0)
+    let configURL = home.appendingPathComponent(".docker/config.json")
+    let config = try dockerConfigObject(at: configURL)
+    #expect(config["cliPluginsExtraDirs"] as? [String] == [DockerGuestToolInstaller.pluginDirectory])
+    let permissions = try #require(
+        FileManager.default.attributesOfItem(atPath: configURL.path)[.posixPermissions] as? NSNumber
+    )
+    #expect(permissions.intValue & 0o777 == 0o600)
+}
+
+@Test
+func dockerPluginConfigMergePreservesSettingsAndIsIdempotent() throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let dockerDirectory = home.appendingPathComponent(".docker", isDirectory: true)
+    try FileManager.default.createDirectory(at: dockerDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let configURL = dockerDirectory.appendingPathComponent("config.json")
+    try Data(#"{"auths":{"example.test":{}},"cliPluginsExtraDirs":["/custom/plugins"]}"#.utf8)
+        .write(to: configURL)
+
+    #expect(try runDockerConfigurationScript(home: home) == 0)
+    #expect(try runDockerConfigurationScript(home: home) == 0)
+    let config = try dockerConfigObject(at: configURL)
+    #expect(config["auths"] != nil)
+    #expect(config["cliPluginsExtraDirs"] as? [String] == [
+        "/custom/plugins",
+        DockerGuestToolInstaller.pluginDirectory,
+    ])
+}
+
+@Test(arguments: [
+    "not json",
+    #"{"cliPluginsExtraDirs":"/custom/plugins"}"#,
+])
+func invalidDockerPluginConfigIsNotOverwritten(contents: String) throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let dockerDirectory = home.appendingPathComponent(".docker", isDirectory: true)
+    try FileManager.default.createDirectory(at: dockerDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let configURL = dockerDirectory.appendingPathComponent("config.json")
+    try Data(contents.utf8).write(to: configURL)
+
+    #expect(try runDockerConfigurationScript(home: home) != 0)
+    #expect(try String(contentsOf: configURL, encoding: .utf8) == contents)
 }
 
 @Test
