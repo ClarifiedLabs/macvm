@@ -1460,7 +1460,10 @@ public final class MacVMService: Sendable {
         try bundle.prepareSharedDirectory(includeBootstrapShare: metadata.bootstrapShareEnabled)
 
         progress?(.status("Validating VM configuration..."))
-        let configuration = try bundle.makeConfiguration(metadata: metadata)
+        let configuration = try bundle.makeConfiguration(
+            metadata: metadata,
+            memoryBalloonEnabled: false
+        )
         DebugLog.log("Configuration validated successfully for \(draft.name)")
         let virtualMachine = VZVirtualMachine(configuration: configuration)
         DebugLog.log("Created VZVirtualMachine on queue \(String(cString: __dispatch_queue_get_label(virtualMachine.queue)))")

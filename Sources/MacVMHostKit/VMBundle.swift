@@ -621,7 +621,8 @@ struct VMBundle {
     func makeConfiguration(
         metadata: VMMetadata,
         forceSharedDirectory: Bool = false,
-        additionalNetworkDevices: [VZNetworkDeviceConfiguration] = []
+        additionalNetworkDevices: [VZNetworkDeviceConfiguration] = [],
+        memoryBalloonEnabled: Bool = true
     ) throws -> VZVirtualMachineConfiguration {
         let configuration = VZVirtualMachineConfiguration()
         configuration.platform = try makePlatformConfiguration()
@@ -633,6 +634,9 @@ struct VMBundle {
         configuration.networkDevices = [makeNetworkDevice(metadata: metadata)] + additionalNetworkDevices
         configuration.keyboards = [VZMacKeyboardConfiguration()]
         configuration.pointingDevices = [VZMacTrackpadConfiguration()]
+        if memoryBalloonEnabled {
+            MemoryBalloonConfiguration.install(on: configuration)
+        }
 
         // `setup` stages a provisioning script through the shared folder, so it
         // forces the share on even for VMs created with --no-bootstrap.

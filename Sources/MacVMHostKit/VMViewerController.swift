@@ -32,6 +32,7 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     public private(set) var window: NSWindow?
     private var displayView: VZVirtualMachineView?
     private var virtualMachine: VZVirtualMachine?
+    private var memoryBalloonRegistrationID: UUID?
     private var dockerSidecarRuntime: DockerSidecarRuntime?
     /// Retains both datagram file handles for the complete joint lifetime.
     private var dockerPairNetwork: DockerPairNetwork?
@@ -193,6 +194,7 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         recordWindowGeometry()
         removeWindowObservers()
         stopHeartbeat()
+        stopMemoryReclamation()
         vncServer?.stop()
         vncServer = nil
         vncSession = nil
@@ -598,6 +600,11 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
                     handleFailure(error)
                 } else {
                     DebugLog.log("start(options:) completion returned success for \(vmName)")
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            self.startMemoryReclamation(for: virtualMachine)
+                        }
+                    }
                 }
             }
         } else {
@@ -608,12 +615,29 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
                     DebugLog.log("start() completion returned success for \(vmName)")
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
+                            self.startMemoryReclamation(for: virtualMachine)
                             self.provisionDockerGuestIntegrationIfNeeded()
                         }
                     }
                 }
             }
         }
+    }
+
+    private func startMemoryReclamation(for virtualMachine: VZVirtualMachine) {
+        guard memoryBalloonRegistrationID == nil else { return }
+        memoryBalloonRegistrationID = MemoryPressureCoordinator.shared.register(
+            virtualMachine: virtualMachine,
+            label: vmName,
+            guestKind: .macOS,
+            configuredMemorySize: managedVM.metadata.memorySizeBytes
+        )
+    }
+
+    private func stopMemoryReclamation() {
+        guard let memoryBalloonRegistrationID else { return }
+        MemoryPressureCoordinator.shared.unregister(memoryBalloonRegistrationID)
+        self.memoryBalloonRegistrationID = nil
     }
 
     private func provisionDockerGuestIntegrationIfNeeded() {

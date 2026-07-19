@@ -29,6 +29,7 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     private let processLogPath: String?
 
     private var virtualMachine: VZVirtualMachine?
+    private var memoryBalloonRegistrationID: UUID?
     private var vncServer: MacVMVNCServer?
     private var stopContinuation: CheckedContinuation<Void, Error>?
     private var signalSources: [DispatchSourceSignal] = []
@@ -137,6 +138,13 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
                 self?.finish(error: error)
             } else {
                 DebugLog.log("Headless VM started")
+                guard let self else { return }
+                self.memoryBalloonRegistrationID = MemoryPressureCoordinator.shared.register(
+                    virtualMachine: virtualMachine,
+                    label: self.managedVM.metadata.name,
+                    guestKind: .macOS,
+                    configuredMemorySize: self.managedVM.metadata.memorySizeBytes
+                )
             }
         }
 
@@ -227,6 +235,10 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
 
         vncServer?.stop()
         vncServer = nil
+        if let memoryBalloonRegistrationID {
+            MemoryPressureCoordinator.shared.unregister(memoryBalloonRegistrationID)
+            self.memoryBalloonRegistrationID = nil
+        }
         virtualMachine = nil
         if processRuntimeRole != nil {
             bundle.clearVMProcessRuntimeState()

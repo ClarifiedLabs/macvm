@@ -11,6 +11,7 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
     private let serialLogHandle: FileHandle
     private let ignitionServer: DockerIgnitionServer
     private var virtualMachine: VZVirtualMachine?
+    private var memoryBalloonRegistrationID: UUID?
     private var readinessTimer: Timer?
     private var startedAt = Date()
     private var startupError: Error?
@@ -70,6 +71,13 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
                     self.startupError = error
                     self.publish(state: .degraded, error: error.localizedDescription)
                     self.finish()
+                } else {
+                    self.memoryBalloonRegistrationID = MemoryPressureCoordinator.shared.register(
+                        virtualMachine: virtualMachine,
+                        label: "\(self.ownerBundle.url.deletingPathExtension().lastPathComponent) Docker sidecar",
+                        guestKind: .docker,
+                        configuredMemorySize: self.settings.memorySizeBytes
+                    )
                 }
             }
         }
@@ -246,6 +254,10 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
         publish(state: currentState, error: currentError, pid: 0)
         readinessTimer?.invalidate()
         readinessTimer = nil
+        if let memoryBalloonRegistrationID {
+            MemoryPressureCoordinator.shared.unregister(memoryBalloonRegistrationID)
+            self.memoryBalloonRegistrationID = nil
+        }
         ignitionServer.stop()
         try? serialLogHandle.close()
         virtualMachine = nil

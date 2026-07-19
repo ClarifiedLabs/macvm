@@ -68,6 +68,14 @@ Create a larger VM:
 macvm create --name xcode-01 --cpu 6 --memory-gi-b 12 --disk-gi-b 200
 ```
 
+Configured memory is the VM's maximum: while a VM is running, MacVM
+automatically asks macOS guests and Docker sidecars to return unused memory
+when the host reports warning or critical memory pressure. Warning pressure
+targets 75% of configured memory and critical pressure targets 50%, with floors
+of 4 GiB for macOS and 2 GiB for Docker sidecars. Guests may decline a request.
+After pressure clears for 30 seconds, MacVM restores 1 GiB every 10 seconds,
+round-robin across its running guests, until each reaches its configured maximum.
+
 Use a restore image you already downloaded:
 
 ```bash
