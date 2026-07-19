@@ -123,6 +123,21 @@ enum CLIEquivalent {
                 command += " --xcode \(abbreviatePath(xcodeXIPURL.path))"
             }
         }
+        if draft.dockerEnabled {
+            command += " --docker"
+            if draft.dockerCPUCount != DockerSidecarSettings.defaultCPUCount {
+                command += " --docker-cpu \(draft.dockerCPUCount)"
+            }
+            if draft.dockerMemoryGiB != DockerSidecarSettings.defaultMemoryGiB {
+                command += " --docker-memory-gi-b \(draft.dockerMemoryGiB)"
+            }
+            if draft.dockerDiskGiB != DockerSidecarSettings.defaultDiskGiB {
+                command += " --docker-disk-gi-b \(draft.dockerDiskGiB)"
+            }
+            if !draft.dockerAMD64Enabled {
+                command += " --no-docker-amd64"
+            }
+        }
         for id in profileIDs.sorted() {
             command += " --profile \(id)"
         }

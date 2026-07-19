@@ -2917,6 +2917,14 @@ func guestSSHArgumentsAreWellFormed() {
     )
     #expect(!command.contains("-i"))   // no identity file supplied
     #expect(command.suffix(2) == ["admin@host", "uptime"])
+
+    let pinned = GuestSSH.arguments(
+        host: "host",
+        user: "admin",
+        identityFile: nil,
+        knownHostsFile: URL(fileURLWithPath: "/state/docker-known-hosts")
+    )
+    #expect(pinned.contains("UserKnownHostsFile=/state/docker-known-hosts"))
 }
 
 @Test

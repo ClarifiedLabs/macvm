@@ -28,4 +28,11 @@ for bundle in "$PRODUCTS_DIR"/*.bundle(N); do
   cp -R "$bundle" "$OUTPUT_DIR/"
 done
 
+DOCKER_GUEST_HELPER="$OUTPUT_DIR/macvm_MacVMHostKit.bundle/Resources/Docker/macvm-docker-guest"
+if [[ ! -x "$DOCKER_GUEST_HELPER" ]]; then
+  echo "Missing bundled Docker guest helper: $DOCKER_GUEST_HELPER" >&2
+  exit 2
+fi
+codesign --verify --strict --verbose=2 "$DOCKER_GUEST_HELPER"
+
 echo "Built ad-hoc Xcode-signed $OUTPUT_DIR/$PRODUCT_NAME with resource bundles"

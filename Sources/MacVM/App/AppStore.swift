@@ -114,6 +114,9 @@ final class AppStore {
     private(set) var liveDisplays: [String: VMDisplayRuntimeState] = [:]
     private(set) var liveSetupStates: [String: VMSetupRuntimeState] = [:]
     private(set) var launchOnBootStatuses: [String: VMLaunchOnBootStatus] = [:]
+    private(set) var dockerStatuses: [String: DockerSidecarStatus] = [:]
+    private(set) var dockerOperationMessages: [String: String] = [:]
+    private var pendingDockerEnables: [String: DockerSidecarResourceConfiguration] = [:]
     private(set) var guestIPs: [String: String] = [:]
 
     private(set) var restoreImages: [RestoreImageEntry] = []
@@ -423,6 +426,7 @@ final class AppStore {
         var displays: [String: VMDisplayRuntimeState] = [:]
         var setupStates: [String: VMSetupRuntimeState] = [:]
         var launchOnBoot: [String: VMLaunchOnBootStatus] = [:]
+        var docker: [String: DockerSidecarStatus] = [:]
         for vm in vms {
             let name = vm.metadata.name
             if let process = service.liveVMProcessRuntimeState(for: vm) {
@@ -438,12 +442,14 @@ final class AppStore {
                 setupStates[name] = setupState
             }
             launchOnBoot[name] = service.launchOnBootStatus(for: vm)
+            docker[name] = service.dockerStatus(for: vm)
         }
         liveProcesses = processes
         liveSessions = sessions
         liveDisplays = displays
         liveSetupStates = setupStates
         launchOnBootStatuses = launchOnBoot
+        dockerStatuses = docker
         reconcileSetupProgress(from: setupStates, sessions: sessions)
 
         for vm in vms {
@@ -707,6 +713,119 @@ final class AppStore {
         NSApplication.shared.setActivationPolicy(.regular)
         _ = try controller.makeWindowAndShow()
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func enableDocker(
+        for vm: ManagedVM,
+        configuration: DockerSidecarResourceConfiguration = DockerSidecarResourceConfiguration()
+    ) {
+        let name = vm.metadata.name
+        dockerOperationMessages[name] = "Preparing Fedora CoreOS…"
+        Task { @MainActor in
+            do {
+                _ = try await service.enableDockerSidecar(for: vm, configuration: configuration) { [weak self] event in
+                    guard case .status(let message) = event else { return }
+                    DispatchQueue.main.async { self?.dockerOperationMessages[name] = message }
+                }
+                dockerOperationMessages[name] = nil
+                refresh()
+                lastCommand = "macvm docker enable \(name)"
+            } catch {
+                dockerOperationMessages[name] = nil
+                alertMessage = "Failed to enable Docker for \(name): \(error.localizedDescription)"
+                refresh()
+            }
+        }
+    }
+
+    func configureDocker(
+        for vm: ManagedVM,
+        cpuCount: Int,
+        memoryGiB: Int,
+        diskGiB: Int,
+        amd64Enabled: Bool
+    ) {
+        do {
+            _ = try service.configureDockerSidecar(
+                for: vm,
+                cpuCount: cpuCount,
+                memorySizeBytes: UInt64(memoryGiB) * 1024 * 1024 * 1024,
+                dataDiskSizeBytes: UInt64(diskGiB) * 1024 * 1024 * 1024,
+                amd64Enabled: amd64Enabled
+            )
+            lastCommand = "macvm docker configure \(vm.metadata.name) --cpu \(cpuCount) --memory-gi-b \(memoryGiB) --disk-gi-b \(diskGiB) \(amd64Enabled ? "--amd64" : "--no-amd64")"
+            refresh()
+        } catch {
+            alertMessage = "Failed to configure Docker for \(vm.metadata.name): \(error.localizedDescription)"
+        }
+    }
+
+    func disableDocker(for vm: ManagedVM) {
+        do {
+            _ = try service.disableDockerSidecar(for: vm)
+            lastCommand = "macvm docker disable \(vm.metadata.name)"
+            refresh()
+        } catch {
+            alertMessage = "Failed to disable Docker for \(vm.metadata.name): \(error.localizedDescription)"
+        }
+    }
+
+    func updateDocker(for vm: ManagedVM) {
+        let name = vm.metadata.name
+        dockerOperationMessages[name] = "Updating Fedora CoreOS…"
+        Task { @MainActor in
+            do {
+                _ = try await service.updateDockerSidecar(for: vm) { [weak self] event in
+                    guard case .status(let message) = event else { return }
+                    DispatchQueue.main.async { self?.dockerOperationMessages[name] = message }
+                }
+                dockerOperationMessages[name] = nil
+                refresh()
+                lastCommand = "macvm docker update \(name)"
+            } catch {
+                dockerOperationMessages[name] = nil
+                alertMessage = "Failed to update Docker for \(name): \(error.localizedDescription)"
+                refresh()
+            }
+        }
+    }
+
+    func resetDocker(for vm: ManagedVM) {
+        let alert = NSAlert()
+        alert.messageText = "Reset Docker for \(vm.metadata.name)?"
+        alert.informativeText = "All Docker images, containers, and volumes will be destroyed. The macOS VM is not affected."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Reset")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = vm.metadata.name
+        dockerOperationMessages[name] = "Resetting Docker appliance…"
+        Task { @MainActor in
+            do {
+                _ = try await service.resetDockerSidecar(for: vm) { [weak self] event in
+                    guard case .status(let message) = event else { return }
+                    DispatchQueue.main.async { self?.dockerOperationMessages[name] = message }
+                }
+                dockerOperationMessages[name] = nil
+                lastCommand = "macvm docker reset \(name) --force"
+                refresh()
+            } catch {
+                dockerOperationMessages[name] = nil
+                alertMessage = "Failed to reset Docker for \(name): \(error.localizedDescription)"
+                refresh()
+            }
+        }
+    }
+
+    func installDockerRosetta() {
+        Task { @MainActor in
+            do {
+                try await service.installRosettaIfNeeded()
+                refresh()
+            } catch {
+                alertMessage = "Failed to install Rosetta for Linux: \(error.localizedDescription)"
+            }
+        }
     }
 
     func setLaunchOnBoot(_ enabled: Bool, for vm: ManagedVM) {
@@ -1039,7 +1158,7 @@ final class AppStore {
         CLIEquivalent.create(
             draft,
             defaults: service.defaultDraft(),
-            setupAfter: setupAfterInstall,
+            setupAfter: setupAfterInstall || draft.dockerEnabled,
             xcodeXIPURL: setupAfterInstall ? selectedXcodeXIPURL : nil,
             profileIDs: Array(selectedProfileIDs),
             profileInputs: profileInputValues
@@ -1050,7 +1169,7 @@ final class AppStore {
         let draft = self.draft
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        let shouldSetup = setupAfterInstall || !selectedProfileIDs.isEmpty
+        let shouldSetup = setupAfterInstall || draft.dockerEnabled || !selectedProfileIDs.isEmpty
         if shouldSetup, let selectedXcodeXIPURL {
             var isDirectory: ObjCBool = false
             guard selectedXcodeXIPURL.pathExtension.lowercased() == "xip",
@@ -1095,6 +1214,14 @@ final class AppStore {
 
         let runSetupAfter = shouldSetup
         let setupXcodeXIPURL = shouldSetup ? selectedXcodeXIPURL : nil
+        if draft.dockerEnabled {
+            pendingDockerEnables[name] = DockerSidecarResourceConfiguration(
+                cpuCount: draft.dockerCPUCount,
+                memorySizeBytes: UInt64(draft.dockerMemoryGiB) * 1024 * 1024 * 1024,
+                dataDiskSizeBytes: UInt64(draft.dockerDiskGiB) * 1024 * 1024 * 1024,
+                amd64Enabled: draft.dockerAMD64Enabled
+            )
+        }
         let setupSelection = provisioningSelection
         let bundleExistedBeforeCreation = (try? service.resolveRemovalTarget(identifier: name)) != nil
         Task { @MainActor in
@@ -1135,6 +1262,7 @@ final class AppStore {
                     startSetup(
                         for: withIdentity,
                         options: SetupOptions(
+                            shutdownAfter: draft.dockerEnabled,
                             xcodeXIPURL: setupXcodeXIPURL,
                             provisioningSelection: setupSelection
                         )
@@ -1142,6 +1270,7 @@ final class AppStore {
                 }
             } catch {
                 installs[name] = nil
+                pendingDockerEnables[name] = nil
                 refresh()
                 presentCreationFailure(
                     name: name,
@@ -1319,7 +1448,7 @@ final class AppStore {
             let native = runner.usedNativeProvisioning
             Task { @MainActor in
                 do {
-                    _ = try await service.provisionSetup(
+                    let result = try await service.provisionSetup(
                         vm,
                         session: session,
                         options: options,
@@ -1330,10 +1459,35 @@ final class AppStore {
                             self?.applySetupEvent(event, name: name)
                         }
                     }
-                    // Setup done; the VM stays running headless like the CLI.
+                    if options.shutdownAfter {
+                        guard result.sshReady else {
+                            throw AppRuntimeError(message: "SSH is required to shut down after setup.")
+                        }
+                        let status = try service.shutdownGuest(vm, user: result.username)
+                        guard status == 0 else {
+                            throw AppRuntimeError(message: "Guest shutdown failed with status \(status).")
+                        }
+                        try await runner.waitUntilStopped()
+                    }
+                    if let configuration = pendingDockerEnables.removeValue(forKey: name) {
+                        let stoppedVM = try service.resolveVM(identifier: vm.bundleURL.path)
+                        dockerOperationMessages[name] = "Preparing Fedora CoreOS…"
+                        _ = try await service.enableDockerSidecar(
+                            for: stoppedVM,
+                            configuration: configuration
+                        ) { [weak self] event in
+                            guard case .status(let message) = event else { return }
+                            DispatchQueue.main.async { self?.dockerOperationMessages[name] = message }
+                        }
+                        dockerOperationMessages[name] = nil
+                    }
+                    // Setup normally stays running; Docker creation requests a
+                    // clean shutdown so appliance files can be materialized.
                     setups[name] = nil
                     refresh()
                 } catch {
+                    pendingDockerEnables[name] = nil
+                    dockerOperationMessages[name] = nil
                     setups[name]?.failureMessage = error.localizedDescription
                     appendSetupLog("Setup failed: \(error.localizedDescription)", name: name)
                 }

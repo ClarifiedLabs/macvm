@@ -32,6 +32,9 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     public private(set) var window: NSWindow?
     private var displayView: VZVirtualMachineView?
     private var virtualMachine: VZVirtualMachine?
+    private var dockerSidecarRuntime: DockerSidecarRuntime?
+    /// Retains both datagram file handles for the complete joint lifetime.
+    private var dockerPairNetwork: DockerPairNetwork?
     private let processRuntimeRole: VMProcessRuntimeRole?
     private var vncServer: MacVMVNCServer?
     private var vncSession: VNCSession?
@@ -40,6 +43,10 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     private var startupFailureMessage: String?
     private var lastPublishedDisplaySize: DisplayRuntimeSize?
     private var lastPersistedWindowFrame: NSRect?
+    private var dockerProvisioningTask: Task<Void, Never>?
+    private var dockerStartupOperationLock: DockerSidecarOperationLock?
+    private var finishError: Error?
+    private var finishing = false
     private var finished = false
 
     /// Called once when the VM reaches a terminal state (guest shutdown, error,
@@ -155,10 +162,29 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
 
     /// Force-stop variant used by acknowledged app control requests.
     public func stopReportingErrors() async throws {
-        if let virtualMachine, virtualMachine.canStop {
-            try await VirtualizationAsync.stop(virtualMachine)
+        if finished { return }
+        if finishing {
+            while finishing, !finished {
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            if let finishError { throw finishError }
+            if finished { return }
         }
-        finish()
+
+        finishing = true
+        finishError = nil
+        do {
+            await cancelDockerProvisioning()
+            // The owner always stops before its hidden sidecar. The socketpair
+            // remains retained until both VZVirtualMachine instances are terminal.
+            try await stopOwnerVirtualMachine()
+            try await stopDockerSidecar()
+            completeFinish()
+        } catch {
+            finishError = error
+            finishing = false
+            throw error
+        }
     }
 
     /// Persist geometry, stop VNC, drop observers, and clear published state.
@@ -207,10 +233,62 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     }
 
     private func finish() {
+        guard !finishing, !finished else { return }
+        finishing = true
+        finishError = nil
+        Task { @MainActor in
+            await cancelDockerProvisioning()
+            do {
+                try await stopDockerSidecar()
+                completeFinish()
+            } catch {
+                finishError = error
+                finishing = false
+                DebugLog.log("Failed to finish Docker sidecar shutdown for \(vmName): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func stopOwnerVirtualMachine(timeout: TimeInterval = 30) async throws {
+        guard let virtualMachine else { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if virtualMachine.state == .stopped || virtualMachine.state == .error {
+                return
+            }
+            if virtualMachine.canStop {
+                try await VirtualizationAsync.stop(virtualMachine)
+                continue
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw MacVMError.message("Timed out stopping \(vmName) while it was in a transitional state.")
+    }
+
+    private func stopDockerSidecar() async throws {
+        if let dockerSidecarRuntime {
+            try await dockerSidecarRuntime.stop()
+        }
+        dockerSidecarRuntime = nil
+    }
+
+    private func cancelDockerProvisioning() async {
+        guard let task = dockerProvisioningTask else { return }
+        task.cancel()
+        await task.value
+        dockerProvisioningTask = nil
+    }
+
+    private func completeFinish() {
         guard !finished else { return }
+        finishing = false
+        finishError = nil
         finished = true
         tearDown()
         virtualMachine = nil
+        dockerSidecarRuntime = nil
+        dockerStartupOperationLock = nil
+        dockerPairNetwork = nil
         onStop?()
     }
 
@@ -371,7 +449,17 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     // MARK: - VM lifecycle
 
     private func createAndStartVirtualMachine() throws {
-        let configuration = try bundle.makeConfiguration(metadata: managedVM.metadata)
+        let additionalNetworkDevices = try prepareDockerSidecarIfNeeded()
+        let configuration: VZVirtualMachineConfiguration
+        do {
+            configuration = try bundle.makeConfiguration(
+                metadata: managedVM.metadata,
+                additionalNetworkDevices: additionalNetworkDevices
+            )
+        } catch {
+            abortDockerSidecar()
+            throw error
+        }
 
         DebugLog.log("Creating VZVirtualMachine for \(vmName) on main queue")
 
@@ -383,14 +471,16 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         // _VZVNCServer binds all interfaces, so every viewer session must use
         // a per-run password even when its primary display is a local window.
         let password = Self.randomVNCPassword()
-        let server = try MacVMVNCServer(
-            virtualMachine: virtualMachine,
-            port: requestedVNCPort,
-            password: password
-        )
+        var server: MacVMVNCServer?
         do {
-            let port = try server.start().intValue
-            vncServer = server
+            let createdServer = try MacVMVNCServer(
+                virtualMachine: virtualMachine,
+                port: requestedVNCPort,
+                password: password
+            )
+            server = createdServer
+            let port = try createdServer.start().intValue
+            vncServer = createdServer
             let session = VNCSession(
                 port: port,
                 password: password,
@@ -419,12 +509,13 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
                 ))
             }
         } catch {
-            server.stop()
+            server?.stop()
             vncServer = nil
             bundle.clearVNCSession()
             bundle.clearVMProcessRuntimeState()
             displayView?.virtualMachine = nil
             self.virtualMachine = nil
+            abortDockerSidecar()
             throw error
         }
 
@@ -433,6 +524,53 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
 
         startHeartbeat()
         try startVirtualMachine()
+    }
+
+    private func prepareDockerSidecarIfNeeded() throws -> [VZNetworkDeviceConfiguration] {
+        guard !startInRecovery,
+              managedVM.metadata.dockerSidecar?.enabled == true || bundle.dockerSidecarBundle.isPresent else {
+            return []
+        }
+        let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "start the VM")
+        dockerStartupOperationLock = operationLock
+        do {
+            let currentMetadata = try bundle.readMetadata()
+            guard let settings = currentMetadata.dockerSidecar, settings.enabled else {
+                dockerStartupOperationLock = nil
+                return []
+            }
+            _ = try bundle.dockerSidecarBundle.validateIntegrity()
+            let pairNetwork = try DockerPairNetwork()
+            let runtime = try DockerSidecarRuntime(
+                ownerBundle: bundle,
+                settings: settings,
+                pairNetwork: pairNetwork
+            )
+            try runtime.start()
+            self.dockerPairNetwork = pairNetwork
+            self.dockerSidecarRuntime = runtime
+            dockerStartupOperationLock = nil
+            return [try pairNetwork.makeMacOSNetworkDevice(macAddress: settings.macOSMACAddress)]
+        } catch {
+            dockerStartupOperationLock = nil
+            abortDockerSidecar()
+            throw error
+        }
+    }
+
+    private func abortDockerSidecar() {
+        guard dockerSidecarRuntime != nil else {
+            dockerPairNetwork = nil
+            return
+        }
+        Task { @MainActor in
+            do {
+                try await stopDockerSidecar()
+                dockerPairNetwork = nil
+            } catch {
+                DebugLog.log("Failed to abort Docker sidecar startup for \(vmName): \(error.localizedDescription)")
+            }
+        }
     }
 
     private func startVirtualMachine() throws {
@@ -471,7 +609,43 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
                     handleFailure(error)
                 } else {
                     DebugLog.log("start() completion returned success for \(vmName)")
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            self.provisionDockerGuestIntegrationIfNeeded()
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    private func provisionDockerGuestIntegrationIfNeeded() {
+        guard dockerProvisioningTask == nil,
+              !startInRecovery,
+              let settings = managedVM.metadata.dockerSidecar,
+              settings.enabled,
+              settings.guestProvisioningState != .ready
+                || settings.guestProvisioningVersion < DockerSidecarSettings.currentGuestProvisioningVersion,
+              let dockerSidecarRuntime else {
+            return
+        }
+        let service = MacVMService(rootDirectory: managedVM.bundleURL.deletingLastPathComponent())
+        let managedVM = self.managedVM
+        let vmName = self.vmName
+        dockerProvisioningTask = Task { @MainActor [weak self] in
+            defer { self?.dockerProvisioningTask = nil }
+            do {
+                try await dockerSidecarRuntime.waitUntilServicesReady()
+                try Task.checkCancellation()
+                _ = try await service.provisionDockerGuestIntegration(for: managedVM)
+                try Task.checkCancellation()
+                dockerSidecarRuntime.markGuestProvisioningReady()
+                DebugLog.log("Docker guest integration completed for \(vmName)")
+            } catch is CancellationError {
+                DebugLog.log("Docker guest integration cancelled for \(vmName)")
+            } catch {
+                dockerSidecarRuntime.markGuestProvisioningFailed(error)
+                DebugLog.log("Docker guest integration degraded for \(vmName): \(error.localizedDescription)")
             }
         }
     }

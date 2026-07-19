@@ -14,6 +14,7 @@
 				A0000000000000000000004D /* Build MacVMHostKit Resource Bundle */,
 			);
 			dependencies = (
+				A000000000000000000000DD /* PBXTargetDependency */,
 			);
 			name = MacVMHostKitResources;
 			productName = MacVMHostKitResources;
@@ -30,6 +31,13 @@
 		A000000000000000000000B6 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = A000000000000000000000C1 /* ArgumentParser */; };
 		A000000000000000000000B7 /* Support/AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000087 /* Support/AppIcon.icon */; };
 		A000000000000000000000B8 /* macvm in Embed macvm CLI */ = {isa = PBXBuildFile; fileRef = A00000000000000000000022 /* macvm */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		A000000000000000000000D0 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = A000000000000000000000D4 /* NIOCore */; };
+		A000000000000000000000D1 /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = A000000000000000000000D5 /* NIOPosix */; };
+		A000000000000000000000D2 /* NIOHTTP1 in Frameworks */ = {isa = PBXBuildFile; productRef = A000000000000000000000D6 /* NIOHTTP1 */; };
+		A000000000000000000000E0 /* libMacVMHostKit.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000021 /* libMacVMHostKit.a */; };
+		A000000000000000000000E1 /* libMacVMPrivateVZ.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000020 /* libMacVMPrivateVZ.a */; };
+		A000000000000000000000E5 /* DockerAPIPathRewriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000000000000000000000E4 /* DockerAPIPathRewriter.swift */; };
+		A000000000000000000000E7 /* DockerGuestFileUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000000000000000000000E6 /* DockerGuestFileUtilities.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -124,6 +132,27 @@
 			remoteGlobalIDString = A00000000000000000000033;
 			remoteInfo = "MacVM CLI";
 		};
+		A000000000000000000000DA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A000000000000000000000D7;
+			remoteInfo = MacVMDockerGuest;
+		};
+		A000000000000000000000DE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000031;
+			remoteInfo = MacVMHostKit;
+		};
+		A000000000000000000000E2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000030;
+			remoteInfo = MacVMPrivateVZ;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -147,6 +176,9 @@
 		A00000000000000000000023 /* MacVM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacVM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000025 /* MacVMHostKitTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacVMHostKitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000026 /* MacVMTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacVMTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A000000000000000000000D3 /* macvm-docker-guest */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "macvm-docker-guest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A000000000000000000000E4 /* DockerAPIPathRewriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/MacVMHostKit/Docker/DockerAPIPathRewriter.swift; sourceTree = "<group>"; };
+		A000000000000000000000E6 /* DockerGuestFileUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/MacVMHostKit/Docker/DockerGuestFileUtilities.swift; sourceTree = "<group>"; };
 		A00000000000000000000082 /* Makefile */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.make; path = Makefile; sourceTree = "<group>"; };
 		A00000000000000000000083 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		A00000000000000000000084 /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
@@ -194,6 +226,11 @@
 		A00000000000000000000018 /* scripts */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = scripts;
+			sourceTree = "<group>";
+		};
+		A000000000000000000000D8 /* Sources/MacVMDockerGuest */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/MacVMDockerGuest;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -248,6 +285,16 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A000000000000000000000DC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A000000000000000000000D0 /* NIOCore in Frameworks */,
+				A000000000000000000000D1 /* NIOPosix in Frameworks */,
+				A000000000000000000000D2 /* NIOHTTP1 in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -259,6 +306,8 @@
 				A00000000000000000000017 /* Support */,
 				A00000000000000000000087 /* Support/AppIcon.icon */,
 				A00000000000000000000018 /* scripts */,
+				A000000000000000000000E4 /* DockerAPIPathRewriter.swift */,
+				A000000000000000000000E6 /* DockerGuestFileUtilities.swift */,
 				A00000000000000000000003 /* Products */,
 				A00000000000000000000082 /* Makefile */,
 				A00000000000000000000083 /* README.md */,
@@ -277,6 +326,7 @@
 				A00000000000000000000023 /* MacVM.app */,
 				A00000000000000000000025 /* MacVMHostKitTests.xctest */,
 				A00000000000000000000026 /* MacVMTests.xctest */,
+				A000000000000000000000D3 /* macvm-docker-guest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -288,6 +338,7 @@
 				A00000000000000000000011 /* Sources/MacVMHostKit */,
 				A00000000000000000000013 /* Sources/MacVMCLI */,
 				A00000000000000000000014 /* Sources/MacVM */,
+				A000000000000000000000D8 /* Sources/MacVMDockerGuest */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -439,6 +490,30 @@
 			productReference = A00000000000000000000026 /* MacVMTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		A000000000000000000000D7 /* MacVMDockerGuest */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000137 /* Build configuration list for PBXNativeTarget "MacVMDockerGuest" */;
+			buildPhases = (
+				A000000000000000000000DB /* Sources */,
+				A000000000000000000000DC /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A000000000000000000000D8 /* Sources/MacVMDockerGuest */,
+			);
+			name = MacVMDockerGuest;
+			packageProductDependencies = (
+				A000000000000000000000D4 /* NIOCore */,
+				A000000000000000000000D5 /* NIOPosix */,
+				A000000000000000000000D6 /* NIOHTTP1 */,
+			);
+			productName = "macvm-docker-guest";
+			productReference = A000000000000000000000D3 /* macvm-docker-guest */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -470,6 +545,9 @@
 					A00000000000000000000036 = {
 						CreatedOnToolsVersion = 26.2;
 					};
+					A000000000000000000000D7 = {
+						CreatedOnToolsVersion = 26.2;
+					};
 				};
 			};
 			buildConfigurationList = A00000000000000000000101 /* Build configuration list for PBXProject "macvm" */;
@@ -483,6 +561,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A000000000000000000000C0 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
+				A000000000000000000000D9 /* XCRemoteSwiftPackageReference "swift-nio" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A00000000000000000000003 /* Products */;
@@ -496,6 +575,7 @@
 				A00000000000000000000034 /* MacVM */,
 				A00000000000000000000035 /* MacVMHostKitTests */,
 				A00000000000000000000036 /* MacVMTests */,
+				A000000000000000000000D7 /* MacVMDockerGuest */,
 			);
 		};
 /* End PBXProject section */
@@ -541,7 +621,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
-			shellScript = "set -euo pipefail\n\nBUNDLE_DIR=\"$BUILT_PRODUCTS_DIR/macvm_MacVMHostKit.bundle\"\nrm -rf \"$BUNDLE_DIR\"\nmkdir -p \"$BUNDLE_DIR/Resources\"\nrsync -a --delete \"$PROJECT_DIR/Sources/MacVMHostKit/Resources/\" \"$BUNDLE_DIR/Resources/\"\n";
+			shellScript = "set -euo pipefail\n\nBUNDLE_DIR=\"$BUILT_PRODUCTS_DIR/macvm_MacVMHostKit.bundle\"\nrm -rf \"$BUNDLE_DIR\"\nmkdir -p \"$BUNDLE_DIR/Resources\"\nrsync -a --delete \"$PROJECT_DIR/Sources/MacVMHostKit/Resources/\" \"$BUNDLE_DIR/Resources/\"\nmkdir -p \"$BUNDLE_DIR/Resources/Docker\"\ncp \"$BUILT_PRODUCTS_DIR/macvm-docker-guest\" \"$BUNDLE_DIR/Resources/Docker/macvm-docker-guest\"\nchmod 0755 \"$BUNDLE_DIR/Resources/Docker/macvm-docker-guest\"\n";
 			showEnvVarsInLog = 0;
 		};
 		A0000000000000000000004E /* Copy MacVMHostKit Resources */ = {
@@ -604,6 +684,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A000000000000000000000DB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A000000000000000000000E5 /* DockerAPIPathRewriter.swift in Sources */,
+				A000000000000000000000E7 /* DockerGuestFileUtilities.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -687,6 +776,24 @@
 			name = "MacVM CLI";
 			target = A00000000000000000000033 /* MacVM CLI */;
 			targetProxy = A00000000000000000000079 /* PBXContainerItemProxy */;
+		};
+		A000000000000000000000DD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMDockerGuest;
+			target = A000000000000000000000D7 /* MacVMDockerGuest */;
+			targetProxy = A000000000000000000000DA /* PBXContainerItemProxy */;
+		};
+		A000000000000000000000DF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMHostKit;
+			target = A00000000000000000000031 /* MacVMHostKit */;
+			targetProxy = A000000000000000000000DE /* PBXContainerItemProxy */;
+		};
+		A000000000000000000000E3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMPrivateVZ;
+			target = A00000000000000000000030 /* MacVMPrivateVZ */;
+			targetProxy = A000000000000000000000E2 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1014,6 +1121,42 @@
 			};
 			name = Release;
 		};
+		A0000000000000000000021E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm.docker-guest;
+				PRODUCT_MODULE_NAME = MacVMDockerGuest;
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_NAME = "macvm-docker-guest";
+			};
+			name = Debug;
+		};
+		A0000000000000000000021F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm.docker-guest;
+				PRODUCT_MODULE_NAME = MacVMDockerGuest;
+				SWIFT_INCLUDE_PATHS = "$(BUILT_PRODUCTS_DIR) $(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
+				PRODUCT_NAME = "macvm-docker-guest";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1089,6 +1232,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		A00000000000000000000137 /* Build configuration list for PBXNativeTarget "MacVMDockerGuest" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0000000000000000000021E /* Debug */,
+				A0000000000000000000021F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1100,6 +1252,14 @@
 				version = 1.7.0;
 			};
 		};
+		A000000000000000000000D9 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio";
+			requirement = {
+				kind = exactVersion;
+				version = 2.86.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1107,6 +1267,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A000000000000000000000C0 /* XCRemoteSwiftPackageReference "swift-argument-parser" */;
 			productName = ArgumentParser;
+		};
+		A000000000000000000000D4 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A000000000000000000000D9 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		A000000000000000000000D5 /* NIOPosix */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A000000000000000000000D9 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOPosix;
+		};
+		A000000000000000000000D6 /* NIOHTTP1 */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A000000000000000000000D9 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOHTTP1;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

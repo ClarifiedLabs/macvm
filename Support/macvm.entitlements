@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!-- Applied only to MacVM.app and its host CLI. The bundled macvm-docker-guest
+     payload runs inside the guest and is signed separately without this entitlement. -->
 <dict>
     <key>com.apple.security.virtualization</key>
     <true/>

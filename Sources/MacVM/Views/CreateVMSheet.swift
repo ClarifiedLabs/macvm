@@ -111,6 +111,16 @@ struct CreateVMSheet: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Toggle("Create shared folder with bootstrap script", isOn: $store.draft.createBootstrapShare)
                                 Toggle("Launch on boot", isOn: $store.draft.launchOnBoot)
+                                Toggle("Enable Docker sidecar", isOn: dockerEnabledBinding)
+                                if store.draft.dockerEnabled {
+                                    HStack(spacing: 10) {
+                                        Text("Docker:").foregroundStyle(.secondary)
+                                        Stepper("\(store.draft.dockerCPUCount) CPU", value: $store.draft.dockerCPUCount, in: 1...12)
+                                        Stepper("\(store.draft.dockerMemoryGiB) GiB", value: $store.draft.dockerMemoryGiB, in: 2...32, step: 2)
+                                        Stepper("\(store.draft.dockerDiskGiB) GiB disk", value: $store.draft.dockerDiskGiB, in: 16...512, step: 16)
+                                    }
+                                    Toggle("Enable linux/amd64 containers with Rosetta", isOn: $store.draft.dockerAMD64Enabled)
+                                }
                                 Toggle(isOn: $store.setupAfterInstall) {
                                     HStack(spacing: 4) {
                                         Text("Run setup after install")
@@ -192,7 +202,7 @@ struct CreateVMSheet: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
         }
-        .frame(width: 500, height: 560)
+        .frame(width: 570, height: 620)
     }
 
     nonisolated static func provisioningProfileSummary(selectedNames: [String]) -> String {
@@ -297,6 +307,17 @@ struct CreateVMSheet: View {
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    private var dockerEnabledBinding: Binding<Bool> {
+        @Bindable var store = store
+        return Binding(
+            get: { store.draft.dockerEnabled },
+            set: { enabled in
+                store.draft.dockerEnabled = enabled
+                if enabled { store.setupAfterInstall = true }
+            }
+        )
     }
 
     private var displaySelection: Binding<String> {

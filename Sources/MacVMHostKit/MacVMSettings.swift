@@ -4,6 +4,7 @@ import Foundation
 public struct MacVMSettings: @unchecked Sendable {
     public static let domain = "dev.macvm.macvm"
     public static let vmRootKey = "vmRootDirectory-v1"
+    public static let dockerImageAutoRefreshKey = "dockerImageAutoRefresh-v1"
     public static let shared = MacVMSettings(
         defaults: UserDefaults(suiteName: domain) ?? .standard
     )
@@ -25,6 +26,13 @@ public struct MacVMSettings: @unchecked Sendable {
         configuredVMRootDirectory ?? Self.defaultVMRootDirectory
     }
 
+    public var dockerImageAutoRefreshEnabled: Bool {
+        guard defaults.object(forKey: Self.dockerImageAutoRefreshKey) != nil else {
+            return true
+        }
+        return defaults.bool(forKey: Self.dockerImageAutoRefreshKey)
+    }
+
     public static var defaultVMRootDirectory: URL {
         URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .appendingPathComponent("VirtualMachines", isDirectory: true)
@@ -37,6 +45,10 @@ public struct MacVMSettings: @unchecked Sendable {
             return
         }
         defaults.set(Self.normalizedDirectoryURL(url).path, forKey: Self.vmRootKey)
+    }
+
+    public func setDockerImageAutoRefreshEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: Self.dockerImageAutoRefreshKey)
     }
 
     public static func directoryURL(forPath path: String) -> URL {

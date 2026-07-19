@@ -27,6 +27,7 @@ struct VMDetailView: View {
 
                 if let vm {
                     SpecCardsView(vm: vm, status: status)
+                    DockerSectionView(vm: vm, vmStatus: status)
                     AccessSectionView(vm: vm, status: status)
                     AutomationSectionView(vm: vm)
                     ProvisioningSectionView(vm: vm, status: status)
@@ -150,6 +151,103 @@ struct VMDetailView: View {
             }
         }
         .controlSize(.regular)
+    }
+}
+
+struct DockerSectionView: View {
+    @Environment(AppStore.self) private var store
+    let vm: ManagedVM
+    let vmStatus: VMStatus
+    @State private var cpuCount: Int
+    @State private var memoryGiB: Int
+    @State private var diskGiB: Int
+    @State private var amd64Enabled: Bool
+
+    init(vm: ManagedVM, vmStatus: VMStatus) {
+        self.vm = vm
+        self.vmStatus = vmStatus
+        let settings = vm.metadata.dockerSidecar
+        let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
+        let memoryBytes = settings?.memorySizeBytes ?? UInt64(DockerSidecarSettings.defaultMemoryGiB) * bytesPerGiB
+        let diskBytes = settings?.dataDiskSizeBytes ?? UInt64(DockerSidecarSettings.defaultDiskGiB) * bytesPerGiB
+        _cpuCount = State(initialValue: settings?.cpuCount ?? DockerSidecarSettings.defaultCPUCount)
+        _memoryGiB = State(initialValue: Int(memoryBytes / bytesPerGiB))
+        _diskGiB = State(initialValue: Int(diskBytes / bytesPerGiB))
+        _amd64Enabled = State(initialValue: settings?.amd64Enabled ?? true)
+    }
+
+    var body: some View {
+        let name = vm.metadata.name
+        let dockerStatus = store.dockerStatuses[name] ?? store.service.dockerStatus(for: vm)
+        let busy = store.dockerOperationMessages[name] != nil
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(title: "Docker")
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        StatusDot(status: dockerStatus.state == .ready ? .running : .stopped)
+                        Text(dockerStatus.state.rawValue)
+                            .font(.system(size: 13, weight: .medium))
+                        if let version = dockerStatus.fcosVersion {
+                            Text("Fedora CoreOS \(version)")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        dockerActions(status: dockerStatus, busy: busy)
+                    }
+                    if let operation = store.dockerOperationMessages[name] {
+                        ProgressView().controlSize(.small)
+                        Text(operation).font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    if vm.metadata.dockerSidecar != nil {
+                        Divider().overlay(Theme.hairline)
+                        HStack(spacing: 12) {
+                            Stepper("\(cpuCount) CPU", value: $cpuCount, in: 1...12)
+                            Stepper("\(memoryGiB) GiB", value: $memoryGiB, in: 2...32, step: 2)
+                            Stepper("\(diskGiB) GiB disk", value: $diskGiB, in: max(1, Int((vm.metadata.dockerSidecar?.dataDiskSizeBytes ?? 0) / (1024 * 1024 * 1024)))...512, step: 16)
+                            Toggle("linux/amd64", isOn: $amd64Enabled).toggleStyle(.checkbox)
+                            Button("Apply") {
+                                store.configureDocker(
+                                    for: vm,
+                                    cpuCount: cpuCount,
+                                    memoryGiB: memoryGiB,
+                                    diskGiB: diskGiB,
+                                    amd64Enabled: amd64Enabled
+                                )
+                            }
+                            .disabled(vmStatus != .stopped || busy)
+                        }
+                        .controlSize(.small)
+                    }
+                    if let error = dockerStatus.lastError {
+                        Text(error).font(.system(size: 11)).foregroundStyle(.red)
+                    }
+                }
+                .padding(14)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func dockerActions(status: DockerSidecarStatus, busy: Bool) -> some View {
+        HStack(spacing: 6) {
+            if status.state == .disabled {
+                Button("Enable") { store.enableDocker(for: vm) }
+            } else {
+                Button("Disable") { store.disableDocker(for: vm) }
+            }
+            if status.amd64Requested && !status.amd64Available {
+                Button("Install Rosetta…") { store.installDockerRosetta() }
+            }
+            if vm.metadata.dockerSidecar != nil {
+                Button("Update") { store.updateDocker(for: vm) }
+                Button("Reset…") { store.resetDocker(for: vm) }
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(vmStatus != .stopped || busy || vm.metadata.setupCompletedAt == nil)
     }
 }
 

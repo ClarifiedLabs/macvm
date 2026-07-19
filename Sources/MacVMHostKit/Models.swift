@@ -49,6 +49,11 @@ public struct VMCreationDraft: Equatable, Sendable {
     public var cpuCount: Int
     public var memoryGiB: Int
     public var diskGiB: Int
+    public var dockerEnabled: Bool
+    public var dockerCPUCount: Int
+    public var dockerMemoryGiB: Int
+    public var dockerDiskGiB: Int
+    public var dockerAMD64Enabled: Bool
     /// Effective guest workspace size in points. The VM uses a 2x Retina
     /// backing framebuffer derived from this value at boot.
     public var displayWidth: Int
@@ -68,7 +73,12 @@ public struct VMCreationDraft: Equatable, Sendable {
         restoreMode: RestoreImageSelectionMode,
         localRestoreImageURL: URL? = nil,
         createBootstrapShare: Bool = true,
-        launchOnBoot: Bool = false
+        launchOnBoot: Bool = false,
+        dockerEnabled: Bool = false,
+        dockerCPUCount: Int = DockerSidecarSettings.defaultCPUCount,
+        dockerMemoryGiB: Int = DockerSidecarSettings.defaultMemoryGiB,
+        dockerDiskGiB: Int = DockerSidecarSettings.defaultDiskGiB,
+        dockerAMD64Enabled: Bool = true
     ) {
         self.name = name
         self.cpuCount = cpuCount
@@ -80,6 +90,11 @@ public struct VMCreationDraft: Equatable, Sendable {
         self.localRestoreImageURL = localRestoreImageURL
         self.createBootstrapShare = createBootstrapShare
         self.launchOnBoot = launchOnBoot
+        self.dockerEnabled = dockerEnabled
+        self.dockerCPUCount = dockerCPUCount
+        self.dockerMemoryGiB = dockerMemoryGiB
+        self.dockerDiskGiB = dockerDiskGiB
+        self.dockerAMD64Enabled = dockerAMD64Enabled
     }
 
     public var displayDescription: String {
@@ -96,6 +111,73 @@ public struct VMCreationDraft: Equatable, Sendable {
 
     public var displayPixelDescription: String {
         "\(displayPixelWidth)x\(displayPixelHeight)"
+    }
+}
+
+public enum DockerGuestProvisioningState: String, Codable, Equatable, Sendable {
+    case pending
+    case provisioning
+    case ready
+    case failed
+}
+
+public struct DockerSidecarSettings: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 1
+    public static let currentGuestProvisioningVersion = 8
+    public static let defaultCPUCount = 2
+    public static let defaultMemoryGiB = 4
+    public static let defaultDiskGiB = 64
+    public static let defaultMacOSAddress = "192.168.127.1/30"
+    public static let defaultLinuxAddress = "192.168.127.2/30"
+
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var amd64Enabled: Bool
+    public var cpuCount: Int
+    public var memorySizeBytes: UInt64
+    public var dataDiskSizeBytes: UInt64
+    public var macOSAddress: String
+    public var linuxAddress: String
+    public var macOSMACAddress: String
+    public var linuxPrivateMACAddress: String
+    public var linuxNATMACAddress: String
+    public var guestProvisioningState: DockerGuestProvisioningState
+    public var guestProvisioningVersion: Int
+    public var imageVersion: String?
+    public var mobyVersion: String?
+
+    public init(
+        schemaVersion: Int = currentSchemaVersion,
+        enabled: Bool = true,
+        amd64Enabled: Bool = true,
+        cpuCount: Int = defaultCPUCount,
+        memorySizeBytes: UInt64 = UInt64(defaultMemoryGiB) * 1024 * 1024 * 1024,
+        dataDiskSizeBytes: UInt64 = UInt64(defaultDiskGiB) * 1024 * 1024 * 1024,
+        macOSAddress: String = defaultMacOSAddress,
+        linuxAddress: String = defaultLinuxAddress,
+        macOSMACAddress: String,
+        linuxPrivateMACAddress: String,
+        linuxNATMACAddress: String,
+        guestProvisioningState: DockerGuestProvisioningState = .pending,
+        guestProvisioningVersion: Int = 0,
+        imageVersion: String? = nil,
+        mobyVersion: String? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.enabled = enabled
+        self.amd64Enabled = amd64Enabled
+        self.cpuCount = cpuCount
+        self.memorySizeBytes = memorySizeBytes
+        self.dataDiskSizeBytes = dataDiskSizeBytes
+        self.macOSAddress = macOSAddress
+        self.linuxAddress = linuxAddress
+        self.macOSMACAddress = macOSMACAddress
+        self.linuxPrivateMACAddress = linuxPrivateMACAddress
+        self.linuxNATMACAddress = linuxNATMACAddress
+        self.guestProvisioningState = guestProvisioningState
+        self.guestProvisioningVersion = guestProvisioningVersion
+        self.imageVersion = imageVersion
+        self.mobyVersion = mobyVersion
     }
 }
 
@@ -124,6 +206,10 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
     public var setupUsername: String?
     public var setupFullName: String?
     public var setupCompletedAt: Date?
+    /// Settings for the hidden Linux sidecar associated with this macOS VM.
+    /// Nil for bundles created before Docker sidecar support and for VMs where
+    /// Docker has never been enabled.
+    public var dockerSidecar: DockerSidecarSettings?
 
     public init(
         id: UUID = UUID(),
@@ -140,7 +226,8 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         macAddress: String? = nil,
         setupUsername: String? = nil,
         setupFullName: String? = nil,
-        setupCompletedAt: Date? = nil
+        setupCompletedAt: Date? = nil,
+        dockerSidecar: DockerSidecarSettings? = nil
     ) {
         self.id = id
         self.name = name
@@ -157,6 +244,7 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         self.setupUsername = setupUsername
         self.setupFullName = setupFullName
         self.setupCompletedAt = setupCompletedAt
+        self.dockerSidecar = dockerSidecar
     }
 
     public var memoryDescription: String {

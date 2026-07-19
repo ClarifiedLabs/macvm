@@ -12,6 +12,12 @@ func sharedSettingsPersistAndResetVMRoot() throws {
     let settings = MacVMSettings(defaults: defaults)
     #expect(settings.configuredVMRootDirectory == nil)
     #expect(settings.effectiveVMRootDirectory == MacVMSettings.defaultVMRootDirectory)
+    #expect(settings.dockerImageAutoRefreshEnabled)
+
+    settings.setDockerImageAutoRefreshEnabled(false)
+    #expect(!settings.dockerImageAutoRefreshEnabled)
+    settings.setDockerImageAutoRefreshEnabled(true)
+    #expect(settings.dockerImageAutoRefreshEnabled)
 
     let configured = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent("MacVM Settings Test", isDirectory: true)

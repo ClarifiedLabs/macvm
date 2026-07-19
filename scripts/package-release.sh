@@ -120,6 +120,13 @@ sign_release_payload() {
   codesign --force \
     --timestamp \
     --options runtime \
+    --identifier "$BASE_BUNDLE_IDENTIFIER.docker-guest" \
+    --sign "$developer_id_application" \
+    "$DOCKER_GUEST_HELPER_PATH"
+
+  codesign --force \
+    --timestamp \
+    --options runtime \
     --entitlements "$ENTITLEMENTS_PATH" \
     --identifier "$CLI_BUNDLE_IDENTIFIER" \
     --sign "$developer_id_application" \
@@ -132,6 +139,7 @@ sign_release_payload() {
     --sign "$developer_id_application" \
     "$APP_PATH"
 
+  codesign --verify --strict --verbose=2 "$DOCKER_GUEST_HELPER_PATH"
   codesign --verify --strict --verbose=2 "$EMBEDDED_CLI_PATH"
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 }
@@ -255,11 +263,13 @@ require_file "$EMBEDDED_CLI_PRODUCT" "embedded CLI product"
 CLI_LINK_PATH="$PAYLOAD_ROOT/usr/local/bin/$CLI_NAME"
 APP_PATH="$PAYLOAD_ROOT/Applications/$APP_NAME.app"
 EMBEDDED_CLI_PATH="$APP_PATH/Contents/Helpers/$CLI_NAME"
+DOCKER_GUEST_HELPER_PATH="$APP_PATH/Contents/Resources/macvm_MacVMHostKit.bundle/Resources/Docker/macvm-docker-guest"
 DMG_PATH="$OUTPUT_DIR/MacVM-$VERSION.dmg"
 PKG_PATH="$OUTPUT_DIR/MacVM-$VERSION.pkg"
 
 ditto --norsrc --noextattr "$APP_PRODUCT" "$APP_PATH"
 require_file "$EMBEDDED_CLI_PATH" "staged embedded CLI"
+require_file "$DOCKER_GUEST_HELPER_PATH" "Docker guest helper"
 
 if enabled "$SIGN_RELEASE"; then
   sign_release_payload

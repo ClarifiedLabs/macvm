@@ -58,6 +58,16 @@ def main() -> None:
     )
     require_contains(
         package_script,
+        'DOCKER_GUEST_HELPER_PATH="$APP_PATH/Contents/Resources/macvm_MacVMHostKit.bundle/Resources/Docker/macvm-docker-guest"',
+        "package-release.sh",
+    )
+    require_contains(
+        package_script,
+        '--identifier "$BASE_BUNDLE_IDENTIFIER.docker-guest"',
+        "package-release.sh",
+    )
+    require_contains(
+        package_script,
         'ln -s "../../../Applications/$APP_NAME.app/Contents/Helpers/$CLI_NAME" "$CLI_LINK_PATH"',
         "package-release.sh",
     )

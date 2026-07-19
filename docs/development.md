@@ -4,7 +4,8 @@ MacVM is an Xcode project for macOS virtualization. It is not SwiftPM-driven; do
 
 ## Project Layout
 
-- `Sources/MacVMHostKit/`: core VM, automation, VNC, OCR, setup, networking, and shared helpers
+- `Sources/MacVMHostKit/`: core VM, automation, VNC, OCR, setup, networking, Docker sidecar, and shared helpers
+- `Sources/MacVMDockerGuest/`: arm64 macOS guest daemon for Docker API bind mapping and published-port relays (SwiftNIO 2.86.0)
 - `Sources/MacVMCLI/main.swift`: CLI entry point
 - `Sources/MacVM/`: SwiftUI app
 - `Sources/MacVMPrivateVZ/`: Objective-C runtime shim for private Virtualization.framework symbols
@@ -38,8 +39,9 @@ Local Debug and Release builds use ad-hoc signing with `Support/macvm.entitlemen
 
 Public releases use `scripts/package-release.sh` with:
 
-- Developer ID Application signing for `/Applications/MacVM.app/Contents/Helpers/macvm`
-- Developer ID Application signing for `/Applications/MacVM.app` after its nested helper
+- Developer ID Application signing without virtualization entitlements for the bundled `macvm-docker-guest` payload
+- Developer ID Application signing with virtualization entitlements for `/Applications/MacVM.app/Contents/Helpers/macvm`
+- Developer ID Application signing for `/Applications/MacVM.app` after both nested executables
 - Developer ID Application signing for `MacVM-<version>.dmg`
 - Developer ID Installer signing for `MacVM-<version>.pkg`
 - Apple notarization and stapling for both release artifacts
@@ -55,7 +57,7 @@ The manual package installs:
 /usr/local/bin/macvm -> ../../../Applications/MacVM.app/Contents/Helpers/macvm
 ```
 
-The app target embeds the CLI with Code Sign On Copy. Release packaging signs the helper first and the outer app last. Both installation channels link that same helper rather than copying another CLI, so the app and CLI cannot drift between versions.
+The app target embeds the CLI with Code Sign On Copy. The HostKit resource build also embeds the separately built arm64 Docker guest helper. Release packaging signs the guest helper first (without the virtualization entitlement), the CLI second, and the outer app last. Both installation channels link the same CLI rather than copying another one, so the app and CLI cannot drift between versions.
 
 ## Versioning
 
@@ -70,5 +72,43 @@ The Xcode project owns the release version through `MARKETING_VERSION`.
 `MacVM.app` owns every ordinary `run` and `run --headless` VM in-process. The CLI resolves the VM to a canonical full bundle path and uses the per-user file-backed control queue for acknowledged run, attach, and stop requests. `--headless` controls only the initial presentation: `attach` adds a `VZVirtualMachineView` to the existing VM without restarting it. Setup can still use its dedicated `HeadlessRunner` ownership path.
 
 Every owner publishes a password-protected `Runtime/vnc-session.json`. Entitlement-free automation commands such as `screenshot`, `type`, `keys`, `vnc`, `wait-text`, and `click-text` attach to that live session over loopback RFB and should error if no session is live. The private server itself binds beyond loopback, so the password is mandatory. App runtimes use the `manager` owner role; never signal that PID to stop one VM. Route the request to the app and stop its path-keyed `VMViewerController` instead. Native display close requests always hide the window without ending the VM.
+
+When `VMMetadata.dockerSidecar` is enabled, `VMViewerController` also owns a
+`DockerSidecarRuntime` and one retained `DockerPairNetwork`. The sidecar starts
+before the ordinary macOS start request and stops after macOS. Recovery never
+starts it. Startup failures publish `Runtime/docker-sidecar.json` as degraded
+without failing the owner. Do not move this ownership into `HeadlessRunner` or
+create a top-level managed VM for `DockerSidecar/`.
+
+The nested bundle contains FCOS system/data disks, EFI and generic identities,
+Ignition, and reset-stable pairing public material. FCOS stream metadata must
+select `architectures.aarch64.artifacts.applehv.formats.raw.gz.disk` and verify
+both compressed and uncompressed SHA-256 values. The guest helper is built as a
+separate executable target, copied into the HostKit resource bundle, and
+installed only after setup has produced an SSH-ready account.
+
+The bind mapper is a security boundary: add endpoint-specific JSON transforms
+for Docker API schema changes; never perform arbitrary textual path replacement.
+Unknown endpoints and upgrade/hijack streams remain raw byte relays. SSHFS
+mounts must remain constrained to `/run/macvm-macos/<filesystem-id>`, the
+resolved requested source subtree, and the isolated `192.168.127.0/30` sidecar link.
+The helper must invalidate and restore persisted mounts and broker-owned port
+rules after an SSH reconnect. Keep Zincati masked unless Docker startup is first
+gated on successful host-side mount reconciliation; an autonomous FCOS reboot
+must never let restart-policy containers write into empty `/run` mountpoints.
+
+Real-guest release checks are required for:
+
+- `$PWD`, `/Users/Shared`, `/private/tmp`, and a mounted path under `/Volumes`
+  through both `-v` and `--mount`, including inspect reverse mapping
+- reverse-tunneled SSHFS transport, symlinks, spaces, Unicode,
+  read-only mounts, inotify/watch behavior, and large trees
+- fixed/random IPv4 TCP and UDP publishing with loopback/all-interface semantics,
+  multiple independent UDP clients, cleanup after container removal, and explicit
+  rejection of unsupported IPv6-only or same-port/multi-address bindings
+- native arm64 and `linux/amd64` images with Rosetta, including clear behavior
+  when Rosetta is unavailable or not installed
+- clone source/destination concurrent use, Docker engine ID refresh, recovery
+  bypass, degraded startup, disable preservation, and destructive reset
 
 All private Virtualization.framework symbols must stay isolated in `Sources/MacVMPrivateVZ/` and be resolved at runtime.

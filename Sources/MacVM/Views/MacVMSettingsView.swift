@@ -6,6 +6,7 @@ struct MacVMSettingsView: View {
     @Environment(AppStore.self) private var store
     @State private var rootPath = MacVMSettings.shared.effectiveVMRootDirectory.path
     @State private var savedPath = MacVMSettings.shared.effectiveVMRootDirectory.path
+    @State private var dockerImageAutoRefresh = MacVMSettings.shared.dockerImageAutoRefreshEnabled
 
     var body: some View {
         Form {
@@ -38,6 +39,17 @@ struct MacVMSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+            }
+
+            Section("Docker") {
+                Toggle("Automatically refresh the Fedora CoreOS image", isOn: $dockerImageAutoRefresh)
+                    .onChange(of: dockerImageAutoRefresh) { _, enabled in
+                        MacVMSettings.shared.setDockerImageAutoRefreshEnabled(enabled)
+                    }
+
+                Text("When unavailable or disabled, MacVM uses the last verified cached image. Refresh it manually with `macvm docker image refresh`.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

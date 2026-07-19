@@ -13,7 +13,15 @@ struct MacVMApp: App {
             MacVMAppControlQueue.controlOnlyArgument
         )
         self.controlOnlyLaunch = controlOnlyLaunch
-        let store = AppStore(controlQueue: MacVMAppControlQueue())
+        let isUnitTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        let testRoot = isUnitTestHost
+            ? FileManager.default.temporaryDirectory.appendingPathComponent("macvm-app-test-host-\(getpid())", isDirectory: true)
+            : nil
+        let store = AppStore(
+            service: MacVMService(rootDirectory: testRoot ?? MacVMSettings.shared.configuredVMRootDirectory),
+            controlQueue: MacVMAppControlQueue()
+        )
         _store = State(initialValue: store)
         MacVMApplicationDelegate.store = store
         MacVMApplicationDelegate.controlOnlyLaunch = controlOnlyLaunch

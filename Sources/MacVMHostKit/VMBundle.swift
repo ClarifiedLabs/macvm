@@ -77,9 +77,16 @@ struct VMStorage {
         rootDirectory.appendingPathComponent(".restore-images", isDirectory: true)
     }
 
+    var dockerImageCacheDirectory: URL {
+        rootDirectory.appendingPathComponent(".docker-images", isDirectory: true)
+    }
+
     func ensureRootDirectories() throws {
         try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: restoreCacheDirectory, withIntermediateDirectories: true)
+        // Docker image/tool caches are created lazily by their providers. Eagerly
+        // touching a disconnected or slow external VM root here would block every
+        // ordinary list/launch operation, including app-hosted unit tests.
     }
 
     func bundleURL(for name: String) -> URL {
@@ -92,11 +99,11 @@ struct VMStorage {
         try ensureRootDirectories()
 
         let fileManager = FileManager.default
-        let contents = try fileManager.contentsOfDirectory(
-            at: rootDirectory,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
+        // Names are sufficient here; asking NSURL for resource keys can block on
+        // unrelated hidden cache entries on removable/network VM roots.
+        let contents = try fileManager.contentsOfDirectory(atPath: rootDirectory.path)
+            .filter { !$0.hasPrefix(".") }
+            .map { rootDirectory.appendingPathComponent($0, isDirectory: true) }
 
         return try contents
             .filter { $0.pathExtension == Self.bundleExtension }
@@ -609,7 +616,11 @@ struct VMBundle {
         return platform
     }
 
-    func makeConfiguration(metadata: VMMetadata, forceSharedDirectory: Bool = false) throws -> VZVirtualMachineConfiguration {
+    func makeConfiguration(
+        metadata: VMMetadata,
+        forceSharedDirectory: Bool = false,
+        additionalNetworkDevices: [VZNetworkDeviceConfiguration] = []
+    ) throws -> VZVirtualMachineConfiguration {
         let configuration = VZVirtualMachineConfiguration()
         configuration.platform = try makePlatformConfiguration()
         configuration.bootLoader = VZMacOSBootLoader()
@@ -617,7 +628,7 @@ struct VMBundle {
         configuration.memorySize = metadata.memorySizeBytes
         configuration.storageDevices = [try makeStorageDevice()]
         configuration.graphicsDevices = [makeGraphicsDevice(metadata: metadata)]
-        configuration.networkDevices = [makeNetworkDevice(metadata: metadata)]
+        configuration.networkDevices = [makeNetworkDevice(metadata: metadata)] + additionalNetworkDevices
         configuration.keyboards = [VZMacKeyboardConfiguration()]
         configuration.pointingDevices = [VZMacTrackpadConfiguration()]
 

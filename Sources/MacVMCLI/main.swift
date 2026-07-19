@@ -202,6 +202,7 @@ struct MacVMCommand: AsyncParsableCommand {
             Attach.self,
             Stop.self,
             Config.self,
+            Docker.self,
             Autostart.self,
             Shutdown.self,
             IP.self,
@@ -275,6 +276,7 @@ extension MacVMCommand {
             }
             print("Bootstrap Share: \(metadata.bootstrapShareEnabled ? "enabled" : "disabled")")
             print("Launch On Boot: \(service.launchOnBootStatus(for: virtualMachine).enabled ? "enabled" : "disabled")")
+            print("Docker: \(service.dockerStatus(for: virtualMachine).state.rawValue)")
             if let restoreImageName = metadata.installedRestoreImageName {
                 print("Restore Image: \(restoreImageName)")
             }
@@ -375,6 +377,24 @@ extension MacVMCommand {
         @Flag(name: .long, help: "After install, drive a supported macOS 15, 26, or 27 guest to an SSH/Ansible-ready state.")
         var setup = false
 
+        @Flag(name: .long, help: "Enable the Docker sidecar after setup. Implies --setup and shuts down after setup.")
+        var docker = false
+
+        @Option(name: .long, help: "Docker sidecar virtual CPU count. Defaults to 2.")
+        var dockerCPU: Int = DockerSidecarSettings.defaultCPUCount
+
+        @Option(name: .long, help: "Docker sidecar memory in GiB. Defaults to 4.")
+        var dockerMemoryGiB: Int = DockerSidecarSettings.defaultMemoryGiB
+
+        @Option(name: .long, help: "Docker data disk in GiB. Defaults to 64.")
+        var dockerDiskGiB: Int = DockerSidecarSettings.defaultDiskGiB
+
+        @Flag(name: .customLong("docker-amd64"), inversion: .prefixedNo, help: "Enable linux/amd64 containers with Rosetta for Linux.")
+        var dockerAMD64 = true
+
+        @Flag(name: .long, help: "Install Rosetta for Linux with Apple's consent dialog when --docker is used.")
+        var dockerInstallRosetta = false
+
         @Flag(name: .long, help: "Launch this VM headless at macOS user login.")
         var launchOnBoot = false
 
@@ -389,6 +409,13 @@ extension MacVMCommand {
             }
             if display != nil && displayPixels != nil {
                 throw ValidationError("Use either --display or --display-pixels, not both.")
+            }
+            if docker {
+                guard dockerCPU > 0 else {
+                    throw ValidationError("Docker CPU count must be greater than zero.")
+                }
+                _ = try Docker.bytes(gib: dockerMemoryGiB)
+                _ = try Docker.bytes(gib: dockerDiskGiB)
             }
             if let xcode {
                 let expandedPath = NSString(string: xcode).expandingTildeInPath
@@ -407,9 +434,23 @@ extension MacVMCommand {
         mutating func run() async throws {
             debugOptions.apply()
             let service = MacVMService(rootDirectory: storage.resolvedURL)
+            let dockerConfiguration: DockerSidecarResourceConfiguration?
+            if docker {
+                dockerConfiguration = DockerSidecarResourceConfiguration(
+                    cpuCount: dockerCPU,
+                    memorySizeBytes: try Docker.bytes(gib: dockerMemoryGiB),
+                    dataDiskSizeBytes: try Docker.bytes(gib: dockerDiskGiB),
+                    amd64Enabled: dockerAMD64
+                )
+            } else {
+                dockerConfiguration = nil
+            }
             let xcodeURL = xcode.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) }
-            let setupOptions = try setupArguments.makeOptions(xcodeXIPURL: xcodeURL)
-            let shouldSetup = setup || !setupOptions.provisioningSelection.profileIDs.isEmpty || xcodeURL != nil
+            var setupOptions = try setupArguments.makeOptions(xcodeXIPURL: xcodeURL)
+            if docker {
+                setupOptions.shutdownAfter = true
+            }
+            let shouldSetup = setup || docker || !setupOptions.provisioningSelection.profileIDs.isEmpty || xcodeURL != nil
             if shouldSetup {
                 try service.preflightProvisioning(
                     selection: setupOptions.provisioningSelection,
@@ -443,6 +484,11 @@ extension MacVMCommand {
 
             draft.createBootstrapShare = bootstrap
             draft.launchOnBoot = launchOnBoot
+            draft.dockerEnabled = docker
+            draft.dockerCPUCount = dockerCPU
+            draft.dockerMemoryGiB = dockerMemoryGiB
+            draft.dockerDiskGiB = dockerDiskGiB
+            draft.dockerAMD64Enabled = dockerAMD64
 
             if let ipsw {
                 let expandedPath = NSString(string: ipsw).expandingTildeInPath
@@ -478,6 +524,20 @@ extension MacVMCommand {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 let withIdentity = try service.ensureNetworkIdentity(virtualMachine)
                 try await performSetup(service: service, virtualMachine: withIdentity, options: setupOptions)
+                if docker {
+                    if dockerInstallRosetta {
+                        try await service.installRosettaIfNeeded()
+                    }
+                    let stoppedVM = try service.resolveVM(identifier: virtualMachine.bundleURL.path)
+                    guard let dockerConfiguration else {
+                        throw ValidationError("Docker resource configuration is unavailable.")
+                    }
+                    let enabledVM = try await service.enableDockerSidecar(
+                        for: stoppedVM,
+                        configuration: dockerConfiguration
+                    ) { event in reporter.handle(event) }
+                    print("Docker sidecar enabled for \(enabledVM.metadata.name). It will finish guest integration on the next normal start.")
+                }
             } else {
                 print("Run it with: macvm run \(virtualMachine.metadata.name)")
             }
@@ -629,6 +689,7 @@ extension MacVMCommand {
                 let settings = MacVMSettings.shared
                 print("VM root: \(settings.effectiveVMRootDirectory.path)")
                 print("Source: \(settings.configuredVMRootDirectory == nil ? "built-in default" : "shared setting")")
+                print("Docker image auto-refresh: \(settings.dockerImageAutoRefreshEnabled ? "enabled" : "disabled")")
             }
         }
 
@@ -659,6 +720,233 @@ extension MacVMCommand {
                 MacVMSettings.shared.setVMRootDirectory(nil)
                 print("VM root: \(MacVMSettings.shared.effectiveVMRootDirectory.path)")
             }
+        }
+    }
+
+    struct Docker: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Manage the hidden Linux Docker sidecar for a macOS VM.",
+            subcommands: [Enable.self, Status.self, Configure.self, Disable.self, Update.self, Reset.self, Image.self],
+            defaultSubcommand: Status.self
+        )
+
+        struct Enable: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Create or re-enable a stopped VM's Docker sidecar.")
+
+            @OptionGroup var storage: StorageOptions
+            @OptionGroup var debugOptions: DebugOptions
+            @Option(name: .long, help: "Docker sidecar virtual CPU count.") var cpu = DockerSidecarSettings.defaultCPUCount
+            @Option(name: .long, help: "Docker sidecar memory in GiB.") var memoryGiB = DockerSidecarSettings.defaultMemoryGiB
+            @Option(name: .long, help: "Docker data disk in GiB.") var diskGiB = DockerSidecarSettings.defaultDiskGiB
+            @Flag(name: .long, help: "Disable linux/amd64 translation for this sidecar.") var noAMD64 = false
+            @Flag(name: .long, help: "Install Rosetta for Linux with Apple's consent dialog.") var installRosetta = false
+            @Argument(help: "VM name, bundle basename, or full bundle path.") var identifier: String
+
+            func run() async throws {
+                debugOptions.apply()
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let vm = try service.resolveVM(identifier: identifier)
+                if installRosetta && !noAMD64 { try await service.installRosettaIfNeeded() }
+                let reporter = CLIReporter()
+                let result = try await service.enableDockerSidecar(
+                    for: vm,
+                    configuration: DockerSidecarResourceConfiguration(
+                        cpuCount: cpu,
+                        memorySizeBytes: try Docker.bytes(gib: memoryGiB),
+                        dataDiskSizeBytes: try Docker.bytes(gib: diskGiB),
+                        amd64Enabled: !noAMD64
+                    )
+                ) { reporter.handle($0) }
+                print("Docker sidecar enabled for \(result.metadata.name).")
+            }
+        }
+
+        struct Status: ParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Show Docker sidecar state and resource usage.")
+
+            @OptionGroup var storage: StorageOptions
+            @Flag(name: .long, help: "Print machine-readable JSON.") var json = false
+            @Argument(help: "VM name, bundle basename, or full bundle path.") var identifier: String
+
+            func run() throws {
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let vm = try service.resolveVM(identifier: identifier)
+                let status = service.dockerStatus(for: vm)
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    encoder.dateEncodingStrategy = .iso8601
+                    print(String(decoding: try encoder.encode(status), as: UTF8.self))
+                    return
+                }
+                print("\(vm.metadata.name): \(status.state.rawValue)")
+                if let version = status.fcosVersion { print("Fedora CoreOS: \(version)") }
+                if let cpu = status.cpuCount { print("CPU: \(cpu)") }
+                if let memory = status.memorySizeBytes { print("Memory: \(VMText.gibLabel(for: memory))") }
+                if let disk = status.dataDiskSizeBytes { print("Data disk: \(VMText.gibLabel(for: disk))") }
+                if let allocated = status.dataDiskAllocatedBytes { print("Bundle allocated: \(ByteCountFormatter.string(fromByteCount: Int64(clamping: allocated), countStyle: .file))") }
+                print("linux/amd64: \(status.amd64Requested ? (status.amd64Available ? "available" : "requested, unavailable") : "disabled")")
+                if let error = status.lastError { print("Error: \(error)") }
+            }
+        }
+
+        struct Configure: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Change stopped Docker sidecar resources; disks may only grow.")
+
+            @OptionGroup var storage: StorageOptions
+            @Option(name: .long, help: "Docker sidecar virtual CPU count.") var cpu: Int?
+            @Option(name: .long, help: "Docker sidecar memory in GiB.") var memoryGiB: Int?
+            @Option(name: .long, help: "Docker data disk in GiB.") var diskGiB: Int?
+            @Flag(name: .long, help: "Enable linux/amd64 translation.") var amd64 = false
+            @Flag(name: .long, help: "Disable linux/amd64 translation.") var noAMD64 = false
+            @Flag(name: .long, help: "Install Rosetta for Linux with Apple's consent dialog.") var installRosetta = false
+            @Argument(help: "VM name, bundle basename, or full bundle path.") var identifier: String
+
+            mutating func validate() throws {
+                guard !amd64 || !noAMD64 else { throw ValidationError("Use either --amd64 or --no-amd64, not both.") }
+                guard cpu != nil || memoryGiB != nil || diskGiB != nil || amd64 || noAMD64 else {
+                    throw ValidationError("Specify at least one Docker setting to change.")
+                }
+            }
+
+            func run() async throws {
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let vm = try service.resolveVM(identifier: identifier)
+                if installRosetta && amd64 { try await service.installRosettaIfNeeded() }
+                let result = try service.configureDockerSidecar(
+                    for: vm,
+                    cpuCount: cpu,
+                    memorySizeBytes: try memoryGiB.map(Docker.bytes),
+                    dataDiskSizeBytes: try diskGiB.map(Docker.bytes),
+                    amd64Enabled: amd64 ? true : (noAMD64 ? false : nil)
+                )
+                print("Docker sidecar configuration updated for \(result.metadata.name).")
+            }
+        }
+
+        struct Disable: ParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Disable Docker while preserving all sidecar data.")
+            @OptionGroup var storage: StorageOptions
+            @Argument(help: "VM name, bundle basename, or full bundle path.") var identifier: String
+
+            func run() throws {
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let vm = try service.resolveVM(identifier: identifier)
+                _ = try service.disableDockerSidecar(for: vm)
+                print("Docker disabled for \(vm.metadata.name); sidecar data was preserved.")
+            }
+        }
+
+        struct Update: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "Update Fedora CoreOS while preserving Docker images, containers, and volumes."
+            )
+            @OptionGroup var storage: StorageOptions
+            @OptionGroup var debugOptions: DebugOptions
+            @Argument(help: "VM name, bundle basename, or full bundle path.") var identifier: String
+
+            func run() async throws {
+                debugOptions.apply()
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let vm = try service.resolveVM(identifier: identifier)
+                let reporter = CLIReporter()
+                let result = try await service.updateDockerSidecar(for: vm) { reporter.handle($0) }
+                print("Docker sidecar is using Fedora CoreOS \(result.metadata.dockerSidecar?.imageVersion ?? "unknown").")
+            }
+        }
+
+        struct Reset: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(abstract: "Destroy Docker state and create a fresh sidecar appliance.")
+            @OptionGroup var storage: StorageOptions
+            @Flag(name: [.short, .long], help: "Reset without prompting for confirmation.") var force = false
+            @Argument(help: "VM name, bundle basename, or full bundle path.") var identifier: String
+
+            func run() async throws {
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let vm = try service.resolveVM(identifier: identifier)
+                if !force {
+                    print("Reset Docker for '\(vm.metadata.name)'? Images, containers, and volumes will be destroyed. [y/N] ", terminator: "")
+                    fflush(stdout)
+                    guard let answer = readLine(), ["y", "yes"].contains(answer.lowercased()) else {
+                        print("Cancelled.")
+                        return
+                    }
+                }
+                let reporter = CLIReporter()
+                _ = try await service.resetDockerSidecar(for: vm) { reporter.handle($0) }
+                print("Docker sidecar reset for \(vm.metadata.name).")
+            }
+        }
+
+        struct Image: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "Manage the cached Fedora CoreOS sidecar image.",
+                subcommands: [Status.self, Refresh.self, AutoRefresh.self],
+                defaultSubcommand: Status.self
+            )
+
+            struct Status: ParsableCommand {
+                static let configuration = CommandConfiguration(abstract: "Show cached image and refresh settings.")
+                @OptionGroup var storage: StorageOptions
+
+                func run() throws {
+                    let enabled = MacVMSettings.shared.dockerImageAutoRefreshEnabled
+                    print("Automatic refresh: \(enabled ? "enabled" : "disabled")")
+                    let service = MacVMService(rootDirectory: storage.resolvedURL)
+                    guard let cached = try service.cachedDockerImage() else {
+                        print("Cached image: none")
+                        return
+                    }
+                    print("Cached image: Fedora CoreOS \(cached.image.release)")
+                    print("Refreshed: \(cached.refreshedAt.formatted(.iso8601))")
+                    print("Path: \(cached.rawImageURL.path)")
+                }
+            }
+
+            struct Refresh: AsyncParsableCommand {
+                static let configuration = CommandConfiguration(
+                    abstract: "Download and verify the current Fedora CoreOS stable image."
+                )
+                @OptionGroup var storage: StorageOptions
+                @OptionGroup var debugOptions: DebugOptions
+
+                func run() async throws {
+                    debugOptions.apply()
+                    let service = MacVMService(rootDirectory: storage.resolvedURL)
+                    let reporter = CLIReporter()
+                    let cached = try await service.refreshDockerImage { reporter.handle($0) }
+                    print("Cached Fedora CoreOS \(cached.image.release) at \(cached.rawImageURL.path).")
+                }
+            }
+
+            struct AutoRefresh: ParsableCommand {
+                static let configuration = CommandConfiguration(
+                    commandName: "auto-refresh",
+                    abstract: "Show or change automatic image refresh."
+                )
+                @Argument(help: "Set automatic refresh to 'on' or 'off'.")
+                var mode: Mode?
+
+                enum Mode: String, ExpressibleByArgument {
+                    case on
+                    case off
+                }
+
+                func run() {
+                    if let mode {
+                        MacVMSettings.shared.setDockerImageAutoRefreshEnabled(mode == .on)
+                    }
+                    let enabled = MacVMSettings.shared.dockerImageAutoRefreshEnabled
+                    print("Automatic Fedora CoreOS image refresh is \(enabled ? "enabled" : "disabled").")
+                }
+            }
+        }
+
+        fileprivate static func bytes(gib: Int) throws -> UInt64 {
+            guard gib > 0, let bytes = UInt64(exactly: gib)?.multipliedReportingOverflow(by: 1024 * 1024 * 1024), !bytes.overflow else {
+                throw ValidationError("Docker sizes must be positive whole GiB values.")
+            }
+            return bytes.partialValue
         }
     }
 

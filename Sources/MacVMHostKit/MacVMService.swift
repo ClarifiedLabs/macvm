@@ -112,19 +112,22 @@ public final class MacVMService: Sendable {
         "Shared/.fseventsd",
     ]
 
-    private let storage: VMStorage
+    let storage: VMStorage
     private let launchOnBoot: VMLaunchOnBootController
+    let dockerImageAutoRefreshOverride: Bool?
 
     public init(
         rootDirectory: URL? = nil,
         launchAgentsDirectory: URL? = nil,
-        executableURL: URL? = nil
+        executableURL: URL? = nil,
+        dockerImageAutoRefreshEnabled: Bool? = nil
     ) {
         self.storage = VMStorage(rootDirectory: rootDirectory)
         self.launchOnBoot = VMLaunchOnBootController(
             launchAgentsDirectory: launchAgentsDirectory,
             executableURL: executableURL
         )
+        self.dockerImageAutoRefreshOverride = dockerImageAutoRefreshEnabled
     }
 
     public var rootDirectory: URL {
@@ -321,13 +324,42 @@ public final class MacVMService: Sendable {
     }
 
     public func removeVM(_ vm: ManagedVM) throws {
+        let bundle = VMBundle(url: vm.bundleURL)
+        let dockerOperationLock = try removalDockerOperationLock(bundle: bundle, metadata: vm.metadata)
+        defer { withExtendedLifetime(dockerOperationLock) {} }
+        try requireStoppedForRemoval(bundle: bundle, name: vm.metadata.name)
         launchOnBoot.removeLaunchAgent(for: VMRemovalTarget(bundleURL: vm.bundleURL, metadata: vm.metadata))
-        try VMBundle(url: vm.bundleURL).removeFromDisk()
+        try bundle.removeFromDisk()
     }
 
     public func removeVM(_ target: VMRemovalTarget) throws {
+        let bundle = VMBundle(url: target.bundleURL)
+        let dockerOperationLock = try removalDockerOperationLock(bundle: bundle, metadata: target.metadata)
+        defer { withExtendedLifetime(dockerOperationLock) {} }
+        try requireStoppedForRemoval(
+            bundle: bundle,
+            name: target.metadata?.name ?? target.bundleURL.deletingPathExtension().lastPathComponent
+        )
         launchOnBoot.removeLaunchAgent(for: target)
-        try VMBundle(url: target.bundleURL).removeFromDisk()
+        try bundle.removeFromDisk()
+    }
+
+    private func removalDockerOperationLock(
+        bundle: VMBundle,
+        metadata: VMMetadata?
+    ) throws -> DockerSidecarOperationLock? {
+        guard metadata?.dockerSidecar != nil || bundle.dockerSidecarBundle.isPresent else { return nil }
+        return try bundle.acquireDockerSidecarOperationLock(operation: "remove the VM")
+    }
+
+    private func requireStoppedForRemoval(bundle: VMBundle, name: String) throws {
+        guard bundle.liveVMProcessRuntimeState() == nil,
+              bundle.liveVNCSession() == nil,
+              bundle.liveDisplayRuntimeState() == nil,
+              bundle.liveSetupRuntimeState() == nil,
+              bundle.readDockerSidecarRuntimeDescriptor()?.isLive != true else {
+            throw MacVMError.message("Stop '\(name)' before removing it.")
+        }
     }
 
     public func launchOnBootStatus(for vm: ManagedVM) -> VMLaunchOnBootStatus {
@@ -373,12 +405,31 @@ public final class MacVMService: Sendable {
         }
 
         let sourceBundle = VMBundle(url: source.bundleURL)
+        let dockerOperationLock: DockerSidecarOperationLock?
+        if source.metadata.dockerSidecar != nil || sourceBundle.dockerSidecarBundle.isPresent {
+            dockerOperationLock = try sourceBundle.acquireDockerSidecarOperationLock(operation: "clone the VM")
+        } else {
+            dockerOperationLock = nil
+        }
+        defer { withExtendedLifetime(dockerOperationLock) {} }
+        let sourceMetadata = try sourceBundle.readMetadata()
+        let metadataHasDocker = sourceMetadata.dockerSidecar != nil
+        let bundleHasDocker = sourceBundle.dockerSidecarBundle.isPresent
+        guard metadataHasDocker == bundleHasDocker else {
+            throw MacVMError.message(
+                "'\(sourceMetadata.name)' has inconsistent Docker metadata and sidecar storage. Run `macvm docker reset \(sourceMetadata.name) --force` before cloning."
+            )
+        }
+        if bundleHasDocker {
+            _ = try sourceBundle.dockerSidecarBundle.validateIntegrity()
+        }
         guard sourceBundle.liveVMProcessRuntimeState() == nil,
               sourceBundle.liveVNCSession() == nil,
               sourceBundle.liveDisplayRuntimeState() == nil,
-              sourceBundle.liveSetupRuntimeState() == nil else {
+              sourceBundle.liveSetupRuntimeState() == nil,
+              sourceBundle.liveDockerSidecarRuntimeDescriptor() == nil else {
             throw MacVMError.message(
-                "'\(source.metadata.name)' is running or setting up. Stop it before cloning: macvm stop \(source.metadata.name)"
+                "'\(sourceMetadata.name)' is running or setting up. Stop it before cloning: macvm stop \(sourceMetadata.name)"
             )
         }
 
@@ -387,11 +438,17 @@ public final class MacVMService: Sendable {
             isDirectory: true
         )
         let sourceURL = source.bundleURL
-        var metadata = source.metadata
+        var metadata = sourceMetadata
         metadata.id = UUID()
         metadata.name = name
         metadata.createdAt = Date()
         metadata.macAddress = VZMACAddress.randomLocallyAdministered().string
+        if var dockerSidecar = metadata.dockerSidecar {
+            // Keep private-link addressing/MACs and pairing keys: every clone gets
+            // a distinct socketpair. Refresh the externally visible NAT identity.
+            dockerSidecar.linuxNATMACAddress = VZMACAddress.randomLocallyAdministered().string
+            metadata.dockerSidecar = dockerSidecar
+        }
         if let cpuCount {
             metadata.cpuCount = cpuCount
         }
@@ -399,7 +456,7 @@ public final class MacVMService: Sendable {
             metadata.memorySizeBytes = memorySizeBytes
         }
 
-        progress?(.status("Cloning \(source.metadata.name)..."))
+        progress?(.status("Cloning \(sourceMetadata.name)..."))
         return try await Task.detached {
             let fileManager = FileManager.default
             defer {
@@ -414,6 +471,27 @@ public final class MacVMService: Sendable {
                 excludingRelativePaths: Self.cloneExcludedRelativePaths
             )
             let temporaryBundle = VMBundle(url: temporaryURL)
+            if let dockerSettings = metadata.dockerSidecar,
+               temporaryBundle.dockerSidecarBundle.isPresent {
+                let sidecar = temporaryBundle.dockerSidecarBundle
+                let machineDigest = try sidecar.refreshGenericMachineIdentifier()
+                var sidecarMetadata = try sidecar.readMetadata()
+                sidecarMetadata.genericMachineIdentifierDigest = machineDigest
+                try sidecar.writeMetadata(sidecarMetadata)
+                let dockerKey = try String(contentsOf: sidecar.dockerAuthorizedKeyURL, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let mountKey = try String(contentsOf: sidecar.mountBrokerAuthorizedKeyURL, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let ignition = try DockerIgnitionBuilder(
+                    settings: dockerSettings,
+                    dockerAuthorizedKey: dockerKey,
+                    mountBrokerAuthorizedKey: mountKey,
+                    linuxHostPrivateKey: try String(contentsOf: sidecar.linuxHostPrivateKeyURL, encoding: .utf8),
+                    linuxHostPublicKey: try String(contentsOf: sidecar.linuxHostPublicKeyURL, encoding: .utf8),
+                    genericMachineIdentifierDigest: machineDigest
+                ).makeData()
+                try ignition.write(to: sidecar.initialIgnitionURL, options: .atomic)
+            }
             try temporaryBundle.writeMetadata(metadata)
             try fileManager.moveItem(at: temporaryURL, to: destinationURL)
 
@@ -436,15 +514,22 @@ public final class MacVMService: Sendable {
         }
     }
 
-    private static func cloneMemorySizeBytes(fromGiB memoryGiB: Int) throws -> UInt64 {
+    private static func memorySizeBytes(fromGiB memoryGiB: Int) throws -> UInt64 {
         guard memoryGiB > 0 else {
             throw MacVMError.invalidMemoryGiB(memoryGiB)
         }
-
         let (bytes, overflow) = UInt64(memoryGiB).multipliedReportingOverflow(by: oneGiB)
+        guard !overflow else {
+            throw MacVMError.message("Memory size \(memoryGiB) GiB exceeds the supported size.")
+        }
+        return bytes
+    }
+
+    private static func cloneMemorySizeBytes(fromGiB memoryGiB: Int) throws -> UInt64 {
+        let bytes = try memorySizeBytes(fromGiB: memoryGiB)
         let minimumBytes = VZVirtualMachineConfiguration.minimumAllowedMemorySize
         let maximumBytes = VZVirtualMachineConfiguration.maximumAllowedMemorySize
-        guard !overflow, (minimumBytes...maximumBytes).contains(bytes) else {
+        guard (minimumBytes...maximumBytes).contains(bytes) else {
             let minimumGiB = max(1, Int((minimumBytes + oneGiB - 1) / oneGiB))
             let maximumGiB = Int(maximumBytes / oneGiB)
             throw MacVMError.message(
@@ -547,6 +632,7 @@ public final class MacVMService: Sendable {
             || bundle.liveVNCSession() != nil
             || bundle.liveDisplayRuntimeState() != nil
             || bundle.liveSetupRuntimeState() != nil
+            || bundle.liveDockerSidecarRuntimeDescriptor() != nil
     }
 
     /// The live setup operation for the VM, if a setup driver is currently running.
@@ -1268,13 +1354,10 @@ public final class MacVMService: Sendable {
         }
         DebugLog.log("Restore image requirements: minCPU=\(requirements.minimumSupportedCPUCount) minMemoryBytes=\(requirements.minimumSupportedMemorySize) hardwareModelSupported=\(requirements.hardwareModel.isSupported)")
 
-        DebugLog.log("Creating bundle at \(bundleURL.path)")
-        try bundle.createDirectory()
-
         var metadata = VMMetadata(
             name: draft.name,
             cpuCount: draft.cpuCount,
-            memorySizeBytes: UInt64(draft.memoryGiB) * oneGiB,
+            memorySizeBytes: try Self.memorySizeBytes(fromGiB: draft.memoryGiB),
             diskSizeBytes: try Self.diskSizeBytes(fromGiB: draft.diskGiB),
             displayWidth: draft.displayWidth,
             displayHeight: draft.displayHeight,
@@ -1306,7 +1389,15 @@ public final class MacVMService: Sendable {
             metadata.memorySizeBytes = adjustedMemoryBytes
         }
         DebugLog.log("Final VM metadata: cpu=\(metadata.cpuCount) memoryBytes=\(metadata.memorySizeBytes) diskBytes=\(metadata.diskSizeBytes) display=\(metadata.displayDescription) points (\(metadata.displayPixelDescription) pixels)")
+        if draft.dockerEnabled {
+            try validateDockerResources(
+                try Self.dockerResourceConfiguration(from: draft),
+                ownerMemorySizeBytes: metadata.memorySizeBytes
+            )
+        }
 
+        DebugLog.log("Creating bundle at \(bundleURL.path)")
+        try bundle.createDirectory()
         try bundle.writeMetadata(metadata)
         try bundle.savePlatformArtifacts(
             hardwareModel: requirements.hardwareModel,
@@ -1379,6 +1470,29 @@ public final class MacVMService: Sendable {
         guard draft.displayWidth > 0, draft.displayHeight > 0 else {
             throw MacVMError.invalidDisplaySize(draft.displayDescription)
         }
+
+        let requestedMemorySize = try Self.memorySizeBytes(fromGiB: draft.memoryGiB)
+        if draft.dockerEnabled {
+            let ownerMemorySize = min(
+                max(requestedMemorySize, VZVirtualMachineConfiguration.minimumAllowedMemorySize),
+                VZVirtualMachineConfiguration.maximumAllowedMemorySize
+            )
+            try validateDockerResources(
+                try Self.dockerResourceConfiguration(from: draft),
+                ownerMemorySizeBytes: ownerMemorySize
+            )
+        }
+    }
+
+    private static func dockerResourceConfiguration(
+        from draft: VMCreationDraft
+    ) throws -> DockerSidecarResourceConfiguration {
+        DockerSidecarResourceConfiguration(
+            cpuCount: draft.dockerCPUCount,
+            memorySizeBytes: try memorySizeBytes(fromGiB: draft.dockerMemoryGiB),
+            dataDiskSizeBytes: try diskSizeBytes(fromGiB: draft.dockerDiskGiB),
+            amd64Enabled: draft.dockerAMD64Enabled
+        )
     }
 
     @MainActor
