@@ -60,6 +60,16 @@ extension MacVMService {
 
     public func dockerStatus(for vm: ManagedVM) -> DockerSidecarStatus {
         let bundle = VMBundle(url: vm.bundleURL)
+        if bundle.hasDockerSidecarReplacementJournal {
+            do {
+                let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "recover Docker")
+                defer { withExtendedLifetime(operationLock) {} }
+                let recoveredMetadata = try bundle.recoverDockerSidecarReplacementIfNeeded()
+                return dockerStatus(for: ManagedVM(bundleURL: vm.bundleURL, metadata: recoveredMetadata))
+            } catch {
+                return DockerSidecarStatus(state: .corrupt, lastError: error.localizedDescription)
+            }
+        }
         guard let settings = vm.metadata.dockerSidecar else {
             return DockerSidecarStatus(
                 state: bundle.dockerSidecarBundle.isPresent ? .corrupt : .disabled,
@@ -118,7 +128,10 @@ extension MacVMService {
         let ownerBundle = VMBundle(url: vm.bundleURL)
         let operationLock = try ownerBundle.acquireDockerSidecarOperationLock(operation: "enable Docker")
         defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(bundleURL: vm.bundleURL, metadata: try ownerBundle.readMetadata())
+        let currentVM = ManagedVM(
+            bundleURL: vm.bundleURL,
+            metadata: try ownerBundle.recoverDockerSidecarReplacementIfNeeded()
+        )
         try requireStopped(currentVM, operation: "enable Docker")
         try requireDockerSetup(currentVM)
         try validateDockerResources(configuration, owner: currentVM.metadata)
@@ -175,7 +188,10 @@ extension MacVMService {
         let bundle = VMBundle(url: vm.bundleURL)
         let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "configure Docker")
         defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(bundleURL: vm.bundleURL, metadata: try bundle.readMetadata())
+        let currentVM = ManagedVM(
+            bundleURL: vm.bundleURL,
+            metadata: try bundle.recoverDockerSidecarReplacementIfNeeded()
+        )
         try requireStopped(currentVM, operation: "configure Docker")
         guard var settings = currentVM.metadata.dockerSidecar else {
             throw MacVMError.message("Docker is not enabled for '\(currentVM.metadata.name)'.")
@@ -206,7 +222,10 @@ extension MacVMService {
         let bundle = VMBundle(url: vm.bundleURL)
         let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "disable Docker")
         defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(bundleURL: vm.bundleURL, metadata: try bundle.readMetadata())
+        let currentVM = ManagedVM(
+            bundleURL: vm.bundleURL,
+            metadata: try bundle.recoverDockerSidecarReplacementIfNeeded()
+        )
         try requireStopped(currentVM, operation: "disable Docker")
         guard var settings = currentVM.metadata.dockerSidecar else { return currentVM }
         settings.enabled = false
@@ -224,7 +243,10 @@ extension MacVMService {
         let ownerBundle = VMBundle(url: vm.bundleURL)
         let operationLock = try ownerBundle.acquireDockerSidecarOperationLock(operation: "reset Docker")
         defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(bundleURL: vm.bundleURL, metadata: try ownerBundle.readMetadata())
+        let currentVM = ManagedVM(
+            bundleURL: vm.bundleURL,
+            metadata: try ownerBundle.recoverDockerSidecarReplacementIfNeeded()
+        )
         try requireStopped(currentVM, operation: "reset Docker")
         try requireDockerSetup(currentVM)
         let existingSidecar = ownerBundle.dockerSidecarBundle
@@ -251,7 +273,10 @@ extension MacVMService {
         let ownerBundle = VMBundle(url: vm.bundleURL)
         let operationLock = try ownerBundle.acquireDockerSidecarOperationLock(operation: "update Docker")
         defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(bundleURL: vm.bundleURL, metadata: try ownerBundle.readMetadata())
+        let currentVM = ManagedVM(
+            bundleURL: vm.bundleURL,
+            metadata: try ownerBundle.recoverDockerSidecarReplacementIfNeeded()
+        )
         try requireStopped(currentVM, operation: "update Docker")
         try requireDockerSetup(currentVM)
         guard var settings = currentVM.metadata.dockerSidecar else {
@@ -307,14 +332,17 @@ extension MacVMService {
     ) async throws -> ManagedVM {
         try storage.ensureRootDirectories()
         let ownerBundle = VMBundle(url: vm.bundleURL)
-        let finalSidecar = ownerBundle.dockerSidecarBundle
-        let temporaryURL = vm.bundleURL.appendingPathComponent(".DockerSidecar-\(UUID().uuidString)", isDirectory: true)
+        let candidateID = UUID()
+        let temporaryURL = vm.bundleURL.appendingPathComponent(
+            "\(DockerSidecarReplacement.stagePrefix)\(candidateID.uuidString)",
+            isDirectory: true
+        )
         let temporarySidecar = DockerSidecarBundle(url: temporaryURL)
-        let backupURL = vm.bundleURL.appendingPathComponent(".DockerSidecar-backup-\(UUID().uuidString)", isDirectory: true)
         let fileManager = FileManager.default
         defer {
-            try? fileManager.removeItem(at: temporaryURL)
-            try? fileManager.removeItem(at: backupURL)
+            if !ownerBundle.hasDockerSidecarReplacementJournal {
+                try? fileManager.removeItem(at: temporaryURL)
+            }
         }
 
         try fileManager.createDirectory(at: temporaryURL, withIntermediateDirectories: false)
@@ -373,27 +401,18 @@ extension MacVMService {
         try ignition.write(to: temporarySidecar.initialIgnitionURL, options: .atomic)
         try temporarySidecar.writeMetadata(DockerSidecarMetadata(
             image: image,
-            genericMachineIdentifierDigest: machineDigest
+            genericMachineIdentifierDigest: machineDigest,
+            replacementCandidateID: candidateID
         ))
         _ = try temporarySidecar.validateIntegrity()
 
-        var updatedMetadata = vm.metadata
-        updatedMetadata.dockerSidecar = settings
-        let replacingExisting = finalSidecar.isPresent
-        if replacingExisting {
-            try fileManager.moveItem(at: finalSidecar.url, to: backupURL)
-        }
-        do {
-            try fileManager.moveItem(at: temporaryURL, to: finalSidecar.url)
-            try ownerBundle.writeMetadata(updatedMetadata)
-            try? fileManager.removeItem(at: backupURL)
-        } catch {
-            try? fileManager.removeItem(at: finalSidecar.url)
-            if replacingExisting, fileManager.fileExists(atPath: backupURL.path) {
-                try? fileManager.moveItem(at: backupURL, to: finalSidecar.url)
-            }
-            throw error
-        }
+        let updatedMetadata = try DockerSidecarReplacement.commit(
+            ownerBundle: ownerBundle,
+            stageSidecar: temporarySidecar,
+            candidateID: candidateID,
+            previousSettings: vm.metadata.dockerSidecar,
+            intendedSettings: settings
+        )
         ownerBundle.clearDockerSidecarRuntimeDescriptor()
         progress?(.status("Docker sidecar \(image.release) is prepared; guest integration will complete on the next normal start."))
         return ManagedVM(bundleURL: vm.bundleURL, metadata: updatedMetadata)

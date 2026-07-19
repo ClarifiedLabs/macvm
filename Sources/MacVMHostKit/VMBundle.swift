@@ -119,8 +119,9 @@ struct VMStorage {
         let directURL = URL(fileURLWithPath: expandedIdentifier)
 
         if FileManager.default.fileExists(atPath: directURL.path) {
-            let bundle = VMBundle(url: directURL)
-            return ManagedVM(bundleURL: directURL, metadata: try bundle.readMetadata())
+            let resolvedURL = directURL.resolvingSymlinksInPath().standardizedFileURL
+            let bundle = VMBundle(url: resolvedURL)
+            return ManagedVM(bundleURL: resolvedURL, metadata: try bundle.readMetadata())
         }
 
         let candidates = try loadManagedVMs().filter { managedVM in
@@ -143,11 +144,12 @@ struct VMStorage {
         let directURL = URL(fileURLWithPath: expandedIdentifier)
 
         if FileManager.default.fileExists(atPath: directURL.path) {
-            guard directURL.pathExtension == Self.bundleExtension else {
-                throw MacVMError.invalidBundle(directURL)
+            let resolvedURL = directURL.resolvingSymlinksInPath().standardizedFileURL
+            guard resolvedURL.pathExtension == Self.bundleExtension else {
+                throw MacVMError.invalidBundle(resolvedURL)
             }
 
-            return removalTarget(for: directURL)
+            return removalTarget(for: resolvedURL)
         }
 
         let candidates = try removalTargets(matching: identifier)

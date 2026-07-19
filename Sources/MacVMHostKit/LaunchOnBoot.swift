@@ -31,7 +31,43 @@ struct VMLaunchOnBootController: Sendable {
     }
 
     static var defaultExecutableURL: URL {
-        URL(fileURLWithPath: "/usr/local/bin/macvm", isDirectory: false)
+        resolveExecutableURL(
+            mainBundleURL: Bundle.main.bundleURL,
+            currentExecutableURL: Bundle.main.executableURL
+        )
+    }
+
+    static func resolveExecutableURL(
+        mainBundleURL: URL,
+        currentExecutableURL: URL?,
+        isExecutableFile: (String) -> Bool = VMLaunchOnBootController.isExecutableFile(atPath:)
+    ) -> URL {
+        let appHelperURL = mainBundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Helpers", isDirectory: true)
+            .appendingPathComponent("macvm", isDirectory: false)
+        if mainBundleURL.pathExtension == "app", isExecutableFile(appHelperURL.path) {
+            return appHelperURL.standardizedFileURL
+        }
+
+        if let currentExecutableURL {
+            let executableURL = currentExecutableURL.standardizedFileURL
+            if executableURL.lastPathComponent == "macvm", isExecutableFile(executableURL.path) {
+                return executableURL.resolvingSymlinksInPath()
+            }
+        }
+
+        for path in ["/opt/homebrew/bin/macvm", "/usr/local/bin/macvm"] where isExecutableFile(path) {
+            return URL(fileURLWithPath: path, isDirectory: false).resolvingSymlinksInPath()
+        }
+        return URL(fileURLWithPath: "/usr/local/bin/macvm", isDirectory: false)
+    }
+
+    private static func isExecutableFile(atPath path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            && !isDirectory.boolValue
+            && FileManager.default.isExecutableFile(atPath: path)
     }
 
     func status(for vm: ManagedVM) -> VMLaunchOnBootStatus {

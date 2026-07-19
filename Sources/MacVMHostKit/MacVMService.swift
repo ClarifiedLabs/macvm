@@ -360,10 +360,11 @@ public final class MacVMService: Sendable {
 
     private func removalDockerOperationLock(
         bundle: VMBundle,
-        metadata: VMMetadata?
-    ) throws -> DockerSidecarOperationLock? {
-        guard metadata?.dockerSidecar != nil || bundle.dockerSidecarBundle.isPresent else { return nil }
-        return try bundle.acquireDockerSidecarOperationLock(operation: "remove the VM")
+        metadata _: VMMetadata?
+    ) throws -> DockerSidecarOperationLock {
+        // Lock before inspecting Docker state so a first enable cannot be removed
+        // while only its hidden staging directory exists.
+        try bundle.acquireDockerSidecarOperationLock(operation: "remove the VM")
     }
 
     private func requireStoppedForRemoval(bundle: VMBundle, name: String) throws {
@@ -419,14 +420,11 @@ public final class MacVMService: Sendable {
         }
 
         let sourceBundle = VMBundle(url: source.bundleURL)
-        let dockerOperationLock: DockerSidecarOperationLock?
-        if source.metadata.dockerSidecar != nil || sourceBundle.dockerSidecarBundle.isPresent {
-            dockerOperationLock = try sourceBundle.acquireDockerSidecarOperationLock(operation: "clone the VM")
-        } else {
-            dockerOperationLock = nil
-        }
+        // Lock before inspecting Docker state so a first enable cannot be cloned
+        // while only its hidden staging directory exists.
+        let dockerOperationLock = try sourceBundle.acquireDockerSidecarOperationLock(operation: "clone the VM")
         defer { withExtendedLifetime(dockerOperationLock) {} }
-        let sourceMetadata = try sourceBundle.readMetadata()
+        let sourceMetadata = try sourceBundle.recoverDockerSidecarReplacementIfNeeded()
         let metadataHasDocker = sourceMetadata.dockerSidecar != nil
         let bundleHasDocker = sourceBundle.dockerSidecarBundle.isPresent
         guard metadataHasDocker == bundleHasDocker else {
@@ -723,6 +721,31 @@ public final class MacVMService: Sendable {
         }
 
         return nil
+    }
+
+    /// Wait until all live runtime markers for a VM have disappeared.
+    public func waitUntilStopped(
+        _ vm: ManagedVM,
+        timeout: TimeInterval = 120,
+        pollInterval: Duration = .milliseconds(200)
+    ) async throws {
+        guard timeout.isFinite, timeout > 0 else {
+            throw MacVMError.message("Shutdown wait timeout must be a finite number greater than zero.")
+        }
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(timeout)
+        while hasLiveRuntime(for: vm) {
+            guard clock.now < deadline else {
+                throw MacVMError.message(
+                    "Timed out after \(Self.formattedDuration(timeout)) seconds waiting for '\(vm.metadata.name)' to stop."
+                )
+            }
+            try await clock.sleep(for: pollInterval)
+        }
+    }
+
+    private static func formattedDuration(_ duration: TimeInterval) -> String {
+        duration.rounded() == duration ? String(Int(duration)) : String(duration)
     }
 
     /// Ask the guest OS to shut down through SSH.

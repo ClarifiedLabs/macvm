@@ -322,6 +322,161 @@ func stableStreamParserSelectsOnlyAarch64AppleHVRawGzip() throws {
 }
 
 @Test
+func dockerSidecarReplacementUsesAtomicDirectoryExchange() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let first = root.appendingPathComponent("first", isDirectory: true)
+    let second = root.appendingPathComponent("second", isDirectory: true)
+    try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+    try Data("first payload".utf8).write(to: first.appendingPathComponent("value"))
+    try Data("second payload".utf8).write(to: second.appendingPathComponent("value"))
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try DockerSidecarReplacement.exchangeDirectoriesAtomically(first, second)
+
+    #expect(try Data(contentsOf: first.appendingPathComponent("value")) == Data("second payload".utf8))
+    #expect(try Data(contentsOf: second.appendingPathComponent("value")) == Data("first payload".utf8))
+}
+
+@Test
+func dockerSidecarReplacementRecoveryUsesCandidateIdentity() {
+    let candidateID = UUID()
+    let previousID = UUID()
+
+    #expect(DockerSidecarReplacement.recoveryDecision(
+        canonicalCandidateID: candidateID,
+        stageCandidateID: previousID,
+        expectedCandidateID: candidateID
+    ) == .rollForward)
+    #expect(DockerSidecarReplacement.recoveryDecision(
+        canonicalCandidateID: previousID,
+        stageCandidateID: candidateID,
+        expectedCandidateID: candidateID
+    ) == .rollBack)
+    #expect(DockerSidecarReplacement.recoveryDecision(
+        canonicalCandidateID: previousID,
+        stageCandidateID: nil,
+        expectedCandidateID: candidateID
+    ) == .ambiguous)
+}
+
+@Test
+func dockerSidecarReplacementRecoveryRollsBackBeforeExchange() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("owner.macvm", isDirectory: true)
+    let bundle = VMBundle(url: bundleURL)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    var previousSettings = dockerTestSettings()
+    previousSettings.imageVersion = "previous"
+    var intendedSettings = previousSettings
+    intendedSettings.imageVersion = "candidate"
+    var metadata = VMMetadata(
+        name: "owner-renamed-during-replacement",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        dockerSidecar: previousSettings
+    )
+    try bundle.writeMetadata(metadata)
+    try writeReplacementTestSidecar(bundle.dockerSidecarBundle, candidateID: nil)
+
+    let candidateID = UUID()
+    let stageName = "\(DockerSidecarReplacement.stagePrefix)\(UUID().uuidString)"
+    let stageSidecar = DockerSidecarBundle(
+        url: bundleURL.appendingPathComponent(stageName, isDirectory: true)
+    )
+    try writeReplacementTestSidecar(stageSidecar, candidateID: candidateID)
+    try DockerSidecarReplacement.writeJournal(
+        DockerSidecarReplacementJournal(
+            transactionID: UUID(),
+            stageDirectoryName: stageName,
+            candidateID: candidateID,
+            previousSettings: previousSettings,
+            intendedSettings: intendedSettings
+        ),
+        ownerBundle: bundle
+    )
+
+    metadata.setupFullName = "Unrelated concurrent edit"
+    try bundle.writeMetadata(metadata)
+    let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "recover Docker")
+    defer { withExtendedLifetime(operationLock) {} }
+    let recovered = try bundle.recoverDockerSidecarReplacementIfNeeded()
+
+    #expect(recovered.dockerSidecar == previousSettings)
+    #expect(recovered.setupFullName == "Unrelated concurrent edit")
+    #expect(!bundle.hasDockerSidecarReplacementJournal)
+    #expect(!stageSidecar.isPresent)
+    #expect(try bundle.dockerSidecarBundle.readMetadata().replacementCandidateID == nil)
+}
+
+@Test
+func dockerSidecarReplacementRecoveryPreservesAmbiguousState() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("owner.macvm", isDirectory: true)
+    let bundle = VMBundle(url: bundleURL)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let settings = dockerTestSettings()
+    try bundle.writeMetadata(VMMetadata(
+        name: "owner",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        dockerSidecar: settings
+    ))
+    try writeReplacementTestSidecar(bundle.dockerSidecarBundle, candidateID: UUID())
+    let stageName = "\(DockerSidecarReplacement.stagePrefix)\(UUID().uuidString)"
+    let stageSidecar = DockerSidecarBundle(
+        url: bundleURL.appendingPathComponent(stageName, isDirectory: true)
+    )
+    try writeReplacementTestSidecar(stageSidecar, candidateID: UUID())
+    try DockerSidecarReplacement.writeJournal(
+        DockerSidecarReplacementJournal(
+            transactionID: UUID(),
+            stageDirectoryName: stageName,
+            candidateID: UUID(),
+            previousSettings: settings,
+            intendedSettings: settings
+        ),
+        ownerBundle: bundle
+    )
+
+    let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "recover Docker")
+    defer { withExtendedLifetime(operationLock) {} }
+    #expect(throws: (any Error).self) {
+        _ = try bundle.recoverDockerSidecarReplacementIfNeeded()
+    }
+    #expect(bundle.hasDockerSidecarReplacementJournal)
+    #expect(bundle.dockerSidecarBundle.isPresent)
+    #expect(stageSidecar.isPresent)
+}
+
+private func writeReplacementTestSidecar(
+    _ sidecar: DockerSidecarBundle,
+    candidateID: UUID?
+) throws {
+    try sidecar.createDirectories()
+    try sidecar.writeMetadata(DockerSidecarMetadata(
+        image: dockerTestImage,
+        genericMachineIdentifierDigest: "test",
+        replacementCandidateID: candidateID
+    ))
+}
+
+@Test
 func dockerImageRefreshCreatesVerifiedOfflineFallback() async throws {
     let cacheDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
         UUID().uuidString,
@@ -453,6 +608,11 @@ func dockerSidecarUpdatePreservesDataAndIdentity() async throws {
     #expect(try Data(contentsOf: sidecar.dataDiskURL) == dockerData)
     #expect(try sidecar.loadGenericMachineIdentifier().dataRepresentation == originalMachineIdentifier)
     #expect(try String(contentsOf: sidecar.linuxHostPrivateKeyURL, encoding: .utf8) == "PRIVATE HOST KEY")
+    #expect(try sidecar.readMetadata().replacementCandidateID != nil)
+    #expect(!bundle.hasDockerSidecarReplacementJournal)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: bundleURL.path)
+        .filter { $0.hasPrefix(DockerSidecarReplacement.stagePrefix) }
+        .isEmpty)
 }
 
 @Test
@@ -518,7 +678,8 @@ func ignitionPinsPrivateNetworkingRestrictedSSHDataDiskAndRosetta() throws {
     #expect(rendered.contains("Requires=docker.service sshd.service macvm-filesystem-key.service"))
     #expect(!rendered.contains("firewall-cmd"))
     #expect(rendered.contains("/var/lib/docker/engine-id"))
-    #expect(rendered.contains("mount-sshfs"))
+    #expect(rendered.contains("mount-sshfs|mount-sshfs-file"))
+    #expect(rendered.contains("follow=(-o follow_symlinks)"))
     #expect(!rendered.contains("mount-nfs"))
     #expect(!rendered.contains("nfs-utils"))
     #expect(rendered.contains("sshfs \"$remote_user@127.0.0.1:$remote_path\" \"$target\" -p 2222"))
@@ -669,6 +830,7 @@ func dockerOperationLockRejectsConcurrentMutationsAndReleases() throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
     defer { try? FileManager.default.removeItem(at: root) }
     let bundle = VMBundle(url: root)
+    defer { try? FileManager.default.removeItem(at: bundle.dockerSidecarOperationLockURL) }
 
     var first: DockerSidecarOperationLock? = try bundle.acquireDockerSidecarOperationLock(operation: "first")
     _ = withExtendedLifetime(first) {
@@ -676,9 +838,92 @@ func dockerOperationLockRejectsConcurrentMutationsAndReleases() throws {
             _ = try bundle.acquireDockerSidecarOperationLock(operation: "second")
         }
     }
+    try FileManager.default.removeItem(at: root)
+    #expect(throws: (any Error).self) {
+        _ = try bundle.acquireDockerSidecarOperationLock(operation: "after removal")
+    }
+
     first = nil
     let next = try bundle.acquireDockerSidecarOperationLock(operation: "next")
     withExtendedLifetime(next) {}
+    #expect(!FileManager.default.fileExists(atPath: root.path))
+}
+
+@Test
+func dockerOperationLockUsesResolvedBundleIdentity() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("VMs/owner.macvm", isDirectory: true)
+    let aliasURL = root.appendingPathComponent("Aliases/renamed.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+        at: aliasURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.createSymbolicLink(at: aliasURL, withDestinationURL: bundleURL)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(VMMetadata(
+        name: "owner",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    ))
+    let resolved = try VMStorage(rootDirectory: bundleURL.deletingLastPathComponent())
+        .resolveVM(identifier: aliasURL.path)
+    let removalTarget = try VMStorage(rootDirectory: bundleURL.deletingLastPathComponent())
+        .resolveRemovalTarget(identifier: aliasURL.path)
+    let resolvedBundleURL = bundleURL.resolvingSymlinksInPath().standardizedFileURL
+    #expect(resolved.bundleURL.path == resolvedBundleURL.path)
+    #expect(removalTarget.bundleURL.path == resolvedBundleURL.path)
+
+    let alias = VMBundle(url: aliasURL)
+    #expect(bundle.dockerSidecarOperationLockURL == alias.dockerSidecarOperationLockURL)
+
+    let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "original path")
+    defer { withExtendedLifetime(operationLock) {} }
+    #expect(throws: (any Error).self) {
+        _ = try alias.acquireDockerSidecarOperationLock(operation: "alias path")
+    }
+}
+
+@Test
+func dockerReplacementRecoveryRemovesUnjournaledStage() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("owner.macvm", isDirectory: true)
+    let bundle = VMBundle(url: bundleURL)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    try bundle.createDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let metadata = VMMetadata(
+        name: "owner",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    try bundle.writeMetadata(metadata)
+    let orphan = bundleURL.appendingPathComponent(
+        "\(DockerSidecarReplacement.stagePrefix)orphan",
+        isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: orphan, withIntermediateDirectories: true)
+    try Data("partial appliance".utf8).write(to: orphan.appendingPathComponent("disk.img"))
+
+    let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "recover Docker")
+    defer { withExtendedLifetime(operationLock) {} }
+    let recovered = try bundle.recoverDockerSidecarReplacementIfNeeded()
+
+    #expect(recovered.name == metadata.name)
+    #expect(recovered.dockerSidecar == nil)
+    #expect(!FileManager.default.fileExists(atPath: orphan.path))
 }
 
 @Test

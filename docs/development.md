@@ -71,13 +71,15 @@ The Xcode project owns the release version through `MARKETING_VERSION`.
 
 `MacVM.app` owns every ordinary `run` and `run --headless` VM in-process. The CLI resolves the VM to a canonical full bundle path and uses the per-user file-backed control queue for acknowledged run, attach, and stop requests. `--headless` controls only the initial presentation: `attach` adds a `VZVirtualMachineView` to the existing VM without restarting it. Setup can still use its dedicated `HeadlessRunner` ownership path.
 
-Every owner publishes a password-protected `Runtime/vnc-session.json`. Entitlement-free automation commands such as `screenshot`, `type`, `keys`, `vnc`, `wait-text`, and `click-text` attach to that live session over loopback RFB and should error if no session is live. The private server itself binds beyond loopback, so the password is mandatory. App runtimes use the `manager` owner role; never signal that PID to stop one VM. Route the request to the app and stop its path-keyed `VMViewerController` instead. Native display close requests always hide the window without ending the VM.
+Every owner publishes a password-protected `Runtime/vnc-session.json`. VNC client automation commands such as `screenshot`, `type`, `keys`, `vnc`, `wait-text`, and `click-text` attach to that live session over loopback RFB and should error if no session is live; they do not instantiate a `VZVirtualMachine`, although the bundled CLI is still signed with the virtualization entitlement. The private server itself binds beyond loopback, so the password is mandatory. App runtimes use the `manager` owner role; never signal that PID to stop one VM. Route the request to the app and stop its path-keyed `VMViewerController` instead. Native display close requests always hide the window without ending the VM.
 
 When `VMMetadata.dockerSidecar` is enabled, `VMViewerController` also owns a
 `DockerSidecarRuntime` and one retained `DockerPairNetwork`. The sidecar starts
 before the ordinary macOS start request and stops after macOS. Recovery never
-starts it. Startup failures publish `Runtime/docker-sidecar.json` as degraded
-without failing the owner. Do not move this ownership into `HeadlessRunner` or
+starts it. Synchronous configuration, integrity, transaction-recovery, and lock
+failures prevent the macOS start request; failures that occur later during
+sidecar readiness or guest-helper integration can leave macOS running and publish
+`Runtime/docker-sidecar.json` as degraded. Do not move this ownership into `HeadlessRunner` or
 create a top-level managed VM for `DockerSidecar/`.
 
 The nested bundle contains FCOS system/data disks, EFI and generic identities,
@@ -87,11 +89,26 @@ both compressed and uncompressed SHA-256 values. The guest helper is built as a
 separate executable target, copied into the HostKit resource bundle, and
 installed only after setup has produced an SSH-ready account.
 
-The bind mapper is a security boundary: add endpoint-specific JSON transforms
-for Docker API schema changes; never perform arbitrary textual path replacement.
-Unknown endpoints and upgrade/hijack streams remain raw byte relays. SSHFS
-mounts must remain constrained to `/run/macvm-macos/<filesystem-id>`, the
-resolved requested source subtree, and the isolated `192.168.127.0/30` sidecar link.
+The bind mapper is a Docker API and mount-namespace boundary: add endpoint-specific
+JSON transforms for Docker API schema changes; never perform arbitrary textual
+path replacement. Unknown endpoints and upgrade/hijack streams remain raw byte
+relays. SSHFS mounts must remain constrained to `/run/macvm-macos/<filesystem-id>`,
+the resolved requested source subtree, and the isolated `192.168.127.0/30`
+sidecar link. Exact-file binds must use the isolated one-entry export and must
+never widen to the source's parent directory. This namespace restriction is not
+containment against compromised sidecar root, which owns the restricted SSHFS key.
+
+Existing appliance replacement uses `renameatx_np(RENAME_SWAP)` and an external
+journal. A committed replacement's journal must remain until parent metadata and
+old-stage cleanup are complete; a completed rollback removes its journal before
+best-effort candidate cleanup so interruption cannot manufacture ambiguity.
+Startup, status, clone, and Docker mutation paths must recover a journal while
+holding the stable sibling `.<bundle>.docker-sidecar.lock` inode, derived after
+resolving bundle symlinks so aliases cannot bypass serialization. The lock remains
+outside the removable bundle so a concurrent late operation cannot recreate
+`Runtime/` around a different inode. Unsupported atomic exchange must fail closed
+with the old appliance still canonical.
+
 The helper must invalidate and restore persisted mounts and broker-owned port
 rules after an SSH reconnect. Keep Zincati masked unless Docker startup is first
 gated on successful host-side mount reconciliation; an autonomous FCOS reboot

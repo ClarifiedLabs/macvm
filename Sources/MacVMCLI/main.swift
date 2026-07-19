@@ -47,7 +47,7 @@ struct SetupArguments: ParsableArguments {
     @Option(name: .long, help: "VNC port to use during setup. Defaults to an auto-assigned port.")
     var vncPort: Int?
 
-    @Flag(name: .long, help: "Shut the guest OS down after provisioning instead of leaving it running.")
+    @Flag(name: .long, help: "Shut down after provisioning and skip restart into MacVM.app ownership.")
     var shutdownAfter = false
 
     @Option(name: .long, help: "Path to a custom setup step-list (JSON) overriding the built-in flow.")
@@ -1023,8 +1023,10 @@ extension MacVMCommand {
         }
     }
 
-    struct Shutdown: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Ask the guest OS to shut down over SSH.")
+    struct Shutdown: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Ask the guest OS to shut down over SSH, optionally waiting for it to stop."
+        )
 
         @OptionGroup var storage: StorageOptions
         @OptionGroup var debugOptions: DebugOptions
@@ -1032,10 +1034,22 @@ extension MacVMCommand {
         @Option(name: .long, help: "Login user. Defaults to the setup account, or 'admin'.")
         var user: String?
 
+        @Flag(name: .long, help: "Wait until the VM and its Docker sidecar have stopped.")
+        var wait = false
+
+        @Option(name: .long, help: "Maximum seconds to wait with --wait. Defaults to 120.")
+        var timeout: Double = 120
+
         @Argument(help: "VM name, bundle basename, or full bundle path.")
         var identifier: String
 
-        func run() throws {
+        func validate() throws {
+            guard timeout.isFinite, timeout > 0 else {
+                throw ValidationError("--timeout must be a finite number greater than zero.")
+            }
+        }
+
+        func run() async throws {
             debugOptions.apply()
             let service = MacVMService(rootDirectory: storage.resolvedURL)
             let virtualMachine = try service.resolveVM(identifier: identifier)
@@ -1044,6 +1058,10 @@ extension MacVMCommand {
                 throw ExitCode(status)
             }
             print("Shutdown requested for \(virtualMachine.metadata.name).")
+            if wait {
+                try await service.waitUntilStopped(virtualMachine, timeout: timeout)
+                print("\(virtualMachine.metadata.name) has stopped.")
+            }
         }
     }
 
@@ -1597,7 +1615,7 @@ private func performSetup(service: MacVMService, virtualMachine: ManagedVM, opti
         print("Inspect the guest via \(session.vncURLString) or the Setup/diagnostics directory in the bundle.")
     }
 
-    if options.shutdownAfter {
+    if options.completionDisposition == .stopped {
         guard result.sshReady else {
             print("Cannot shut the guest down cleanly because SSH is not ready.")
             print("The VM is still running — inspect it at \(session.vncURLString).")
@@ -1613,18 +1631,58 @@ private func performSetup(service: MacVMService, virtualMachine: ManagedVM, opti
             guard status == 0 else {
                 throw ValidationError("Shutdown command failed with exit code \(status).")
             }
-            try await runner.waitUntilStopped()
+            try await service.waitUntilStopped(virtualMachine, timeout: 120)
         } catch {
             print("Shutdown failed: \(error.localizedDescription)")
+            print("Force-stopping the setup-owned VM so it is left in a known stopped state.")
+            await runner.stop()
+            throw ExitCode.failure
+        }
+    } else {
+        guard result.sshReady else {
+            print("Cannot transfer ownership because SSH is not ready for a clean restart.")
             print("The VM is still running — inspect it at \(session.vncURLString).")
             print("Press Ctrl+C to stop it.")
             fflush(stdout)
             try await runner.waitUntilStopped()
             throw ExitCode.failure
         }
-    } else {
-        print("VM left running. Press Ctrl+C to stop it.")
-        fflush(stdout)
-        try await runner.waitUntilStopped()
+
+        print("Restarting the guest under MacVM.app ownership.")
+        do {
+            let status = try service.shutdownGuest(virtualMachine, user: result.username)
+            guard status == 0 else {
+                throw ValidationError("Shutdown command failed with exit code \(status).")
+            }
+            try await service.waitUntilStopped(virtualMachine, timeout: 120)
+        } catch {
+            print("Ownership transfer failed while shutting down: \(error.localizedDescription)")
+            print("Force-stopping the setup-owned VM so it is left in a known stopped state.")
+            await runner.stop()
+            throw ExitCode.failure
+        }
+
+        do {
+            let response = try await AppControlClient().send(
+                operation: .run(headless: true, recovery: false, vncPort: 0),
+                for: virtualMachine
+            )
+            print(response.message)
+            if let ownerPID = response.ownerPID {
+                print("\(virtualMachine.metadata.name) is running in MacVM.app (owner PID \(ownerPID)).")
+            }
+            if let vncURL = response.vncURL {
+                print("VNC: \(vncURL)")
+            }
+            print("Stop it with: macvm stop \(virtualMachine.metadata.name)")
+        } catch {
+            print("Setup completed, but the MacVM.app handoff did not acknowledge success: \(error.localizedDescription)")
+            if service.hasLiveRuntime(for: virtualMachine) {
+                print("MacVM.app may have accepted the request and now owns the VM; check `macvm show` before retrying.")
+            } else {
+                print("The VM is stopped. Start it with: macvm run \(virtualMachine.bundleURL.path) --headless")
+            }
+            throw ExitCode.failure
+        }
     }
 }

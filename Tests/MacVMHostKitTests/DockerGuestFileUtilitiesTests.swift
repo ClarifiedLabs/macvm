@@ -37,6 +37,35 @@ func dockerProxyErrorJSONEscapesMultilineProcessErrors() throws {
 }
 
 @Test
+func dockerGuestFileExportsUseAnIsolatedDirectory() {
+    let plan = DockerGuestFileUtilities.filesystemExportPlan(
+        sourcePath: "/Users/admin/project/secret.txt",
+        isDirectory: false,
+        stateDirectoryPath: "/Library/Application Support/MacVM/Docker",
+        filesystemID: "path-abc123"
+    )
+
+    #expect(plan.remoteExportRoot == "/Library/Application Support/MacVM/Docker/FileExports/path-abc123")
+    #expect(plan.remoteExportRoot != "/Users/admin/project")
+    #expect(plan.linuxRelativePath == "source")
+    #expect(plan.followsRemoteSymlinks)
+}
+
+@Test
+func dockerGuestDirectoryExportsUseTheRequestedDirectory() {
+    let plan = DockerGuestFileUtilities.filesystemExportPlan(
+        sourcePath: "/Users/admin/project",
+        isDirectory: true,
+        stateDirectoryPath: "/Library/Application Support/MacVM/Docker",
+        filesystemID: "path-abc123"
+    )
+
+    #expect(plan.remoteExportRoot == "/Users/admin/project")
+    #expect(plan.linuxRelativePath.isEmpty)
+    #expect(!plan.followsRemoteSymlinks)
+}
+
+@Test
 func dockerGuestPathExistenceTracksDeletedPaths() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)

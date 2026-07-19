@@ -527,14 +527,11 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     }
 
     private func prepareDockerSidecarIfNeeded() throws -> [VZNetworkDeviceConfiguration] {
-        guard !startInRecovery,
-              managedVM.metadata.dockerSidecar?.enabled == true || bundle.dockerSidecarBundle.isPresent else {
-            return []
-        }
+        guard !startInRecovery else { return [] }
         let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "start the VM")
         dockerStartupOperationLock = operationLock
         do {
-            let currentMetadata = try bundle.readMetadata()
+            let currentMetadata = try bundle.recoverDockerSidecarReplacementIfNeeded()
             guard let settings = currentMetadata.dockerSidecar, settings.enabled else {
                 dockerStartupOperationLock = nil
                 return []

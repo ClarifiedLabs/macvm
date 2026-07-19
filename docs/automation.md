@@ -4,7 +4,7 @@ MacVM can configure a fresh macOS 15, 26, or 27 VM unattended and reach it over 
 
 ## Setup Flow
 
-`macvm run --headless` asks MacVM.app to boot a VM without an initial display window, records the app owner PID under the bundle's `Runtime/`, and starts a VNC server so tools can attach. A logged-in GUI session is required for this handoff. `macvm setup` uses its dedicated headless runner to take a fresh VM from first boot to an SSH-ready state with an Ansible inventory:
+`macvm run --headless` asks MacVM.app to boot a VM without an initial display window, records the app owner PID under the bundle's `Runtime/`, and starts a VNC server so tools can attach. A logged-in GUI session is required for this handoff. `macvm setup` uses its dedicated CLI-owned headless runner to take a fresh VM from first boot to an SSH-ready state with an Ansible inventory:
 
 1. Boot headless and connect an in-process RFB client.
 2. For macOS 27, prefer native first-boot guest provisioning when the host exposes it. Otherwise drive Setup Assistant with OCR in a perceive → decide → act → verify loop: Vision reads the screen, a pure policy (`SetupPolicy`) picks the tactic for the modal or pane that is actually visible, and one fresh RFB connection captures, acts, and verifies the result.
@@ -20,6 +20,16 @@ macvm setup dev-03
 macvm inventory dev-03 > dev-03.inventory
 ansible -i dev-03.inventory all -m raw -a true
 ```
+
+On success the setup runner cleanly shuts down the guest and asks `MacVM.app` to
+restart it headlessly. The command returns after the app acknowledges the running
+VM; guest startup and SSH readiness after that reboot may take a little longer.
+This is a reboot handoff, not a live transfer, and also requires a logged-in GUI
+session. The clean-shutdown wait is bounded; on failure the CLI force-stops its
+setup VM and does not request app ownership. `--shutdown-after` leaves the VM
+stopped and skips the handoff. A handoff response can fail after the app accepted
+the request, so follow the reported live-owner status and check `macvm show`
+before retrying.
 
 Python-based Ansible modules such as `ping` require a real Python interpreter in the guest. A bare macOS install exposes `/usr/bin/python3` as a Command Line Tools stub, so install Command Line Tools or Xcode first.
 
@@ -56,7 +66,7 @@ There is no public API to inject input into a headless macOS guest. MacVM uses t
 
 ## Setup Assistant Drift
 
-Setup Assistant panes drift between macOS releases. MacVM records the installed guest's full macOS version and Apple build, then selects a registered setup plan from that guest identity. The built-in flows are `macos-26` and `macos-27`. Other releases can be installed and completed manually, but automated setup fails before boot unless the user explicitly supplies `--script` or a per-VM `Setup/steps.json`.
+Setup Assistant panes drift between macOS releases. MacVM records the installed guest's full macOS version and Apple build, then selects a registered setup plan from that guest identity. The built-in flows are `macos-15`, `macos-26`, and `macos-27`. Other releases can be installed and completed manually, but automated setup fails before boot unless the user explicitly supplies `--script` or a per-VM `Setup/steps.json`.
 
 Each plan composes reusable step fragments and a release-specific `SetupPolicy.RuleSet`. The capture, OCR, decision engine, input verification, safety caps, and diagnostics stay shared. Supporting another release requires registering its plan, composing only the fragments and pane rules verified for that release, adding recorded fixtures, and passing the real-guest setup soak.
 
@@ -65,7 +75,7 @@ How the policy stays safe and debuggable:
 - **Modals win over panes.** Known confirmation sheets and error alerts (including a generic centered-"OK" detector) are dismissed before the pane behind them is driven — background buttons stay OCR-visible under a sheet, and clicking them is how runs used to wedge.
 - **Every OCR action is one connection transaction.** The newest RFB connection wakes and captures the display, resolves text, sends pointer input, and captures verification without changing connections. A blank point-sized framebuffer can be retained for diagnostics but can never supply click coordinates. After a click or keystroke the runner re-OCRs and compares the screen; no visible change escalates to the pane's next tactic (alternate button, then keyboard chord where safe).
 - **Account creation is an explicit operation.** Each field is captured, focused, cleared, and typed on one connection. Missing-information and password-mismatch alerts return to the form and refill visible empty fields with progressively slower typing, for at most three attempts. While "Creating account…" is visible, the runner only waits and reports elapsed time; account-field values such as `admin` are never treated as proof that the login window appeared. The Apple Account password-reset checkbox is left at the system default.
-- **Preview rendering cannot steal setup input.** For app-owned setup, MacVM attaches a native read-only display to the in-process `VZVirtualMachine`; the optional Analyzed Frame view reads the runner's `Runtime/setup-preview.png`. Neither path opens a competing VNC client. Each action re-resolves and clicks on the same newest connection that verifies it.
+- **Preview rendering does not steal setup input by default.** For app-owned setup, MacVM attaches a native display to the in-process `VZVirtualMachine`; it is read-only by default, and input can be enabled only after explicitly acknowledging the warning. The optional Analyzed Frame view reads the runner's `Runtime/setup-preview.png`. Neither path opens a competing VNC client. Each automation action re-resolves and clicks on the same newest connection that verifies it.
 - **Panes with selectable rows are click-only.** On the Transfer pane a stray `space` selects a migration source and "Continue" then starts a migration, so those panes never receive blind keys and never fall back to generic "Continue"; an unrecognized layout fails loudly instead.
 - **Stuck runs fail with a reason** — ladder exhausted, oscillating between panes, too many actions — and a diagnostic path. Each `Setup/diagnostics/<run>/` contains a redacted `trace.jsonl` with per-connection `ServerInit`, `DesktopSize`, framebuffer, OCR action, and pointer geometry events. Failures also retain `summary.json`, anomalous and pinned OCR-action frames, and the rolling last 20 framebuffer PNG/OCR pairs. Successful runs discard the frames but keep the compact trace. Typing events record only field purpose, character count, and cadence; keysyms, VNC credentials, password text, and clipboard data are never emitted to the trace. The `.txt` files use the test-fixture format, so a field failure can become a regression test directly.
 - **Display sleep is handled, not trusted.** An asleep guest serves a blank point-sized framebuffer, and input sent to it is consumed as a wake event. Captures retry until a non-blank frame arrives, a blank frame is never judged as "the screen changed", and every tactic wakes the display immediately before acting.
@@ -110,7 +120,7 @@ Run it inside the guest:
 For create-time provisioning, pass an Xcode `.xip` directly:
 
 ```bash
-macvm create --setup --xcode ~/Downloads/Xcode_26.3.xip
+macvm create --name xcode-01 --setup --xcode ~/Downloads/Xcode_26.3.xip
 ```
 
 Automated setup installs Homebrew independently of this bootstrap script. The

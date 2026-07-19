@@ -776,6 +776,68 @@ func defaultDraftUsesExpectedSizingDefaults() {
 }
 
 @Test
+func launchOnBootResolvesTheInstalledCLIWithoutAssumingUsrLocal() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let helperURL = rootURL
+        .appendingPathComponent("MacVM.app", isDirectory: true)
+        .appendingPathComponent("Contents", isDirectory: true)
+        .appendingPathComponent("Helpers", isDirectory: true)
+        .appendingPathComponent("macvm", isDirectory: false)
+    let homebrewLinkURL = rootURL
+        .appendingPathComponent("homebrew", isDirectory: true)
+        .appendingPathComponent("bin", isDirectory: true)
+        .appendingPathComponent("macvm", isDirectory: false)
+    try FileManager.default.createDirectory(
+        at: helperURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+        at: homebrewLinkURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try Data().write(to: helperURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperURL.path)
+    try FileManager.default.createSymbolicLink(at: homebrewLinkURL, withDestinationURL: helperURL)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let fromApp = VMLaunchOnBootController.resolveExecutableURL(
+        mainBundleURL: rootURL.appendingPathComponent("MacVM.app", isDirectory: true),
+        currentExecutableURL: nil
+    )
+    let fromHomebrewLink = VMLaunchOnBootController.resolveExecutableURL(
+        mainBundleURL: rootURL,
+        currentExecutableURL: homebrewLinkURL
+    )
+
+    #expect(fromApp == helperURL.standardizedFileURL)
+    #expect(fromHomebrewLink == helperURL.standardizedFileURL)
+
+    let brokenAppURL = rootURL.appendingPathComponent("Broken.app", isDirectory: true)
+    let brokenHelperURL = brokenAppURL
+        .appendingPathComponent("Contents/Helpers/macvm", isDirectory: false)
+    let standaloneURL = rootURL.appendingPathComponent("standalone/macvm", isDirectory: false)
+    try FileManager.default.createDirectory(
+        at: brokenHelperURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+        at: standaloneURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try Data().write(to: brokenHelperURL)
+    try Data().write(to: standaloneURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: brokenHelperURL.path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: standaloneURL.path)
+
+    let skippedNonExecutableHelper = VMLaunchOnBootController.resolveExecutableURL(
+        mainBundleURL: brokenAppURL,
+        currentExecutableURL: standaloneURL
+    )
+    #expect(skippedNonExecutableHelper == standaloneURL.standardizedFileURL)
+}
+
+@Test
 func launchOnBootWritesExpectedLaunchAgentAndCanDisable() throws {
     let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -2580,6 +2642,104 @@ func displayRuntimeStateRoundTripsAndReportsLiveness() throws {
 
     bundle.clearDisplayRuntimeState()
     #expect(bundle.readDisplayRuntimeState() == nil)
+}
+
+@Test
+func setupCompletionDispositionSelectsShutdownOrAppOwnership() {
+    var options = SetupOptions()
+    #expect(options.completionDisposition == .restartInApp)
+
+    options.shutdownAfter = true
+    #expect(options.completionDisposition == .stopped)
+}
+
+@Test
+func waitUntilStoppedObservesRuntimeMarkerRemoval() async throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("wait-test", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "wait-test",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeVMProcessRuntimeState(VMProcessRuntimeState(
+        role: .headless,
+        pid: getpid(),
+        startedAt: Date()
+    ))
+    try bundle.writeDockerSidecarRuntimeDescriptor(DockerSidecarRuntimeDescriptor(
+        state: .ready,
+        pid: getpid(),
+        startedAt: Date(),
+        updatedAt: Date(),
+        fcosVersion: "test",
+        mobyVersion: nil,
+        amd64Available: true,
+        lastError: nil
+    ))
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    let service = MacVMService(rootDirectory: rootURL)
+
+    let clearTask = Task {
+        try await Task.sleep(for: .milliseconds(50))
+        bundle.clearVMProcessRuntimeState()
+        try await Task.sleep(for: .milliseconds(50))
+        bundle.clearDockerSidecarRuntimeDescriptor()
+    }
+    try await service.waitUntilStopped(vm, timeout: 1, pollInterval: .milliseconds(10))
+    try await clearTask.value
+    #expect(!service.hasLiveRuntime(for: vm))
+}
+
+@Test
+func waitUntilStoppedReportsTimeout() async throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("wait-timeout", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "wait-timeout",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeVMProcessRuntimeState(VMProcessRuntimeState(
+        role: .headless,
+        pid: getpid(),
+        startedAt: Date()
+    ))
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+
+    do {
+        try await MacVMService(rootDirectory: rootURL).waitUntilStopped(
+            vm,
+            timeout: 0.03,
+            pollInterval: .milliseconds(5)
+        )
+        Issue.record("Expected shutdown wait to time out")
+    } catch {
+        #expect(error.localizedDescription.contains("Timed out after 0.03 seconds"))
+        #expect(error.localizedDescription.contains("wait-timeout"))
+    }
 }
 
 @Test

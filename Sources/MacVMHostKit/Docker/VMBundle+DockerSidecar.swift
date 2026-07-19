@@ -28,7 +28,13 @@ extension VMBundle {
     }
 
     var dockerSidecarOperationLockURL: URL {
-        runtimeDirectoryURL.appendingPathComponent("docker-sidecar.lock")
+        // Keep the inode outside the removable bundle. Resolve aliases so every
+        // path to one bundle also contends on the same stable sibling inode.
+        let resolvedBundleURL = url.resolvingSymlinksInPath().standardizedFileURL
+        return resolvedBundleURL.deletingLastPathComponent().appendingPathComponent(
+            ".\(resolvedBundleURL.lastPathComponent).docker-sidecar.lock",
+            isDirectory: false
+        )
     }
 
     var dockerGuestKnownHostsURL: URL {
@@ -36,7 +42,10 @@ extension VMBundle {
     }
 
     func acquireDockerSidecarOperationLock(operation: String) throws -> DockerSidecarOperationLock {
-        try FileManager.default.createDirectory(at: runtimeDirectoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: dockerSidecarOperationLockURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         let descriptor = open(dockerSidecarOperationLockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else {
             throw MacVMError.message(

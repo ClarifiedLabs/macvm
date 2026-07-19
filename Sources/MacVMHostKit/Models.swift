@@ -295,6 +295,11 @@ public enum VMDisplayMetrics {
     }
 }
 
+public enum SetupCompletionDisposition: Equatable, Sendable {
+    case stopped
+    case restartInApp
+}
+
 public struct SetupOptions: Sendable {
     public var username: String
     public var password: String
@@ -304,8 +309,12 @@ public struct SetupOptions: Sendable {
     public var autoLogin: Bool
     public var perPaneTimeout: TimeInterval
     public var requestedVNCPort: UInt
-    /// Power the VM off after provisioning instead of leaving it running.
+    /// Power the VM off after provisioning instead of restarting it under MacVM.app ownership.
     public var shutdownAfter: Bool
+
+    public var completionDisposition: SetupCompletionDisposition {
+        shutdownAfter ? .stopped : .restartInApp
+    }
     /// Optional path to a custom setup step-list (JSON) overriding the built-in flow.
     public var scriptOverride: URL?
     /// Optional host-side Xcode .xip to stage and install during setup.

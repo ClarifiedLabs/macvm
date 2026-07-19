@@ -8,9 +8,28 @@ struct GuestFilesystemMapping: Codable, Equatable {
     }
 
     var filesystemID: String
+    /// The exact macOS source root represented by this mapping.
     var macOSMountRoot: String
     var linuxMountRoot: String
     var transport: Transport
+    /// The directory presented to SSHFS. File mappings use an isolated directory
+    /// containing one symlink rather than exposing the source file's parent.
+    var remoteExportRoot: String?
+    var linuxRelativePath: String?
+    var followsRemoteSymlinks: Bool?
+
+    var effectiveRemoteExportRoot: String {
+        remoteExportRoot ?? macOSMountRoot
+    }
+
+    var effectiveLinuxSourceRoot: String {
+        let relative = linuxRelativePath ?? ""
+        return relative.isEmpty ? linuxMountRoot : linuxMountRoot + "/" + relative
+    }
+
+    var shouldFollowRemoteSymlinks: Bool {
+        followsRemoteSymlinks ?? false
+    }
 }
 
 final class GuestFilesystemMapper: @unchecked Sendable {
@@ -49,15 +68,29 @@ final class GuestFilesystemMapper: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory) else {
             throw GuestHelperError("Docker bind source does not exist in the macOS guest: \(source)")
         }
-        let exportRoot = isDirectory.boolValue
-            ? resolved
-            : URL(fileURLWithPath: resolved).deletingLastPathComponent().path
-        let filesystemID = try Self.mappingID(for: exportRoot)
+        let filesystemID = try Self.mappingID(for: resolved)
+        let exportPlan = DockerGuestFileUtilities.filesystemExportPlan(
+            sourcePath: resolved,
+            isDirectory: isDirectory.boolValue,
+            stateDirectoryPath: stateURL.deletingLastPathComponent().path,
+            filesystemID: filesystemID
+        )
 
         let mapping = try mountOperationLock.withLock { () throws -> GuestFilesystemMapping in
+            try prepareExport(plan: exportPlan, sourcePath: resolved)
             if let existing = lock.withLock({
                 mappings
-                    .filter { Self.isPath(resolved, under: $0.macOSMountRoot) }
+                    .filter { mapping in
+                        if isDirectory.boolValue {
+                            return Self.isPath(resolved, under: mapping.macOSMountRoot)
+                        }
+                        // Never satisfy an exact-file request through a broader
+                        // directory mount, even if that directory was bound first.
+                        return mapping.macOSMountRoot == resolved
+                            && mapping.remoteExportRoot != nil
+                            && mapping.linuxRelativePath != nil
+                            && mapping.shouldFollowRemoteSymlinks
+                    }
                     .max(by: { $0.macOSMountRoot.count < $1.macOSMountRoot.count })
             }) {
                 let mounted = try ensureSidecarMount(existing)
@@ -71,12 +104,19 @@ final class GuestFilesystemMapper: @unchecked Sendable {
                 }
             }
 
-            let transport = try makeSidecarMount(filesystemID: filesystemID, exportRoot: exportRoot)
+            let transport = try makeSidecarMount(
+                filesystemID: filesystemID,
+                exportRoot: exportPlan.remoteExportRoot,
+                followsRemoteSymlinks: exportPlan.followsRemoteSymlinks
+            )
             let persisted = GuestFilesystemMapping(
                 filesystemID: filesystemID,
-                macOSMountRoot: exportRoot,
+                macOSMountRoot: resolved,
                 linuxMountRoot: "/run/macvm-macos/\(filesystemID)",
-                transport: transport
+                transport: transport,
+                remoteExportRoot: exportPlan.remoteExportRoot == resolved ? nil : exportPlan.remoteExportRoot,
+                linuxRelativePath: exportPlan.linuxRelativePath.isEmpty ? nil : exportPlan.linuxRelativePath,
+                followsRemoteSymlinks: exportPlan.followsRemoteSymlinks ? true : nil
             )
             return try lock.withLock {
                 mappings.append(persisted)
@@ -86,7 +126,7 @@ final class GuestFilesystemMapper: @unchecked Sendable {
             }
         }
         return Self.join(
-            root: mapping.linuxMountRoot,
+            root: mapping.effectiveLinuxSourceRoot,
             relative: Self.relativePath(resolved, under: mapping.macOSMountRoot)
         )
     }
@@ -124,13 +164,13 @@ final class GuestFilesystemMapper: @unchecked Sendable {
     func mapLinuxPath(_ source: String) -> String {
         lock.withLock {
             guard let mapping = mappings
-                .sorted(by: { $0.linuxMountRoot.count > $1.linuxMountRoot.count })
-                .first(where: { Self.isPath(source, under: $0.linuxMountRoot) }) else {
+                .sorted(by: { $0.effectiveLinuxSourceRoot.count > $1.effectiveLinuxSourceRoot.count })
+                .first(where: { Self.isPath(source, under: $0.effectiveLinuxSourceRoot) }) else {
                 return source
             }
             return Self.join(
                 root: mapping.macOSMountRoot,
-                relative: Self.relativePath(source, under: mapping.linuxMountRoot)
+                relative: Self.relativePath(source, under: mapping.effectiveLinuxSourceRoot)
             )
         }
     }
@@ -156,6 +196,9 @@ final class GuestFilesystemMapper: @unchecked Sendable {
             return (retained, removed)
         }
         for mapping in result.removed {
+            if mapping.remoteExportRoot != nil {
+                try? FileManager.default.removeItem(atPath: mapping.effectiveRemoteExportRoot)
+            }
             FileHandle.standardError.write(Data(
                 "macvm-docker-guest: pruned stale bind mapping for \(mapping.macOSMountRoot)\n".utf8
             ))
@@ -164,11 +207,13 @@ final class GuestFilesystemMapper: @unchecked Sendable {
     }
 
     private func ensureSidecarMount(_ mapping: GuestFilesystemMapping) throws -> GuestFilesystemMapping {
+        try restorePersistedExportIfNeeded(mapping)
         guard !remountedFilesystemIDs.contains(mapping.filesystemID) else { return mapping }
         try? requestSidecarMount("unmount \(mapping.filesystemID)")
         let transport = try makeSidecarMount(
             filesystemID: mapping.filesystemID,
-            exportRoot: mapping.macOSMountRoot
+            exportRoot: mapping.effectiveRemoteExportRoot,
+            followsRemoteSymlinks: mapping.shouldFollowRemoteSymlinks
         )
         remountedFilesystemIDs.insert(mapping.filesystemID)
         var updated = mapping
@@ -178,12 +223,46 @@ final class GuestFilesystemMapper: @unchecked Sendable {
 
     private func makeSidecarMount(
         filesystemID: String,
-        exportRoot: String
+        exportRoot: String,
+        followsRemoteSymlinks: Bool
     ) throws -> GuestFilesystemMapping.Transport {
+        let action = followsRemoteSymlinks ? "mount-sshfs-file" : "mount-sshfs"
         try requestSidecarMount(
-            "mount-sshfs \(filesystemID) \(setupUsername) \(exportRoot)"
+            "\(action) \(filesystemID) \(setupUsername) \(exportRoot)"
         )
         return .sshfs
+    }
+
+    private func restorePersistedExportIfNeeded(_ mapping: GuestFilesystemMapping) throws {
+        guard mapping.shouldFollowRemoteSymlinks else { return }
+        let plan = DockerGuestFileUtilities.filesystemExportPlan(
+            sourcePath: mapping.macOSMountRoot,
+            isDirectory: false,
+            stateDirectoryPath: stateURL.deletingLastPathComponent().path,
+            filesystemID: mapping.filesystemID
+        )
+        guard plan.remoteExportRoot == mapping.effectiveRemoteExportRoot,
+              plan.linuxRelativePath == mapping.linuxRelativePath else {
+            throw GuestHelperError("Persisted exact-file Docker bind mapping is invalid.")
+        }
+        try prepareExport(plan: plan, sourcePath: mapping.macOSMountRoot)
+    }
+
+    private func prepareExport(
+        plan: DockerGuestFilesystemExportPlan,
+        sourcePath: String
+    ) throws {
+        guard plan.followsRemoteSymlinks else { return }
+        let exportRoot = URL(fileURLWithPath: plan.remoteExportRoot, isDirectory: true)
+        try FileManager.default.createDirectory(at: exportRoot, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exportRoot.path)
+        let linkURL = exportRoot.appendingPathComponent(plan.linuxRelativePath, isDirectory: false)
+        if let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: linkURL.path),
+           destination == sourcePath {
+            return
+        }
+        try? FileManager.default.removeItem(at: linkURL)
+        try FileManager.default.createSymbolicLink(atPath: linkURL.path, withDestinationPath: sourcePath)
     }
 
     private func requestSidecarMount(_ command: String) throws {

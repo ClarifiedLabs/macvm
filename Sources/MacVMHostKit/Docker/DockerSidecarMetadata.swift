@@ -54,6 +54,8 @@ struct DockerSidecarMetadata: Codable, Equatable, Sendable {
     var ignitionVersion: Int
     var genericMachineIdentifierDigest: String
     var dataDiskBlockIdentifier: String
+    /// Identifies a staged replacement so interrupted atomic exchanges can be recovered.
+    var replacementCandidateID: UUID?
 
     init(
         schemaVersion: Int = currentSchemaVersion,
@@ -61,7 +63,8 @@ struct DockerSidecarMetadata: Codable, Equatable, Sendable {
         image: FedoraCoreOSImage,
         ignitionVersion: Int = currentIgnitionVersion,
         genericMachineIdentifierDigest: String,
-        dataDiskBlockIdentifier: String = DockerSidecarBundle.dataDiskBlockIdentifier
+        dataDiskBlockIdentifier: String = DockerSidecarBundle.dataDiskBlockIdentifier,
+        replacementCandidateID: UUID? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.createdAt = createdAt
@@ -69,6 +72,7 @@ struct DockerSidecarMetadata: Codable, Equatable, Sendable {
         self.ignitionVersion = ignitionVersion
         self.genericMachineIdentifierDigest = genericMachineIdentifierDigest
         self.dataDiskBlockIdentifier = dataDiskBlockIdentifier
+        self.replacementCandidateID = replacementCandidateID
     }
 }
 

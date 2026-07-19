@@ -364,7 +364,7 @@ struct DockerIgnitionBuilder {
             ensure_filesystem_key
             exec /usr/bin/cat /var/lib/macvm/macos_fs_ed25519.pub
             ;;
-          mount-sshfs)
+          mount-sshfs|mount-sshfs-file)
             [[ "$filesystem_id" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || exit 64
             remote_user="${argument%% *}"
             remote_path="${argument#* }"
@@ -373,8 +373,10 @@ struct DockerIgnitionBuilder {
             ensure_filesystem_key
             target="/run/macvm-macos/$filesystem_id"
             /usr/bin/mkdir -p "$target"
+            follow=()
+            [[ "$action" == "mount-sshfs-file" ]] && follow=(-o follow_symlinks)
             if ! /usr/bin/mountpoint -q "$target"; then
-              exec /usr/bin/sshfs "$remote_user@127.0.0.1:$remote_path" "$target" -p 2222 -o IdentityFile=/var/lib/macvm/macos_fs_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/var/lib/macvm/macos_known_hosts -o reconnect -o allow_other
+              exec /usr/bin/sshfs "$remote_user@127.0.0.1:$remote_path" "$target" -p 2222 -o IdentityFile=/var/lib/macvm/macos_fs_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/var/lib/macvm/macos_known_hosts -o reconnect -o allow_other "${follow[@]}"
             fi
             ;;
           unmount)

@@ -19,7 +19,7 @@ MacVM releases contain a signed, notarized `.dmg` app image for Homebrew and a s
 
 The release workflow has three jobs:
 
-1. `require-tests` waits for a successful `test.yml` run for the same commit, or dispatches one and waits.
+1. `require-tests` reuses a matching `test.yml` run for the same commit, or dispatches one only when no matching run exists, then waits. An existing failed matching run fails the release job rather than being redispatched.
 2. `build` signs, notarizes, staples, and uploads `MacVM-<version>.dmg` and `MacVM-<version>.pkg`.
 3. `homebrew-publish` calculates the disk image SHA-256 and updates `Casks/macvm.rb` in `ClarifiedLabs/homebrew-tap` using a GitHub App installation token. The cask moves `MacVM.app` into Homebrew's configured app directory and links its embedded CLI into `$(brew --prefix)/bin`.
 
@@ -102,9 +102,10 @@ brew install --cask clarifiedlabs/tap/macvm
 To test both artifact layouts without Developer ID secrets:
 
 ```bash
+VERSION=$(xcodebuild -project macvm.xcodeproj -scheme "MacVM App" -showBuildSettings 2>/dev/null | awk '$1 == "MARKETING_VERSION" { print $3; exit }')
 make package
-hdiutil imageinfo dist/MacVM-1.0.0.dmg
-pkgutil --payload-files dist/MacVM-1.0.0.pkg
+hdiutil imageinfo "dist/MacVM-${VERSION}.dmg"
+pkgutil --payload-files "dist/MacVM-${VERSION}.pkg"
 ```
 
 The disk image contains `MacVM.app` for the Homebrew `app` artifact. The package additionally installs the `/usr/local/bin/macvm` link for manual users. Unsigned local artifacts are for payload inspection only; public artifacts must come from the GitHub release workflow.
