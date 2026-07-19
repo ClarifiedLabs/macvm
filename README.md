@@ -1,11 +1,12 @@
 # MacVM
 
 MacVM creates and runs macOS virtual machines on Apple silicon Macs.
+It can also setup a sidecar docker VM for your macOS VM to enable the use of docker from within the macOS VM.
 
 It ships as a signed and notarized Mac app with:
 
-- `MacVM`, a native SwiftUI app installed in `/Applications`
-- `macvm`, its bundled command-line helper linked into Homebrew's bin directory or `/usr/local/bin`
+- `MacVM.app`, a native SwiftUI app installed in `/Applications/MacVM.app`
+- `macvm`, its bundled CLI helper linked into Homebrew's bin directory or `/usr/local/bin`
 
 MacVM uses Apple's Virtualization framework, creates each VM from a macOS restore image, and stores VMs as ordinary bundles on disk.
 
