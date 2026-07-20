@@ -26,11 +26,14 @@ enum VMStatus: Equatable {
         if installing {
             return .installing
         }
-        if settingUp {
-            return .settingUp
-        }
+        // A live runtime always wins over a setup marker. Provisioning (or a
+        // stale setup-state.json left after setup) must not demote a running VM
+        // to the setup view, which would blank the detail pane until restart.
         if viewerActive || liveProcess != nil || liveDisplay != nil || liveSession != nil {
             return .running
+        }
+        if settingUp {
+            return .settingUp
         }
         return .stopped
     }

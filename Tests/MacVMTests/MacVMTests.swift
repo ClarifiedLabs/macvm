@@ -566,7 +566,14 @@ func vmStatusDerivationFollowsPrecedence() {
     // In-app operations win over everything.
     #expect(VMStatus.derive(cloning: true, installing: true, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .cloning)
     #expect(VMStatus.derive(cloning: false, installing: true, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .installing)
-    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .settingUp)
+    // A live runtime wins over a setup marker (e.g. a stale setup-state.json
+    // after provisioning a running VM), so the detail pane stays on .running.
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .running)
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, viewerActive: false, liveProcess: process, liveDisplay: nil, liveSession: nil) == .running)
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, viewerActive: false, liveProcess: nil, liveDisplay: nil, liveSession: session) == .running)
+
+    // Setup marker with nothing live still reads as setting up.
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, viewerActive: false, liveProcess: nil, liveDisplay: nil, liveSession: nil) == .settingUp)
 
     // Any liveness signal means running.
     #expect(VMStatus.derive(cloning: false, installing: false, settingUp: false, viewerActive: true, liveProcess: nil, liveDisplay: nil, liveSession: nil) == .running)
