@@ -2971,6 +2971,10 @@ func setupRuntimeStateRoundTripsAndReportsLiveness() throws {
     try bundle.writeSetupRuntimeState(failed)
     #expect(bundle.readSetupRuntimeState()?.failureMessage == "Timed out")
     #expect(bundle.liveSetupRuntimeState() == nil)
+    // A stale marker (owning process gone) is pruned from disk on read so a
+    // crashed setup cannot leave a lingering setup-state.json behind.
+    #expect(bundle.readSetupRuntimeState() == nil)
+    #expect(!FileManager.default.fileExists(atPath: bundle.setupRuntimeStateURL.path))
 
     try Data("preview".utf8).write(to: bundle.setupPreviewURL, options: .atomic)
     #expect(FileManager.default.fileExists(atPath: bundle.setupPreviewURL.path))

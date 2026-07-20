@@ -461,9 +461,15 @@ struct VMBundle {
     }
 
     /// The live setup operation for this bundle, or nil if setup is not running.
-    /// A stale descriptor (owning process gone) is treated as absent.
+    /// A stale descriptor (owning process gone) is treated as absent and pruned
+    /// from disk so a crashed or killed setup cannot leave a lingering marker
+    /// that later misidentifies the VM as still setting up.
     func liveSetupRuntimeState() -> VMSetupRuntimeState? {
-        guard let state = readSetupRuntimeState(), state.isLive else {
+        guard let state = readSetupRuntimeState() else {
+            return nil
+        }
+        guard state.isLive else {
+            clearSetupRuntimeState()
             return nil
         }
         return state
