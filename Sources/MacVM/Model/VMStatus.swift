@@ -15,6 +15,7 @@ enum VMStatus: Equatable {
         cloning: Bool,
         installing: Bool,
         settingUp: Bool,
+        setupOperationActive: Bool = false,
         viewerActive: Bool,
         liveProcess: VMProcessRuntimeState?,
         liveDisplay: VMDisplayRuntimeState?,
@@ -26,9 +27,13 @@ enum VMStatus: Equatable {
         if installing {
             return .installing
         }
-        // A live runtime always wins over a setup marker. Provisioning (or a
-        // stale setup-state.json left after setup) must not demote a running VM
-        // to the setup view, which would blank the detail pane until restart.
+        // Active setup necessarily has a live runtime and must keep the setup
+        // progress view visible while it drives the guest.
+        if settingUp && setupOperationActive {
+            return .settingUp
+        }
+        // A live runtime wins over an inactive setup marker. A stale
+        // setup-state.json left after setup must not demote a running VM.
         if viewerActive || liveProcess != nil || liveDisplay != nil || liveSession != nil {
             return .running
         }

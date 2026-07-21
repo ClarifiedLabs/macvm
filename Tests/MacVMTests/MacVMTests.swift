@@ -188,6 +188,7 @@ func setupProgressHeadingTracksTheCurrentPhase() {
         firstStepIndex: nil
     )
     let setup = SetupProgress(
+        operationActive: true,
         phases: [phase],
         currentPhaseID: phase.id,
         vncURL: "vnc://127.0.0.1:5900",
@@ -566,8 +567,11 @@ func vmStatusDerivationFollowsPrecedence() {
     // In-app operations win over everything.
     #expect(VMStatus.derive(cloning: true, installing: true, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .cloning)
     #expect(VMStatus.derive(cloning: false, installing: true, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .installing)
-    // A live runtime wins over a setup marker (e.g. a stale setup-state.json
-    // after provisioning a running VM), so the detail pane stays on .running.
+    // Active setup owns the detail view even though its VM is live.
+    #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, setupOperationActive: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .settingUp)
+
+    // A live runtime wins over an inactive setup marker (e.g. a stale
+    // setup-state.json after provisioning a running VM).
     #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, viewerActive: true, liveProcess: process, liveDisplay: display, liveSession: session) == .running)
     #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, viewerActive: false, liveProcess: process, liveDisplay: nil, liveSession: nil) == .running)
     #expect(VMStatus.derive(cloning: false, installing: false, settingUp: true, viewerActive: false, liveProcess: nil, liveDisplay: nil, liveSession: session) == .running)
@@ -825,16 +829,64 @@ func managerReconstructsXcodeSetupProgressFromRuntimeState() throws {
         startedAt: Date(),
         updatedAt: Date()
     ))
+    try bundle.writeVMProcessRuntimeState(VMProcessRuntimeState(
+        role: .headless,
+        pid: getpid(),
+        startedAt: Date()
+    ))
 
     let store = AppStore(service: MacVMService(rootDirectory: rootURL))
     let setup = try #require(store.setups["dev-01"])
 
     #expect(store.status(forName: "dev-01") == .settingUp)
+    #expect(setup.operationActive)
     #expect(setup.currentPhaseID == xcodePhase.id)
     #expect(setup.statusMessage == "Xcode: installing Xcode.xip in the guest")
     #expect(setup.logMessages == ["Waiting for SSH", "Xcode: installing Xcode.xip in the guest"])
     #expect(setup.phases.suffix(2).map(\.title) == ["Install Xcode", "Install Homebrew"])
     #expect(setup.phases.count == plan.phases.count)
+}
+
+@Test
+@MainActor
+func managerKeepsLiveRuntimeAheadOfInactiveManagerSetupMarker() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("dev-01", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(VMMetadata(
+        name: "dev-01",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    ))
+    try bundle.writeSetupRuntimeState(VMSetupRuntimeState(
+        username: "admin",
+        fullName: "Administrator",
+        phaseCount: 14,
+        pid: getpid(),
+        startedAt: Date(),
+        updatedAt: Date()
+    ))
+    try bundle.writeVMProcessRuntimeState(VMProcessRuntimeState(
+        role: .manager,
+        pid: getpid(),
+        startedAt: Date()
+    ))
+
+    let store = AppStore(service: MacVMService(rootDirectory: rootURL))
+    let setup = try #require(store.setups["dev-01"])
+
+    #expect(!setup.operationActive)
+    #expect(store.status(forName: "dev-01") == .running)
 }
 
 // MARK: - RestoreImageCatalog

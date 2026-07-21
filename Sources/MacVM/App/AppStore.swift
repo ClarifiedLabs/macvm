@@ -28,6 +28,9 @@ struct CloneProgress {
 
 /// Live setup progress for a VM this app is driving through Setup Assistant.
 struct SetupProgress {
+    /// True while automation is still driving the guest. A retained failure or
+    /// stale manager-owned runtime marker can remain visible without being active.
+    var operationActive: Bool
     var phases: [SetupPhase]
     var currentPhaseID: Int?
     var vncURL: String
@@ -191,6 +194,7 @@ final class AppStore {
             cloning: clones[name] != nil,
             installing: installs[name] != nil,
             settingUp: setups[name] != nil,
+            setupOperationActive: setups[name]?.operationActive == true,
             viewerActive: runtimeController(forName: name) != nil,
             liveProcess: liveProcesses[name],
             liveDisplay: liveDisplays[name],
@@ -451,7 +455,7 @@ final class AppStore {
         liveSetupStates = setupStates
         launchOnBootStatuses = launchOnBoot
         dockerStatuses = docker
-        reconcileSetupProgress(from: setupStates, sessions: sessions)
+        reconcileSetupProgress(from: setupStates, sessions: sessions, processes: processes)
 
         for vm in vms {
             let name = vm.metadata.name
@@ -472,7 +476,11 @@ final class AppStore {
         })
     }
 
-    private func reconcileSetupProgress(from setupStates: [String: VMSetupRuntimeState], sessions: [String: VNCSession]) {
+    private func reconcileSetupProgress(
+        from setupStates: [String: VMSetupRuntimeState],
+        sessions: [String: VNCSession],
+        processes: [String: VMProcessRuntimeState]
+    ) {
         for (name, state) in setupStates {
             guard let vm = vm(named: name) else { continue }
             let existing = setups[name]
@@ -493,8 +501,12 @@ final class AppStore {
             } else {
                 vncURL = existing?.vncURL ?? ""
             }
+            let isManagerOwned = processes[name]?.role == .manager
+            let operationActive = state.failureMessage == nil
+                && (existing?.operationActive ?? !isManagerOwned)
 
             setups[name] = SetupProgress(
+                operationActive: operationActive,
                 phases: phases,
                 currentPhaseID: state.phaseIndex,
                 vncURL: vncURL,
@@ -1484,6 +1496,7 @@ final class AppStore {
             headlessRunners[name] = runner
 
             setups[name] = SetupProgress(
+                operationActive: true,
                 phases: plan.phases,
                 currentPhaseID: nil,
                 vncURL: session.vncURLString,
@@ -1542,6 +1555,7 @@ final class AppStore {
                 } catch {
                     pendingDockerEnables[name] = nil
                     dockerOperationMessages[name] = nil
+                    setups[name]?.operationActive = false
                     setups[name]?.failureMessage = error.localizedDescription
                     appendSetupLog("Setup failed: \(error.localizedDescription)", name: name)
                 }
