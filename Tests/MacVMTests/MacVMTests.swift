@@ -14,6 +14,24 @@ private let macOS26Release = MacOSRelease(
 )
 
 @Test
+func appRuntimePolicyIsolatesUnitTestHosts() {
+    let environmentDetected = AppRuntimePolicy.resolve(
+        environment: ["XCTestConfigurationFilePath": "/tmp/macvm-tests.xctestconfiguration"],
+        xctestLoaded: false
+    )
+    let classDetected = AppRuntimePolicy.resolve(environment: [:], xctestLoaded: true)
+    let production = AppRuntimePolicy.resolve(environment: [:], xctestLoaded: false)
+
+    #expect(environmentDetected.isUnitTestHost)
+    #expect(!environmentDetected.usesSharedControlQueue)
+    #expect(!environmentDetected.requestsLocalNetworkAccess)
+    #expect(classDetected.isUnitTestHost)
+    #expect(!production.isUnitTestHost)
+    #expect(production.usesSharedControlQueue)
+    #expect(production.requestsLocalNetworkAccess)
+}
+
+@Test
 @MainActor
 func managerWindowAppearanceRequestsLocalNetworkAccessOnce() {
     let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)

@@ -11,6 +11,7 @@ XCODE_DERIVED_DATA ?= .build/xcode-derived
 XCODE_SOURCE_PACKAGES ?= .build/xcode-source-packages
 XCODE_DESTINATION ?= platform=macOS,arch=arm64
 XCODE_RESULT_BUNDLE ?=
+MACVM_TEST_APP_BUNDLE_IDENTIFIER ?= dev.macvm.macvm.test-host
 XCODE_COMMON_FLAGS = -clonedSourcePackagesDirPath "$(XCODE_SOURCE_PACKAGES)" -skipPackagePluginValidation -skipMacroValidation
 XCODE_RESULT_BUNDLE_FLAGS = $(if $(XCODE_RESULT_BUNDLE),-resultBundlePath "$(XCODE_RESULT_BUNDLE)",)
 
@@ -46,7 +47,7 @@ build-app:
 	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "MacVM App" -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) build
 
 test:
-	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "MacVM App" -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) -destination '$(XCODE_DESTINATION)' $(XCODE_RESULT_BUNDLE_FLAGS) test
+	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "MacVM App" -configuration Debug -derivedDataPath "$(XCODE_DERIVED_DATA)" $(XCODE_COMMON_FLAGS) MACVM_APP_BUNDLE_IDENTIFIER="$(MACVM_TEST_APP_BUNDLE_IDENTIFIER)" -destination '$(XCODE_DESTINATION)' $(XCODE_RESULT_BUNDLE_FLAGS) test
 
 test-provisioning:
 	@./scripts/check-provisioning-playbooks.sh

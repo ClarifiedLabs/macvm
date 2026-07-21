@@ -2,6 +2,19 @@ import AppKit
 import MacVMHostKit
 import SwiftUI
 
+struct AppRuntimePolicy: Equatable {
+    let isUnitTestHost: Bool
+
+    var usesSharedControlQueue: Bool { !isUnitTestHost }
+    var requestsLocalNetworkAccess: Bool { !isUnitTestHost }
+
+    static func resolve(environment: [String: String], xctestLoaded: Bool) -> AppRuntimePolicy {
+        AppRuntimePolicy(
+            isUnitTestHost: environment["XCTestConfigurationFilePath"] != nil || xctestLoaded
+        )
+    }
+}
+
 @main
 struct MacVMApp: App {
     @NSApplicationDelegateAdaptor(MacVMApplicationDelegate.self) private var applicationDelegate
@@ -13,14 +26,26 @@ struct MacVMApp: App {
             MacVMAppControlQueue.controlOnlyArgument
         )
         self.controlOnlyLaunch = controlOnlyLaunch
-        let isUnitTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || NSClassFromString("XCTestCase") != nil
-        let testRoot = isUnitTestHost
+        let runtimePolicy = AppRuntimePolicy.resolve(
+            environment: ProcessInfo.processInfo.environment,
+            xctestLoaded: NSClassFromString("XCTestCase") != nil
+        )
+        let testRoot = runtimePolicy.isUnitTestHost
             ? FileManager.default.temporaryDirectory.appendingPathComponent("macvm-app-test-host-\(getpid())", isDirectory: true)
             : nil
+        let controlQueue: MacVMAppControlQueue? = runtimePolicy.usesSharedControlQueue
+            ? MacVMAppControlQueue()
+            : nil
+        let triggerLocalNetworkPrivacyAlert: () -> Void
+        if runtimePolicy.requestsLocalNetworkAccess {
+            triggerLocalNetworkPrivacyAlert = LocalNetworkPrivacy.triggerAlert
+        } else {
+            triggerLocalNetworkPrivacyAlert = {}
+        }
         let store = AppStore(
             service: MacVMService(rootDirectory: testRoot ?? MacVMSettings.shared.configuredVMRootDirectory),
-            controlQueue: MacVMAppControlQueue()
+            controlQueue: controlQueue,
+            triggerLocalNetworkPrivacyAlert: triggerLocalNetworkPrivacyAlert
         )
         _store = State(initialValue: store)
         MacVMApplicationDelegate.store = store
