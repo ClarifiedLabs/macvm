@@ -1539,12 +1539,37 @@ final class AppStore {
                     if let configuration = pendingDockerEnables.removeValue(forKey: name) {
                         let stoppedVM = try service.resolveVM(identifier: vm.bundleURL.path)
                         dockerOperationMessages[name] = "Preparing Fedora CoreOS…"
-                        _ = try await service.enableDockerSidecar(
+                        let enabledVM = try await service.enableDockerSidecar(
                             for: stoppedVM,
                             configuration: configuration
                         ) { [weak self] event in
                             guard case .status(let message) = event else { return }
                             DispatchQueue.main.async { self?.dockerOperationMessages[name] = message }
+                        }
+                        refresh()
+
+                        dockerOperationMessages[name] = "Starting \(name) to finish Docker guest integration…"
+                        let controller = try startRuntime(
+                            enabledVM,
+                            headless: true,
+                            recovery: false,
+                            requestedVNCPort: 0
+                        )
+                        do {
+                            try await controller.waitUntilRunning()
+                            dockerOperationMessages[name] = "Installing Docker guest integration…"
+                            try await controller.waitUntilDockerGuestProvisioned()
+
+                            dockerOperationMessages[name] = "Shutting down \(name) after Docker setup…"
+                            let provisionedVM = try service.resolveVM(identifier: enabledVM.bundleURL.path)
+                            let status = try service.shutdownGuest(provisionedVM)
+                            guard status == 0 else {
+                                throw AppRuntimeError(message: "Guest shutdown failed with status \(status).")
+                            }
+                            try await controller.waitUntilStopped()
+                        } catch {
+                            await controller.stop()
+                            throw error
                         }
                         dockerOperationMessages[name] = nil
                     }
@@ -1555,9 +1580,13 @@ final class AppStore {
                 } catch {
                     pendingDockerEnables[name] = nil
                     dockerOperationMessages[name] = nil
-                    setups[name]?.operationActive = false
-                    setups[name]?.failureMessage = error.localizedDescription
-                    appendSetupLog("Setup failed: \(error.localizedDescription)", name: name)
+                    if setups[name] != nil {
+                        setups[name]?.operationActive = false
+                        setups[name]?.failureMessage = error.localizedDescription
+                        appendSetupLog("Setup failed: \(error.localizedDescription)", name: name)
+                    } else {
+                        alertMessage = "Created \(name), but Docker setup failed: \(error.localizedDescription)"
+                    }
                 }
             }
         } catch {

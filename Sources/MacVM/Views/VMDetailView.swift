@@ -158,22 +158,12 @@ struct DockerSectionView: View {
     @Environment(AppStore.self) private var store
     let vm: ManagedVM
     let vmStatus: VMStatus
-    @State private var cpuCount: Int
-    @State private var memoryGiB: Int
-    @State private var diskGiB: Int
-    @State private var amd64Enabled: Bool
+    @State private var resources: DockerResourceFormValues
 
     init(vm: ManagedVM, vmStatus: VMStatus) {
         self.vm = vm
         self.vmStatus = vmStatus
-        let settings = vm.metadata.dockerSidecar
-        let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
-        let memoryBytes = settings?.memorySizeBytes ?? UInt64(DockerSidecarSettings.defaultMemoryGiB) * bytesPerGiB
-        let diskBytes = settings?.dataDiskSizeBytes ?? UInt64(DockerSidecarSettings.defaultDiskGiB) * bytesPerGiB
-        _cpuCount = State(initialValue: settings?.cpuCount ?? DockerSidecarSettings.defaultCPUCount)
-        _memoryGiB = State(initialValue: Int(memoryBytes / bytesPerGiB))
-        _diskGiB = State(initialValue: Int(diskBytes / bytesPerGiB))
-        _amd64Enabled = State(initialValue: settings?.amd64Enabled ?? true)
+        _resources = State(initialValue: DockerResourceFormValues(settings: vm.metadata.dockerSidecar))
     }
 
     var body: some View {
@@ -203,17 +193,17 @@ struct DockerSectionView: View {
                     if vm.metadata.dockerSidecar != nil {
                         Divider().overlay(Theme.hairline)
                         HStack(spacing: 12) {
-                            Stepper("\(cpuCount) CPU", value: $cpuCount, in: 1...12)
-                            Stepper("\(memoryGiB) GiB", value: $memoryGiB, in: 2...32, step: 2)
-                            Stepper("\(diskGiB) GiB disk", value: $diskGiB, in: max(1, Int((vm.metadata.dockerSidecar?.dataDiskSizeBytes ?? 0) / (1024 * 1024 * 1024)))...512, step: 16)
-                            Toggle("linux/amd64", isOn: $amd64Enabled).toggleStyle(.checkbox)
+                            Stepper("\(resources.cpuCount) CPU", value: $resources.cpuCount, in: 1...12)
+                            Stepper("\(resources.memoryGiB) GiB", value: $resources.memoryGiB, in: 2...32, step: 2)
+                            Stepper("\(resources.diskGiB) GiB disk", value: $resources.diskGiB, in: max(1, Int((vm.metadata.dockerSidecar?.dataDiskSizeBytes ?? 0) / (1024 * 1024 * 1024)))...512, step: 16)
+                            Toggle("linux/amd64", isOn: $resources.amd64Enabled).toggleStyle(.checkbox)
                             Button("Apply") {
                                 store.configureDocker(
                                     for: vm,
-                                    cpuCount: cpuCount,
-                                    memoryGiB: memoryGiB,
-                                    diskGiB: diskGiB,
-                                    amd64Enabled: amd64Enabled
+                                    cpuCount: resources.cpuCount,
+                                    memoryGiB: resources.memoryGiB,
+                                    diskGiB: resources.diskGiB,
+                                    amd64Enabled: resources.amd64Enabled
                                 )
                             }
                             .disabled(vmStatus != .stopped || busy)
@@ -226,6 +216,9 @@ struct DockerSectionView: View {
                 }
                 .padding(14)
             }
+        }
+        .onChange(of: vm.metadata.dockerSidecar) { _, settings in
+            resources.synchronize(with: settings)
         }
     }
 
@@ -248,6 +241,34 @@ struct DockerSectionView: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .disabled(vmStatus != .stopped || busy || vm.metadata.setupCompletedAt == nil)
+    }
+}
+
+struct DockerResourceFormValues: Equatable {
+    private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
+
+    var cpuCount: Int
+    var memoryGiB: Int
+    var diskGiB: Int
+    var amd64Enabled: Bool
+
+    init(settings: DockerSidecarSettings?) {
+        cpuCount = settings?.cpuCount ?? DockerSidecarSettings.defaultCPUCount
+        memoryGiB = Int(
+            (settings?.memorySizeBytes
+                ?? UInt64(DockerSidecarSettings.defaultMemoryGiB) * Self.bytesPerGiB)
+                / Self.bytesPerGiB
+        )
+        diskGiB = Int(
+            (settings?.dataDiskSizeBytes
+                ?? UInt64(DockerSidecarSettings.defaultDiskGiB) * Self.bytesPerGiB)
+                / Self.bytesPerGiB
+        )
+        amd64Enabled = settings?.amd64Enabled ?? true
+    }
+
+    mutating func synchronize(with settings: DockerSidecarSettings?) {
+        self = DockerResourceFormValues(settings: settings)
     }
 }
 

@@ -124,6 +124,45 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         throw MacVMError.message("Timed out waiting for \(vmName) to start.")
     }
 
+    /// Wait for a newly prepared Docker sidecar to finish installing and
+    /// validating its macOS guest integration on this run.
+    public func waitUntilDockerGuestProvisioned(timeout: TimeInterval = 40 * 60) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            let settings = try bundle.readMetadata().dockerSidecar
+            let runtime = bundle.readDockerSidecarRuntimeDescriptor()
+            switch DockerGuestProvisioningWaitDecision.make(
+                settings: settings,
+                runtime: runtime,
+                ownerFinished: finished
+            ) {
+            case .waiting:
+                try await Task.sleep(for: .milliseconds(250))
+            case .ready:
+                return
+            case .failed(let message):
+                throw MacVMError.message(message)
+            }
+        } while Date() < deadline
+
+        throw MacVMError.message("Timed out waiting for Docker guest integration in \(vmName).")
+    }
+
+    /// Wait for guest shutdown and the paired sidecar teardown to finish.
+    public func waitUntilStopped(timeout: TimeInterval = 120) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if finished {
+                if let finishError { throw finishError }
+                return
+            }
+            if let finishError, !finishing { throw finishError }
+            try await Task.sleep(for: .milliseconds(100))
+        } while Date() < deadline
+
+        throw MacVMError.message("Timed out waiting for \(vmName) to shut down.")
+    }
+
     /// Convenience for hosts: build the window, boot the VM, and return the
     /// window for presentation.
     @discardableResult
@@ -833,5 +872,32 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         @unknown default:
             return "unknown"
         }
+    }
+}
+
+enum DockerGuestProvisioningWaitDecision: Equatable {
+    case waiting
+    case ready
+    case failed(String)
+
+    static func make(
+        settings: DockerSidecarSettings?,
+        runtime: DockerSidecarRuntimeDescriptor?,
+        ownerFinished: Bool
+    ) -> Self {
+        guard let settings, settings.enabled else {
+            return .failed("Docker was disabled while guest integration was being installed.")
+        }
+        if settings.guestProvisioningState == .ready,
+           settings.guestProvisioningVersion >= DockerSidecarSettings.currentGuestProvisioningVersion {
+            return .ready
+        }
+        if runtime?.state == .degraded {
+            return .failed(runtime?.lastError ?? "Docker guest integration failed.")
+        }
+        if ownerFinished {
+            return .failed("The macOS VM stopped before Docker guest integration completed.")
+        }
+        return .waiting
     }
 }

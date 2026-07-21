@@ -44,3 +44,26 @@ func dockerSidecarStatusIsCodableForCLIAndUIRefresh() throws {
     let decoded = try JSONDecoder().decode(DockerSidecarStatus.self, from: JSONEncoder().encode(value))
     #expect(decoded == value)
 }
+
+@Test
+func dockerResourceFormSynchronizesWhenSidecarAppearsAfterSetup() {
+    var values = DockerResourceFormValues(settings: nil)
+    #expect(values.cpuCount == DockerSidecarSettings.defaultCPUCount)
+    #expect(values.memoryGiB == DockerSidecarSettings.defaultMemoryGiB)
+    #expect(values.diskGiB == DockerSidecarSettings.defaultDiskGiB)
+
+    values.synchronize(with: DockerSidecarSettings(
+        amd64Enabled: false,
+        cpuCount: 6,
+        memorySizeBytes: 12 * 1024 * 1024 * 1024,
+        dataDiskSizeBytes: 96 * 1024 * 1024 * 1024,
+        macOSMACAddress: "02:00:00:00:00:01",
+        linuxPrivateMACAddress: "02:00:00:00:00:02",
+        linuxNATMACAddress: "02:00:00:00:00:03"
+    ))
+
+    #expect(values.cpuCount == 6)
+    #expect(values.memoryGiB == 12)
+    #expect(values.diskGiB == 96)
+    #expect(!values.amd64Enabled)
+}

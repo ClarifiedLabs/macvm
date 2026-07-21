@@ -707,6 +707,34 @@ func dockerReadinessRequiresStandaloneSerialMarker() {
     ))
 }
 
+@Test
+func dockerCreationWaitsForCurrentGuestProvisioningBeforeCompleting() {
+    var settings = dockerTestSettings()
+    settings.guestProvisioningState = .pending
+    settings.guestProvisioningVersion = 0
+
+    #expect(DockerGuestProvisioningWaitDecision.make(
+        settings: settings,
+        runtime: DockerSidecarRuntimeDescriptor(
+            state: .pendingGuestProvisioning,
+            pid: getpid(),
+            startedAt: Date(),
+            updatedAt: Date(),
+            fcosVersion: dockerTestImage.release,
+            amd64Available: true
+        ),
+        ownerFinished: false
+    ) == .waiting)
+
+    settings.guestProvisioningState = .ready
+    settings.guestProvisioningVersion = DockerSidecarSettings.currentGuestProvisioningVersion
+    #expect(DockerGuestProvisioningWaitDecision.make(
+        settings: settings,
+        runtime: nil,
+        ownerFinished: false
+    ) == .ready)
+}
+
 @Test @MainActor
 func createRejectsDockerResourceOverflowBeforeCreatingBundle() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
