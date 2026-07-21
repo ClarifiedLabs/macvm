@@ -1022,6 +1022,15 @@ final class AppStore {
     /// VM name awaiting removal confirmation (drives the confirmation dialog).
     var pendingRemoval: String?
 
+    /// VM name whose in-flight creation the user asked to cancel (drives the
+    /// confirmation dialog).
+    var pendingInstallCancellation: String?
+
+    /// In-flight `createVM` tasks keyed by VM name, retained so a user-initiated
+    /// cancellation can unwind the pre-install awaits (restore-image fetch and
+    /// download).
+    private var createTasks: [String: Task<Void, Never>] = [:]
+
     func requestRemove(_ name: String) {
         guard status(forName: name) == .stopped else {
             alertMessage = "Shut down \(name) before removing it."
@@ -1230,7 +1239,7 @@ final class AppStore {
         }
         let setupSelection = provisioningSelection
         let bundleExistedBeforeCreation = (try? service.resolveRemovalTarget(identifier: name)) != nil
-        Task { @MainActor in
+        createTasks[name] = Task { @MainActor in
             do {
                 let creationSetupOptions = runSetupAfter ? SetupOptions(
                     xcodeXIPURL: setupXcodeXIPURL,
@@ -1254,6 +1263,7 @@ final class AppStore {
                     }
                 }
                 installs[name] = nil
+                createTasks[name] = nil
                 refresh()
                 if runSetupAfter {
                     // Let the installer's VM release its lock on the auxiliary
@@ -1277,14 +1287,20 @@ final class AppStore {
                     )
                 }
             } catch {
+                let cancelled = Task.isCancelled
                 installs[name] = nil
                 pendingDockerEnables[name] = nil
+                createTasks[name] = nil
                 refresh()
-                presentCreationFailure(
-                    name: name,
-                    error: error,
-                    bundleExistedBeforeCreation: bundleExistedBeforeCreation
-                )
+                if cancelled {
+                    presentInstallCancellation(name: name)
+                } else {
+                    presentCreationFailure(
+                        name: name,
+                        error: error,
+                        bundleExistedBeforeCreation: bundleExistedBeforeCreation
+                    )
+                }
             }
         }
     }
@@ -1297,6 +1313,36 @@ final class AppStore {
         alertMessage = "Failed to create \(name):\n\n\(error.localizedDescription)"
         let bundleExistsNow = (try? service.resolveRemovalTarget(identifier: name)) != nil
         alertRemovalCandidate = !bundleExistedBeforeCreation && bundleExistsNow ? name : nil
+    }
+
+    // MARK: - Cancel install
+
+    /// Ask to cancel an in-flight installation (drives the confirmation dialog).
+    func requestInstallCancellation(_ name: String) {
+        guard installs[name] != nil else { return }
+        pendingInstallCancellation = name
+    }
+
+    func confirmInstallCancellation() {
+        guard let name = pendingInstallCancellation else { return }
+        pendingInstallCancellation = nil
+        guard let task = createTasks[name] else { return }
+        installs[name]?.status = "Cancelling installation…"
+        service.cancelInstall(name: name)
+        task.cancel()
+    }
+
+    private func presentInstallCancellation(name: String) {
+        let bundleExists = (try? service.resolveRemovalTarget(identifier: name)) != nil
+        if bundleExists {
+            alertMessage = "Cancelled the installation of \(name).\n\nThe incomplete VM bundle is still on disk."
+            alertRemovalCandidate = name
+        } else {
+            alertMessage = "Cancelled the installation of \(name)."
+            if selection == .vm(name) {
+                selection = vms.first.map { .vm($0.metadata.name) } ?? .images
+            }
+        }
     }
 
     private func applyInstallEvent(_ event: VMOperationEvent, name: String) {

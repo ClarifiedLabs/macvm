@@ -453,13 +453,24 @@ struct SetupProgressCard: View {
 /// The "Installing macOS" card with the installer's status line and a
 /// determinate progress bar once install progress starts flowing.
 struct InstallingCard: View {
+    @Environment(AppStore.self) private var store
+    let name: String
     let install: InstallProgress
 
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Installing macOS")
-                    .font(.system(size: 13, weight: .semibold))
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Installing macOS")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Button("Cancel Install") {
+                        store.requestInstallCancellation(name)
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.small)
+                }
                 Text(install.status)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)

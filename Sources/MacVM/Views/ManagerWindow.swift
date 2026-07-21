@@ -84,6 +84,21 @@ struct ManagerWindow: View {
             Text(removalMessage)
         }
         .confirmationDialog(
+            "Cancel the installation of “\(store.pendingInstallCancellation ?? "")”?",
+            isPresented: Binding(
+                get: { store.pendingInstallCancellation != nil },
+                set: { if !$0 { store.pendingInstallCancellation = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Cancel Install", role: .destructive) {
+                store.confirmInstallCancellation()
+            }
+            Button("Keep Installing", role: .cancel) {}
+        } message: {
+            Text("The install will stop and the incomplete VM bundle will be left on disk. You can remove it afterwards.")
+        }
+        .confirmationDialog(
             powerActionTitle,
             isPresented: Binding(
                 get: { store.pendingPowerAction != nil },

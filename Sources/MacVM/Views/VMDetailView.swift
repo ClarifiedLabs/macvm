@@ -19,7 +19,7 @@ struct VMDetailView: View {
                     }
                 }
                 if status == .installing, let install = store.installs[name] {
-                    InstallingCard(install: install)
+                    InstallingCard(name: name, install: install)
                 }
                 if status == .cloning, let clone = store.clones[name] {
                     CloningCard(clone: clone)

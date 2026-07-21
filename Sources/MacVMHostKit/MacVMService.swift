@@ -6,6 +6,32 @@ private final class InstallationProgressState: @unchecked Sendable {
     var lastPercent = -1
 }
 
+/// Bridges Swift structured-task cancellation to a live `VZMacOSInstaller`.
+///
+/// `VZMacOSInstaller.progress` is documented as an `NSProgress` that can be
+/// used to cancel an in-flight installation. The CLI gets this for free when
+/// Ctrl+C tears down the process; the app instead registers the installer here
+/// and calls `cancelInstall` when the user cancels the create task.
+final class InstallCancellationRegistry: @unchecked Sendable {
+    static let shared = InstallCancellationRegistry()
+
+    private let lock = NSLock()
+    private var installers: [String: Progress] = [:]
+
+    func register(name: String, progress: Progress) {
+        lock.withLock { installers[name] = progress }
+    }
+
+    func unregister(name: String) {
+        lock.withLock { _ = installers.removeValue(forKey: name) }
+    }
+
+    func cancel(name: String) {
+        let progress = lock.withLock { installers[name] }
+        progress?.cancel()
+    }
+}
+
 private final class SetupRuntimePublisher: @unchecked Sendable {
     private static let maxLogMessages = 10
 
@@ -115,6 +141,7 @@ public final class MacVMService: Sendable {
     let storage: VMStorage
     private let launchOnBoot: VMLaunchOnBootController
     let dockerImageAutoRefreshOverride: Bool?
+    private let installCancellation = InstallCancellationRegistry.shared
 
     public init(
         rootDirectory: URL? = nil,
@@ -356,6 +383,15 @@ public final class MacVMService: Sendable {
         )
         launchOnBoot.removeLaunchAgent(for: target)
         try bundle.removeFromDisk()
+    }
+
+    /// Cancel an in-flight `createVM` installation for the named VM.
+    ///
+    /// The running `createVM` task must also be cancelled by its owner so the
+    /// pre-install awaits (restore-image fetch/download) unwind. This cancels
+    /// the live `VZMacOSInstaller` once the install phase has started.
+    public func cancelInstall(name: String) {
+        installCancellation.cancel(name: name)
     }
 
     private func removalDockerOperationLock(
@@ -1485,11 +1521,20 @@ public final class MacVMService: Sendable {
             progressObservation.invalidate()
         }
 
+        installCancellation.register(name: draft.name, progress: installer.progress)
+        defer {
+            installCancellation.unregister(name: draft.name)
+        }
+
         progress?(.status("Installing macOS. This can take a while..."))
         DebugLog.log("Starting macOS installation for \(draft.name)")
         do {
             try await VirtualizationAsync.install(installer)
         } catch {
+            if installer.progress.isCancelled {
+                DebugLog.log("macOS installation cancelled for \(draft.name)")
+                throw MacVMError.installCancelled
+            }
             let message = InstallationErrorDiagnostics.message(
                 for: error,
                 guestRelease: installedRelease

@@ -18,6 +18,7 @@ enum MacVMError: LocalizedError {
     case invalidMachineIdentifier(URL)
     case unsupportedHardwareModel
     case sharedDirectoryMissing(URL)
+    case installCancelled
     case message(String)
 
     var errorDescription: String? {
@@ -52,6 +53,8 @@ enum MacVMError: LocalizedError {
             return "The current host doesn't support the hardware model exposed by this restore image."
         case .sharedDirectoryMissing(let url):
             return "The shared directory expected at \(url.path) doesn't exist."
+        case .installCancelled:
+            return "Installation cancelled."
         case .message(let value):
             return value
         }
