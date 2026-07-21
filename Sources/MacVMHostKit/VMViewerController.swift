@@ -4,6 +4,19 @@ import Foundation
 import MacVMPrivateVZ
 import Virtualization
 
+private extension NSToolbar.Identifier {
+    static let vmViewer = NSToolbar.Identifier("dev.macvm.viewer")
+}
+
+private extension NSToolbarItem.Identifier {
+    static let copyHostPasteboardToGuest = NSToolbarItem.Identifier(
+        "dev.macvm.viewer.copy-host-pasteboard-to-guest"
+    )
+    static let copyGuestPasteboardToHost = NSToolbarItem.Identifier(
+        "dev.macvm.viewer.copy-guest-pasteboard-to-host"
+    )
+}
+
 /// Owns one VM and its optional native display: the `VZVirtualMachine`
 /// lifecycle, VNC publication, lazily created `NSWindow` +
 /// `VZVirtualMachineView`, geometry persistence, and clipboard transfers.
@@ -11,7 +24,14 @@ import Virtualization
 /// Deliberately free of `NSApplication` lifecycle concerns so MacVM.app can
 /// retain many runtimes and add a native display after a headless start.
 @MainActor
-public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMenuItemValidation, NSWindowDelegate {
+public final class VMViewerController:
+    NSObject,
+    VZVirtualMachineDelegate,
+    NSMenuItemValidation,
+    NSWindowDelegate,
+    NSToolbarDelegate,
+    NSToolbarItemValidation
+{
     private struct VMSnapshot {
         let state: VZVirtualMachine.State
         let canStart: Bool
@@ -338,7 +358,16 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(copyHostPasteboardToGuest(_:)), #selector(copyGuestPasteboardToHost(_:)):
-            return virtualMachine?.state == .running && !clipboardTransferInProgress
+            return canTransferPasteboard
+        default:
+            return true
+        }
+    }
+
+    public func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        switch item.itemIdentifier {
+        case .copyHostPasteboardToGuest, .copyGuestPasteboardToHost:
+            return canTransferPasteboard
         default:
             return true
         }
@@ -376,9 +405,70 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         window.title = vmName
         window.contentView = displayView
         window.delegate = self
+        installToolbar(on: window)
         self.window = window
         installWindowObservers(window: window, displayView: displayView)
         DebugLog.log("Created window for \(vmName) frame=\(describe(window.frame)) displayViewFrame=\(describe(displayView.frame))")
+    }
+
+    private func installToolbar(on window: NSWindow) {
+        let toolbar = NSToolbar(identifier: .vmViewer)
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window.toolbarStyle = .unifiedCompact
+        window.toolbar = toolbar
+    }
+
+    public func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [
+            .flexibleSpace,
+            .copyHostPasteboardToGuest,
+            .copyGuestPasteboardToHost,
+        ]
+    }
+
+    public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [
+            .flexibleSpace,
+            .copyHostPasteboardToGuest,
+            .copyGuestPasteboardToHost,
+        ]
+    }
+
+    public func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        item.target = self
+
+        switch itemIdentifier {
+        case .copyHostPasteboardToGuest:
+            item.label = "Paste to VM"
+            item.paletteLabel = "Copy Host Pasteboard to VM"
+            item.toolTip = "Copy plain text from the host pasteboard to the VM pasteboard."
+            item.image = NSImage(
+                systemSymbolName: "arrow.right",
+                accessibilityDescription: "Copy Host Pasteboard to VM"
+            )
+            item.action = #selector(copyHostPasteboardToGuest(_:))
+        case .copyGuestPasteboardToHost:
+            item.label = "Copy from VM"
+            item.paletteLabel = "Copy VM Pasteboard to Host"
+            item.toolTip = "Wait for the next plain-text copy in the VM, then copy it to the host pasteboard."
+            item.image = NSImage(
+                systemSymbolName: "arrow.left",
+                accessibilityDescription: "Copy VM Pasteboard to Host"
+            )
+            item.action = #selector(copyGuestPasteboardToHost(_:))
+        default:
+            return nil
+        }
+
+        item.isEnabled = canTransferPasteboard
+        return item
     }
 
     private func restoredWindowFrame() -> NSRect? {
@@ -641,6 +731,7 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
                     DebugLog.log("start(options:) completion returned success for \(vmName)")
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
+                            self.refreshPasteboardCommandState()
                             self.startMemoryReclamation(for: virtualMachine)
                         }
                     }
@@ -654,6 +745,7 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
                     DebugLog.log("start() completion returned success for \(vmName)")
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
+                            self.refreshPasteboardCommandState()
                             self.startMemoryReclamation(for: virtualMachine)
                             self.provisionDockerGuestIntegrationIfNeeded()
                         }
@@ -742,6 +834,7 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
         case .running:
             DebugLog.log("VM reached running state for \(vmName)")
             stopHeartbeat()
+            refreshPasteboardCommandState()
         case .stopped, .error:
             DebugLog.log("VM reached terminal state for \(vmName): \(describe(snapshot.state))")
             stopHeartbeat()
@@ -752,6 +845,10 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     }
 
     // MARK: - Clipboard over RFB
+
+    private var canTransferPasteboard: Bool {
+        virtualMachine?.state == .running && !clipboardTransferInProgress
+    }
 
     @objc public func copyHostPasteboardToGuest(_ sender: Any?) {
         guard let text = NSPasteboard.general.string(forType: .string) else {
@@ -780,12 +877,12 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
     private func runClipboardTransfer(_ operation: @escaping () async throws -> Void) {
         guard !clipboardTransferInProgress else { return }
         clipboardTransferInProgress = true
-        NSApplication.shared.mainMenu?.update()
+        refreshPasteboardCommandState()
 
         Task { @MainActor in
             defer {
                 clipboardTransferInProgress = false
-                NSApplication.shared.mainMenu?.update()
+                refreshPasteboardCommandState()
             }
 
             do {
@@ -794,6 +891,11 @@ public final class VMViewerController: NSObject, VZVirtualMachineDelegate, NSMen
                 presentClipboardError(error.localizedDescription)
             }
         }
+    }
+
+    private func refreshPasteboardCommandState() {
+        NSApplication.shared.mainMenu?.update()
+        window?.toolbar?.validateVisibleItems()
     }
 
     private func withClipboardRFBClient<T>(_ body: (RFBClient) async throws -> T) async throws -> T {

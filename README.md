@@ -238,6 +238,11 @@ Bare `macvm vnc <vm>` prints the live `vnc://` URL; `macvm vnc --open <vm>`
 opens it in macOS Screen Sharing. VNC sessions use temporary credentials and
 may be reachable from the local network, so treat the URL as a secret.
 
+Native attached display windows include two pasteboard buttons in the right
+side of the title bar. **Paste to VM** sends the current plain-text host
+pasteboard to the guest. **Copy from VM** waits for the next plain-text copy in
+the guest and writes it to the host pasteboard.
+
 ## Launch on Boot
 
 Launch a VM headless when your macOS user logs in:

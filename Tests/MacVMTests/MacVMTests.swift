@@ -392,6 +392,47 @@ func viewerCloseHidesWindowAndShowRestoresIt() throws {
 
 @Test
 @MainActor
+func viewerWindowProvidesPasteboardTransferToolbarButtons() throws {
+    _ = NSApplication.shared
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL.appendingPathComponent("dev.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "dev",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let controller = VMViewerController(managedVM: ManagedVM(bundleURL: bundleURL, metadata: metadata))
+    let window = try controller.makeWindow()
+    let items = try #require(window.toolbar?.items)
+    let pasteToVM = try #require(items.first { $0.label == "Paste to VM" })
+    let copyFromVM = try #require(items.first { $0.label == "Copy from VM" })
+
+    #expect(window.toolbarStyle == .unifiedCompact)
+    #expect(window.toolbar?.displayMode == .iconOnly)
+    #expect(items.first?.itemIdentifier == .flexibleSpace)
+    #expect(items.suffix(2).map(\.label) == ["Paste to VM", "Copy from VM"])
+    #expect(pasteToVM.action == #selector(VMViewerController.copyHostPasteboardToGuest(_:)))
+    #expect(copyFromVM.action == #selector(VMViewerController.copyGuestPasteboardToHost(_:)))
+    #expect(pasteToVM.target === controller)
+    #expect(copyFromVM.target === controller)
+    #expect(pasteToVM.toolTip?.contains("host pasteboard") == true)
+    #expect(copyFromVM.toolTip?.contains("next plain-text copy") == true)
+    #expect(!controller.validateToolbarItem(pasteToVM))
+    #expect(!controller.validateToolbarItem(copyFromVM))
+
+    controller.tearDown()
+}
+
+@Test
+@MainActor
 func viewerTeardownClearsPublishedVNCAndManagerRuntime() throws {
     let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
