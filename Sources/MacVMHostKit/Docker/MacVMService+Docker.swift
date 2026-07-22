@@ -285,7 +285,7 @@ extension MacVMService {
         let existingSidecar = ownerBundle.dockerSidecarBundle
         let existingMetadata = try existingSidecar.validateIntegrity()
         let cachedImage = try await preferredDockerImage(progress: progress)
-        guard existingMetadata.image.uncompressedSHA256 != cachedImage.image.uncompressedSHA256 else {
+        guard existingMetadata.requiresUpdate(to: cachedImage.image) else {
             progress?(.status("Docker sidecar already uses Fedora CoreOS \(cachedImage.image.release)."))
             return currentVM
         }

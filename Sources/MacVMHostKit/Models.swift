@@ -123,7 +123,7 @@ public enum DockerGuestProvisioningState: String, Codable, Equatable, Sendable {
 
 public struct DockerSidecarSettings: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 1
-    public static let currentGuestProvisioningVersion = 9
+    public static let currentGuestProvisioningVersion = 11
     public static let defaultCPUCount = 2
     public static let defaultMemoryGiB = 4
     public static let defaultDiskGiB = 64

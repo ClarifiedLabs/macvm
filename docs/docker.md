@@ -104,6 +104,14 @@ file bind uses an isolated one-entry export rather than exposing the file's
 parent directory. Mounted paths under `/Volumes` are supported, and persisted
 mappings are restored after the guest helper or appliance reconnects.
 
+Unix stream socket bind sources use an SSH stream-local relay instead of
+SSHFS. The container receives a sidecar-local socket whose connections are
+forwarded to the original socket in the macOS guest. This supports common
+Docker, BuildKit, SSH-agent, database, and service sockets, including nested
+Docker clients that bind `/var/run/docker.sock`. Datagram and sequenced-packet
+sockets, file-descriptor passing, and peer-credential propagation are not
+supported across the VM boundary.
+
 This Docker-visible scoping is not containment against a compromised appliance
 root, which owns the restricted SSHFS credential.
 

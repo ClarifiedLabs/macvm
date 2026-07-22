@@ -37,7 +37,7 @@ struct DockerIgnitionBuilder {
                         "homeDir": "/var/lib/macvm-mount",
                         "shell": "/bin/bash",
                         "sshAuthorizedKeys": [
-                            "restrict,command=\"/usr/bin/sudo -n /usr/local/libexec/macvm-mount-broker\" \(mountBrokerAuthorizedKey)",
+                            "restrict,port-forwarding,command=\"/usr/bin/sudo -n /usr/local/libexec/macvm-mount-broker\" \(mountBrokerAuthorizedKey)",
                         ],
                     ],
                 ],
@@ -125,6 +125,16 @@ struct DockerIgnitionBuilder {
                 X11Forwarding no
                 PermitTunnel no
                 GatewayPorts no
+                Match User macvm-mount
+                    # OpenSSH initializes the shared remote-forward permission
+                    # table from AllowTcpForwarding. `no` also rejects remote
+                    # StreamLocal listeners even when they are enabled below.
+                    # GatewayPorts keeps any TCP listener on sidecar loopback.
+                    AllowTcpForwarding remote
+                    AllowStreamLocalForwarding remote
+                    StreamLocalBindMask 0000
+                    StreamLocalBindUnlink yes
+                Match all
                 """
             ),
             file(
@@ -384,6 +394,24 @@ struct DockerIgnitionBuilder {
             target="/run/macvm-macos/$filesystem_id"
             /usr/bin/mountpoint -q "$target" && /usr/bin/umount --lazy "$target" || true
             /usr/bin/rmdir "$target" 2>/dev/null || true
+            ;;
+          prepare-socket|wait-socket|remove-socket)
+            [[ "$filesystem_id" =~ ^socket-[A-Za-z0-9._-]{1,57}$ ]] || exit 64
+            target="/run/macvm-macos/$filesystem_id"
+            socket="$target/source"
+            if [[ "$action" == "prepare-socket" ]]; then
+              /usr/bin/install -d -o macvm-mount -g macvm-mount -m 0700 "$target"
+              /usr/bin/rm -f "$socket"
+            elif [[ "$action" == "wait-socket" ]]; then
+              for _ in {1..100}; do
+                [[ -S "$socket" ]] && exit 0
+                /usr/bin/sleep 0.1
+              done
+              exit 75
+            else
+              /usr/bin/rm -f "$socket"
+              /usr/bin/rmdir "$target" 2>/dev/null || true
+            fi
             ;;
           reset-ports|publish-port|unpublish-port)
             interface="$(nmcli -g GENERAL.DEVICES connection show macvm-private)"

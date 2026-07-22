@@ -46,7 +46,7 @@ public struct FedoraCoreOSCachedImage: Equatable, Sendable {
 
 struct DockerSidecarMetadata: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
-    static let currentIgnitionVersion = 1
+    static let currentIgnitionVersion = 3
 
     var schemaVersion: Int
     var createdAt: Date
@@ -73,6 +73,11 @@ struct DockerSidecarMetadata: Codable, Equatable, Sendable {
         self.genericMachineIdentifierDigest = genericMachineIdentifierDigest
         self.dataDiskBlockIdentifier = dataDiskBlockIdentifier
         self.replacementCandidateID = replacementCandidateID
+    }
+
+    func requiresUpdate(to image: FedoraCoreOSImage) -> Bool {
+        self.image.uncompressedSHA256 != image.uncompressedSHA256
+            || ignitionVersion != Self.currentIgnitionVersion
     }
 }
 

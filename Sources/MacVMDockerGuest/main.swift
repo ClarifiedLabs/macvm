@@ -256,20 +256,29 @@ private func main() throws {
     try supervisor.start()
     defer { supervisor.stop() }
 
+    let brokerKeyURL = URL(fileURLWithPath: configuration.mountBrokerKeyPath)
+    let brokerKnownHostsURL = stateDirectory.appendingPathComponent("mount_broker_known_hosts")
+    let socketRelaySupervisor = SocketRelaySupervisor(
+        privateLinuxAddress: configuration.privateLinuxAddress,
+        brokerKeyURL: brokerKeyURL,
+        brokerKnownHostsURL: brokerKnownHostsURL
+    )
+    defer { socketRelaySupervisor.stop() }
     let mapper = GuestFilesystemMapper(
         stateURL: stateDirectory.appendingPathComponent("mounts.json"),
         privateLinuxAddress: configuration.privateLinuxAddress,
         setupUsername: configuration.setupUsername,
-        brokerKeyURL: URL(fileURLWithPath: configuration.mountBrokerKeyPath),
-        brokerKnownHostsURL: stateDirectory.appendingPathComponent("mount_broker_known_hosts")
+        brokerKeyURL: brokerKeyURL,
+        brokerKnownHostsURL: brokerKnownHostsURL,
+        socketRelaySupervisor: socketRelaySupervisor
     )
     mapper.reconcileSidecarMounts()
     let proxy = DockerAPIProxy(mapper: mapper, socketGroupName: configuration.socketGroupName)
     let portReconciler = PublishedPortReconciler(
         dockerSocketPath: "/var/run/macvm-docker-forward.sock",
         linuxAddress: configuration.privateLinuxAddress,
-        brokerKeyURL: URL(fileURLWithPath: configuration.mountBrokerKeyPath),
-        brokerKnownHostsURL: stateDirectory.appendingPathComponent("mount_broker_known_hosts")
+        brokerKeyURL: brokerKeyURL,
+        brokerKnownHostsURL: brokerKnownHostsURL
     )
     portReconciler.start()
     defer { portReconciler.stop() }

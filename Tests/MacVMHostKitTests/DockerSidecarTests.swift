@@ -616,6 +616,22 @@ func dockerSidecarUpdatePreservesDataAndIdentity() async throws {
 }
 
 @Test
+func dockerSidecarRequiresUpdateForIgnitionOnlyChanges() {
+    let stale = DockerSidecarMetadata(
+        image: dockerTestImage,
+        ignitionVersion: DockerSidecarMetadata.currentIgnitionVersion - 1,
+        genericMachineIdentifierDigest: "digest"
+    )
+    let current = DockerSidecarMetadata(
+        image: dockerTestImage,
+        genericMachineIdentifierDigest: "digest"
+    )
+
+    #expect(stale.requiresUpdate(to: dockerTestImage))
+    #expect(!current.requiresUpdate(to: dockerTestImage))
+}
+
+@Test
 func ignitionPinsPrivateNetworkingRestrictedSSHDataDiskAndRosetta() throws {
     var settings = dockerTestSettings()
     settings.guestProvisioningState = .pending
@@ -650,6 +666,9 @@ func ignitionPinsPrivateNetworkingRestrictedSSHDataDiskAndRosetta() throws {
     let dockerUser = try #require(users.first(where: { $0["name"] as? String == "macvm-docker" }))
     #expect(dockerUser["homeDir"] as? String == "/var/lib/macvm-docker")
     #expect(dockerUser["noCreateHome"] as? Bool == false)
+    let mountUser = try #require(users.first(where: { $0["name"] as? String == "macvm-mount" }))
+    let mountKeys = try #require(mountUser["sshAuthorizedKeys"] as? [String])
+    #expect(mountKeys.contains(where: { $0.contains("restrict,port-forwarding,command=") }))
     #expect(rendered.contains("192.168.127.2/30"))
     #expect(rendered.contains("127.0.0.1:2375"))
     #expect(!rendered.contains("0.0.0.0:2375"))
@@ -680,6 +699,12 @@ func ignitionPinsPrivateNetworkingRestrictedSSHDataDiskAndRosetta() throws {
     #expect(rendered.contains("/var/lib/docker/engine-id"))
     #expect(rendered.contains("mount-sshfs|mount-sshfs-file"))
     #expect(rendered.contains("follow=(-o follow_symlinks)"))
+    #expect(rendered.contains("AllowTcpForwarding remote"))
+    #expect(rendered.contains("AllowStreamLocalForwarding remote"))
+    #expect(rendered.contains("StreamLocalBindUnlink yes"))
+    #expect(rendered.contains("prepare-socket|wait-socket|remove-socket"))
+    #expect(rendered.contains("install -d -o macvm-mount -g macvm-mount -m 0700"))
+    #expect(rendered.contains(#"[[ -S "$socket" ]]"#))
     #expect(!rendered.contains("mount-nfs"))
     #expect(!rendered.contains("nfs-utils"))
     #expect(rendered.contains("sshfs \"$remote_user@127.0.0.1:$remote_path\" \"$target\" -p 2222"))

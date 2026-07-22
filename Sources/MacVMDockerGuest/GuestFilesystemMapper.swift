@@ -5,6 +5,7 @@ import Foundation
 struct GuestFilesystemMapping: Codable, Equatable {
     enum Transport: String, Codable {
         case sshfs
+        case streamSocket
     }
 
     var filesystemID: String
@@ -38,6 +39,7 @@ final class GuestFilesystemMapper: @unchecked Sendable {
     private let setupUsername: String
     private let brokerKeyURL: URL
     private let brokerKnownHostsURL: URL
+    private let socketRelaySupervisor: SocketRelaySupervisor
     private let lock = NSLock()
     private let mountOperationLock = NSLock()
     private var mappings: [GuestFilesystemMapping]
@@ -48,30 +50,53 @@ final class GuestFilesystemMapper: @unchecked Sendable {
         privateLinuxAddress: String,
         setupUsername: String,
         brokerKeyURL: URL,
-        brokerKnownHostsURL: URL
+        brokerKnownHostsURL: URL,
+        socketRelaySupervisor: SocketRelaySupervisor
     ) {
         self.stateURL = stateURL
         self.privateLinuxAddress = privateLinuxAddress
         self.setupUsername = setupUsername
         self.brokerKeyURL = brokerKeyURL
         self.brokerKnownHostsURL = brokerKnownHostsURL
+        self.socketRelaySupervisor = socketRelaySupervisor
         // Filesystem-wide mappings from early builds are deliberately discarded:
         // every current mapping is scoped to one requested bind source subtree.
-        self.mappings = ((try? Self.readMappings(from: stateURL)) ?? [])
-            .filter { $0.filesystemID.hasPrefix("path-") }
+        let persistedMappings = ((try? Self.readMappings(from: stateURL)) ?? [])
+            .filter { $0.filesystemID.hasPrefix("path-") || $0.filesystemID.hasPrefix("socket-") }
+            .filter { mapping in
+                guard mapping.transport == .sshfs,
+                      (try? DockerGuestFileUtilities.bindSourceKind(at: mapping.macOSMountRoot)) == .streamSocket else {
+                    return true
+                }
+                // Socket paths incorrectly persisted as SSHFS exact-file
+                // mappings by earlier builds cannot transport socket traffic.
+                return false
+            }
+        var restoredSocketPaths: Set<String> = []
+        self.mappings = persistedMappings.filter { mapping in
+            guard mapping.transport == .streamSocket else { return true }
+            // A filesystem ID can change across guest boots when it includes a
+            // volatile statfs identifier. Restore only one relay per source.
+            return restoredSocketPaths.insert(mapping.macOSMountRoot).inserted
+        }
     }
 
     func mapMacOSPath(_ source: String) throws -> String {
         guard source.hasPrefix("/") else { return source }
         let resolved = try Self.resolvedExistingPath(source)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory) else {
-            throw GuestHelperError("Docker bind source does not exist in the macOS guest: \(source)")
+        let sourceKind = try DockerGuestFileUtilities.bindSourceKind(at: resolved)
+        if sourceKind == .streamSocket {
+            return try mapStreamSocket(resolved)
+        }
+        guard sourceKind == .directory || sourceKind == .regularFile else {
+            throw GuestHelperError(
+                "Docker bind source at \(source) is a special file that MacVM cannot transport. Only directories, regular files, and Unix stream sockets are supported."
+            )
         }
         let filesystemID = try Self.mappingID(for: resolved)
         let exportPlan = DockerGuestFileUtilities.filesystemExportPlan(
             sourcePath: resolved,
-            isDirectory: isDirectory.boolValue,
+            isDirectory: sourceKind == .directory,
             stateDirectoryPath: stateURL.deletingLastPathComponent().path,
             filesystemID: filesystemID
         )
@@ -81,7 +106,7 @@ final class GuestFilesystemMapper: @unchecked Sendable {
             if let existing = lock.withLock({
                 mappings
                     .filter { mapping in
-                        if isDirectory.boolValue {
+                        if sourceKind == .directory {
                             return Self.isPath(resolved, under: mapping.macOSMountRoot)
                         }
                         // Never satisfy an exact-file request through a broader
@@ -131,6 +156,50 @@ final class GuestFilesystemMapper: @unchecked Sendable {
         )
     }
 
+    private func mapStreamSocket(_ resolved: String) throws -> String {
+        return try mountOperationLock.withLock {
+            if let existing = lock.withLock({
+                mappings.first {
+                    $0.transport == .streamSocket
+                        && $0.macOSMountRoot == resolved
+                }
+            }) {
+                _ = try socketRelaySupervisor.ensureRelay(
+                    filesystemID: existing.filesystemID,
+                    macOSSocketPath: resolved
+                )
+                return existing.effectiveLinuxSourceRoot
+            }
+
+            let filesystemID = DockerGuestFileUtilities.socketFilesystemID(
+                forCanonicalPath: resolved
+            )
+            let linuxPath = try socketRelaySupervisor.ensureRelay(
+                filesystemID: filesystemID,
+                macOSSocketPath: resolved
+            )
+            let mapping = GuestFilesystemMapping(
+                filesystemID: filesystemID,
+                macOSMountRoot: resolved,
+                linuxMountRoot: "\(DockerGuestFileUtilities.socketRelayDirectory)/\(filesystemID)",
+                transport: .streamSocket,
+                remoteExportRoot: nil,
+                linuxRelativePath: DockerGuestFileUtilities.fileExportName,
+                followsRemoteSymlinks: nil
+            )
+            do {
+                try lock.withLock {
+                    mappings.append(mapping)
+                    try persistMappings()
+                }
+            } catch {
+                socketRelaySupervisor.removeRelay(filesystemID: filesystemID)
+                throw error
+            }
+            return linuxPath
+        }
+    }
+
     func reconcileSidecarMounts() {
         mountOperationLock.withLock {
             remountedFilesystemIDs.removeAll()
@@ -154,7 +223,7 @@ final class GuestFilesystemMapper: @unchecked Sendable {
                     }
                 } catch {
                     FileHandle.standardError.write(Data(
-                        "macvm-docker-guest: unable to restore \(mapping.macOSMountRoot) after sidecar reconnect: \(error.localizedDescription)\n".utf8
+                        "macvm-docker-guest: unable to restore Docker bind for \(mapping.macOSMountRoot) after sidecar reconnect: \(error.localizedDescription)\n".utf8
                     ))
                 }
             }
@@ -178,9 +247,15 @@ final class GuestFilesystemMapper: @unchecked Sendable {
     private func pruneMissingMappings() throws -> [GuestFilesystemMapping] {
         let result = try lock.withLock { () throws -> (retained: [GuestFilesystemMapping], removed: [GuestFilesystemMapping]) in
             let retained = mappings.filter {
+                if $0.transport == .streamSocket {
+                    // Socket-producing daemons commonly replace their socket
+                    // path during restart. Keep the listener so new connections
+                    // recover automatically when the source returns.
+                    return true
+                }
                 // Foundation can return a stale `true` for deleted descendants
                 // of a VirtioFS mount. POSIX metadata reflects the live source.
-                DockerGuestFileUtilities.pathExists($0.macOSMountRoot)
+                return DockerGuestFileUtilities.pathExists($0.macOSMountRoot)
             }
             guard retained.count != mappings.count else { return (mappings, []) }
             let previous = mappings
@@ -196,7 +271,9 @@ final class GuestFilesystemMapper: @unchecked Sendable {
             return (retained, removed)
         }
         for mapping in result.removed {
-            if mapping.remoteExportRoot != nil {
+            if mapping.transport == .streamSocket {
+                socketRelaySupervisor.removeRelay(filesystemID: mapping.filesystemID)
+            } else if mapping.remoteExportRoot != nil {
                 try? FileManager.default.removeItem(atPath: mapping.effectiveRemoteExportRoot)
             }
             FileHandle.standardError.write(Data(
@@ -207,6 +284,13 @@ final class GuestFilesystemMapper: @unchecked Sendable {
     }
 
     private func ensureSidecarMount(_ mapping: GuestFilesystemMapping) throws -> GuestFilesystemMapping {
+        if mapping.transport == .streamSocket {
+            _ = try socketRelaySupervisor.ensureRelay(
+                filesystemID: mapping.filesystemID,
+                macOSSocketPath: mapping.macOSMountRoot
+            )
+            return mapping
+        }
         try restorePersistedExportIfNeeded(mapping)
         guard !remountedFilesystemIDs.contains(mapping.filesystemID) else { return mapping }
         try? requestSidecarMount("unmount \(mapping.filesystemID)")
@@ -303,7 +387,7 @@ final class GuestFilesystemMapper: @unchecked Sendable {
         return String(cString: resolved)
     }
 
-    private static func mappingID(for exportRoot: String) throws -> String {
+    private static func mappingID(for exportRoot: String, prefix: String = "path") throws -> String {
         var value = statfs()
         guard statfs(exportRoot, &value) == 0 else {
             throw GuestHelperError(
@@ -315,7 +399,7 @@ final class GuestFilesystemMapper: @unchecked Sendable {
             .prefix(12)
             .map { String(format: "%02x", $0) }
             .joined()
-        return "path-\(digest)"
+        return "\(prefix)-\(digest)"
     }
 
     private static func run(_ executable: String, _ arguments: [String]) throws {
