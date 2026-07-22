@@ -989,7 +989,7 @@
 				INFOPLIST_KEY_CFBundleShortVersionString = "$(MARKETING_VERSION)";
 				INFOPLIST_KEY_CFBundleVersion = "$(CURRENT_PROJECT_VERSION)";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "MacVM uses the local network to connect to virtual machines for setup, SSH, and management.";
-				MARKETING_VERSION = 0.0.16;
+				MARKETING_VERSION = 0.0.17;
 				OTHER_SWIFT_FLAGS = "$(inherited) -parse-as-library";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm.cli;
 				PRODUCT_MODULE_NAME = MacVMCLI;
@@ -1015,7 +1015,7 @@
 				INFOPLIST_KEY_CFBundleShortVersionString = "$(MARKETING_VERSION)";
 				INFOPLIST_KEY_CFBundleVersion = "$(CURRENT_PROJECT_VERSION)";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "MacVM uses the local network to connect to virtual machines for setup, SSH, and management.";
-				MARKETING_VERSION = 0.0.16;
+				MARKETING_VERSION = 0.0.17;
 				OTHER_SWIFT_FLAGS = "$(inherited) -parse-as-library";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.macvm.cli;
 				PRODUCT_MODULE_NAME = MacVMCLI;
@@ -1034,7 +1034,7 @@
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
 				INFOPLIST_FILE = "Support/MacVM-Info.plist";
 				MACVM_APP_BUNDLE_IDENTIFIER = dev.macvm.macvm;
-				MARKETING_VERSION = 0.0.16;
+				MARKETING_VERSION = 0.0.17;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MACVM_APP_BUNDLE_IDENTIFIER)";
 				PRODUCT_MODULE_NAME = MacVM;
 				PRODUCT_NAME = MacVM;
@@ -1053,7 +1053,7 @@
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Sources/MacVMPrivateVZ/include";
 				INFOPLIST_FILE = "Support/MacVM-Info.plist";
 				MACVM_APP_BUNDLE_IDENTIFIER = dev.macvm.macvm;
-				MARKETING_VERSION = 0.0.16;
+				MARKETING_VERSION = 0.0.17;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MACVM_APP_BUNDLE_IDENTIFIER)";
 				PRODUCT_MODULE_NAME = MacVM;
 				PRODUCT_NAME = MacVM;
