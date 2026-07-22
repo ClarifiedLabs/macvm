@@ -52,6 +52,42 @@ func dockerCreateRewriterMapsOnlyBindSchemaFields() throws {
 }
 
 @Test
+func dockerCreateRewriterPreservesKindKernelModulesBind() throws {
+    let body = Data("""
+    {"HostConfig":{
+      "Binds":[
+        "/lib/modules:/lib/modules:ro",
+        "/Users/admin/nb/monorepo:/workspace"
+      ],
+      "Mounts":[
+        {"Type":"bind","Source":"/lib/modules","Target":"/host-modules"}
+      ]
+    }}
+    """.utf8)
+    var mapped: [String] = []
+
+    let rewritten = try DockerAPIPathRewriter.rewriteRequestBody(
+        body,
+        method: "POST",
+        uri: "/v1.51/containers/create"
+    ) { source in
+        mapped.append(source)
+        return "/run/macvm-macos/path-test" + source
+    }
+
+    let root = try dockerJSONObject(rewritten)
+    let hostConfig = try #require(root["HostConfig"] as? [String: Any])
+    let binds = try #require(hostConfig["Binds"] as? [String])
+    let mounts = try #require(hostConfig["Mounts"] as? [[String: Any]])
+    #expect(binds == [
+        "/lib/modules:/lib/modules:ro",
+        "/run/macvm-macos/path-test/Users/admin/nb/monorepo:/workspace",
+    ])
+    #expect(mounts[0]["Source"] as? String == "/lib/modules")
+    #expect(mapped == ["/Users/admin/nb/monorepo"])
+}
+
+@Test
 func dockerServiceAndLocalVolumeBindFieldsAreMapped() throws {
     let serviceBody = Data("""
     {"TaskTemplate":{"ContainerSpec":{"Mounts":[

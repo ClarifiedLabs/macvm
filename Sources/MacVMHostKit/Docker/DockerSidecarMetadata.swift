@@ -46,7 +46,7 @@ public struct FedoraCoreOSCachedImage: Equatable, Sendable {
 
 struct DockerSidecarMetadata: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
-    static let currentIgnitionVersion = 3
+    static let currentIgnitionVersion = 4
 
     var schemaVersion: Int
     var createdAt: Date

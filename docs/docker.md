@@ -99,10 +99,12 @@ docker run --rm --mount type=bind,src=/private/tmp,dst=/tmp alpine ls /tmp
 ```
 
 Supported bind fields are mapped to narrowly scoped mounts under
-`/run/macvm-macos`. A directory bind exposes the requested subtree. An exact
-file bind uses an isolated one-entry export rather than exposing the file's
-parent directory. Mounted paths under `/Volumes` are supported, and persisted
-mappings are restored after the guest helper or appliance reconnects.
+`/run/macvm-macos`. The sidecar-native `/lib/modules` bind used by kind is
+passed through to Fedora CoreOS instead. A directory bind exposes the requested
+subtree. An exact file bind uses an isolated one-entry export rather than
+exposing the file's parent directory. Mounted paths under `/Volumes` are
+supported, and persisted mappings are restored after the guest helper or
+appliance reconnects.
 
 Unix stream socket bind sources use an SSH stream-local relay instead of
 SSHFS. The container receives a sidecar-local socket whose connections are
@@ -150,9 +152,11 @@ setup account.
 The helper reaches Moby through a per-VM SSH local forward; Docker TCP is not
 exposed on either VM network interface. The two VMs share a retained datagram
 socket pair as a private Ethernet segment, and the Linux appliance has a
-separate NAT interface for image pulls. Bind mounts use SSHFS over an isolated
-reverse SSH tunnel. A schema-aware Docker API proxy transforms supported bind
-fields rather than replacing arbitrary strings in JSON.
+separate NAT interface for image pulls. Both Moby's data root and containerd's
+image and snapshot storage live on the configured Docker data disk. Bind mounts
+use SSHFS over an isolated reverse SSH tunnel. A schema-aware Docker API proxy
+transforms supported bind fields rather than replacing arbitrary strings in
+JSON.
 
 Automatic Fedora CoreOS reboots are disabled so mounts cannot disappear under
 restart-policy containers. The helper restores persisted mounts and

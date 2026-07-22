@@ -148,6 +148,31 @@ struct DockerIgnitionBuilder {
                 """
             ),
             file(
+                path: "/etc/containerd/config.toml",
+                mode: 420,
+                contents: """
+                version = 2
+                root = "/var/lib/docker/containerd"
+
+                [plugins]
+                  [plugins."io.containerd.grpc.v1.cri"]
+                    [plugins."io.containerd.grpc.v1.cri".cni]
+                      bin_dir = "/usr/libexec/cni/"
+                      conf_dir = "/etc/cni/net.d"
+                  [plugins."io.containerd.internal.v1.opt"]
+                    path = "/var/lib/docker/containerd/opt"
+                """
+            ),
+            file(
+                path: "/etc/systemd/system/containerd.service.d/10-macvm-data.conf",
+                mode: 420,
+                contents: """
+                [Unit]
+                Requires=var-lib-docker.mount
+                After=var-lib-docker.mount
+                """
+            ),
+            file(
                 path: "/etc/systemd/system/docker.service.d/10-macvm.conf",
                 mode: 420,
                 contents: """

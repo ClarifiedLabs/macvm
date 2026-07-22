@@ -3,6 +3,11 @@ import Foundation
 public struct DockerAPIPathRewriter {
     public typealias PathTransform = (String) throws -> String
 
+    /// kind needs the Docker host's kernel modules while bootstrapping its
+    /// privileged node container. This source belongs to the Linux sidecar,
+    /// not to the macOS guest that supplies ordinary bind mounts.
+    private static let sidecarNativeBindSources: Set<String> = ["/lib/modules"]
+
     public static func rewritesRequest(method: String, uri: String) -> Bool {
         let path = normalizedAPIPath(uri)
         if method == "POST", path == "/containers/create" { return true }
@@ -146,7 +151,7 @@ public struct DockerAPIPathRewriter {
               let mountOptions = options["o"] as? String,
               mountOptions.split(separator: ",").contains(where: { $0 == "bind" || $0 == "rbind" }),
               let source = options["device"] as? String,
-              source.hasPrefix("/") else { return }
+              shouldTransformBindSource(source) else { return }
         options["device"] = try transform(source)
         dictionary["DriverOpts"] = options
         root = dictionary
@@ -174,7 +179,7 @@ public struct DockerAPIPathRewriter {
             return try binds.map { bind in
                 guard let delimiter = bind.range(of: ":/") else { return bind }
                 let source = String(bind[..<delimiter.lowerBound])
-                guard source.hasPrefix("/") else { return bind }
+                guard shouldTransformBindSource(source) else { return bind }
                 let suffix = bind[delimiter.lowerBound...]
                 return try transform(source) + suffix
             }
@@ -191,7 +196,9 @@ public struct DockerAPIPathRewriter {
             return try mounts.map { mount in
                 var mount = mount
                 let type = (mount["Type"] as? String)?.lowercased() ?? "bind"
-                if type == "bind", let source = mount["Source"] as? String, source.hasPrefix("/") {
+                if type == "bind",
+                   let source = mount["Source"] as? String,
+                   shouldTransformBindSource(source) {
                     mount["Source"] = try transform(source)
                 }
                 if type == "volume",
@@ -200,7 +207,7 @@ public struct DockerAPIPathRewriter {
                    var options = driverConfig["Options"] as? [String: Any],
                    Self.isLocalBindOptions(options),
                    let source = options["device"] as? String,
-                   source.hasPrefix("/") {
+                   shouldTransformBindSource(source) {
                     options["device"] = try transform(source)
                     driverConfig["Options"] = options
                     volumeOptions["DriverConfig"] = driverConfig
@@ -215,6 +222,10 @@ public struct DockerAPIPathRewriter {
         guard (options["type"] as? String) == "none",
               let mountOptions = options["o"] as? String else { return false }
         return mountOptions.split(separator: ",").contains { $0 == "bind" || $0 == "rbind" }
+    }
+
+    private static func shouldTransformBindSource(_ source: String) -> Bool {
+        source.hasPrefix("/") && !sidecarNativeBindSources.contains(source)
     }
 
     private static func mutateValue(
