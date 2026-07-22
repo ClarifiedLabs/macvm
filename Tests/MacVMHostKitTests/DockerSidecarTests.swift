@@ -123,6 +123,25 @@ private func dockerTestSettings(enabled: Bool = true) -> DockerSidecarSettings {
     )
 }
 
+private func decodedIgnitionSource(_ source: String) -> String? {
+    guard let encoded = source.split(separator: ",", maxSplits: 1).last,
+          let decoded = Data(base64Encoded: String(encoded)) else { return nil }
+    return String(decoding: decoded, as: UTF8.self)
+}
+
+private func decodedIgnitionFile(_ file: [String: Any]) -> String {
+    var sources: [String] = []
+    if let source = (file["contents"] as? [String: String])?["source"] {
+        sources.append(source)
+    }
+    for append in file["append"] as? [[String: String]] ?? [] {
+        if let source = append["source"] {
+            sources.append(source)
+        }
+    }
+    return sources.compactMap(decodedIgnitionSource).joined()
+}
+
 @Test
 func dockerGuestToolsUseHomebrewFormulae() {
     #expect(DockerGuestToolInstaller.packageInstallScript.contains(
@@ -649,11 +668,7 @@ func ignitionPinsPrivateNetworkingRestrictedSSHDataDiskAndRosetta() throws {
     let directories = try #require(storage?["directories"] as? [[String: Any]])
     #expect(!directories.contains(where: { ($0["path"] as? String)?.hasPrefix("/run/") == true }))
     for file in storage?["files"] as? [[String: Any]] ?? [] {
-        guard let contents = file["contents"] as? [String: String],
-              let source = contents["source"],
-              let encoded = source.split(separator: ",", maxSplits: 1).last,
-              let decoded = Data(base64Encoded: String(encoded)) else { continue }
-        rendered += "\n" + String(decoding: decoded, as: UTF8.self)
+        rendered += "\n" + decodedIgnitionFile(file)
     }
     let systemd = document["systemd"] as? [String: Any]
     for unit in systemd?["units"] as? [[String: Any]] ?? [] {
@@ -723,6 +738,50 @@ func ignitionPinsPrivateNetworkingRestrictedSSHDataDiskAndRosetta() throws {
     #expect((dockerMount["contents"] as? String)?.contains("Where=/var/lib/docker") == true)
     let zincati = try #require(units.first(where: { $0["name"] as? String == "zincati.service" }))
     #expect(zincati["mask"] as? Bool == true)
+}
+
+@Test
+func ignitionConfiguresHostDockerInternalWithPairNetworkAddresses() throws {
+    var settings = dockerTestSettings()
+    settings.macOSAddress = "10.77.0.1/30"
+    settings.linuxAddress = "10.77.0.2/30"
+    let data = try DockerIgnitionBuilder(
+        settings: settings,
+        dockerAuthorizedKey: "ssh-ed25519 AAAA docker",
+        mountBrokerAuthorizedKey: "ssh-ed25519 AAAA mount",
+        linuxHostPrivateKey: "PRIVATE HOST KEY",
+        linuxHostPublicKey: "ssh-ed25519 AAAA host",
+        genericMachineIdentifierDigest: "digest"
+    ).makeData()
+    let document = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let storage = try #require(document["storage"] as? [String: Any])
+    let files = try #require(storage["files"] as? [[String: Any]])
+
+    let hosts = try #require(files.first(where: { $0["path"] as? String == "/etc/hosts" }))
+    #expect(hosts["contents"] == nil)
+    #expect(hosts["overwrite"] == nil)
+    let appendedHosts = try #require(hosts["append"] as? [[String: String]])
+    #expect(appendedHosts.count == 1)
+    #expect(decodedIgnitionFile(hosts) == "\n10.77.0.1 host.docker.internal\n")
+
+    let resolved = try #require(files.first(where: {
+        $0["path"] as? String == "/etc/systemd/resolved.conf.d/60-macvm-docker.conf"
+    }))
+    let resolvedConfiguration = decodedIgnitionFile(resolved)
+    #expect(resolvedConfiguration.contains("ReadEtcHosts=yes"))
+    #expect(resolvedConfiguration.contains("DNSStubListenerExtra=10.77.0.2"))
+    #expect(!resolvedConfiguration.contains("DNSStubListenerExtra=0.0.0.0"))
+
+    let daemon = try #require(files.first(where: { $0["path"] as? String == "/etc/docker/daemon.json" }))
+    let daemonConfiguration = try #require(
+        try JSONSerialization.jsonObject(with: Data(decodedIgnitionFile(daemon).utf8)) as? [String: Any]
+    )
+    #expect(daemonConfiguration["data-root"] as? String == "/var/lib/docker")
+    #expect(daemonConfiguration["dns"] as? [String] == ["10.77.0.2"])
+    #expect(daemonConfiguration["hosts"] as? [String] == [
+        "unix:///run/docker.sock",
+        "tcp://127.0.0.1:2375",
+    ])
 }
 
 @Test

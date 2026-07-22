@@ -112,6 +112,20 @@ struct DockerIgnitionBuilder {
                 method=auto
                 """
             ),
+            appendingFile(
+                path: "/etc/hosts",
+                mode: 420,
+                contents: "\n\(macOSAddress) host.docker.internal\n"
+            ),
+            file(
+                path: "/etc/systemd/resolved.conf.d/60-macvm-docker.conf",
+                mode: 420,
+                contents: """
+                [Resolve]
+                ReadEtcHosts=yes
+                DNSStubListenerExtra=\(linuxAddress)
+                """
+            ),
             file(
                 path: "/etc/ssh/sshd_config.d/40-macvm-docker.conf",
                 mode: 420,
@@ -143,6 +157,7 @@ struct DockerIgnitionBuilder {
                 contents: """
                 {
                   "data-root": "/var/lib/docker",
+                  "dns": ["\(linuxAddress)"],
                   "hosts": ["unix:///run/docker.sock", "tcp://127.0.0.1:2375"]
                 }
                 """
@@ -519,8 +534,20 @@ struct DockerIgnitionBuilder {
             "path": path,
             "mode": mode,
             "overwrite": true,
-            "contents": ["source": "data:text/plain;charset=utf-8;base64,\(Data(contents.utf8).base64EncodedString())"],
+            "contents": ["source": dataURL(contents)],
         ]
+    }
+
+    private func appendingFile(path: String, mode: Int, contents: String) -> [String: Any] {
+        [
+            "path": path,
+            "mode": mode,
+            "append": [["source": dataURL(contents)]],
+        ]
+    }
+
+    private func dataURL(_ contents: String) -> String {
+        "data:text/plain;charset=utf-8;base64,\(Data(contents.utf8).base64EncodedString())"
     }
 
     private func unit(

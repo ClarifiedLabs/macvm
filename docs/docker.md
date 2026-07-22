@@ -122,6 +122,30 @@ the running container lifecycle. IPv6-only publications and ambiguous
 same-port/multiple-address publications are rejected instead of being exposed
 incorrectly.
 
+## Access the macOS Guest from Containers
+
+Containers can use `host.docker.internal` to reach the owning macOS guest over
+its private connection to the Docker sidecar. The name works on Docker's default
+and user-defined networks, including from kind workloads through cluster DNS.
+It refers to the macOS VM that owns the sidecar, not to the physical Mac host.
+
+The macOS service must listen on all IPv4 interfaces or on the private Docker
+interface. A service bound only to `127.0.0.1` is not reachable through
+`host.docker.internal`. An explicit per-container DNS override can also bypass
+MacVM's resolver.
+
+After upgrading MacVM, apply this configuration to an existing sidecar while
+the VM is stopped, then start the VM normally:
+
+```bash
+macvm docker update docker-dev
+macvm run docker-dev
+```
+
+The update preserves Docker images, containers, volumes, and networks. Recreate
+a long-lived default-bridge container if it retains an upstream-only
+`/etc/resolv.conf` from before the update.
+
 ## Data Lifecycle and Cloning
 
 Cloning a Docker-enabled VM copies its complete appliance, including Fedora
