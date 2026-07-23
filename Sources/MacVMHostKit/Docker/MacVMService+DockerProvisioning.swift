@@ -50,9 +50,9 @@ extension MacVMService {
             )
         )
         settings.guestProvisioningState = .provisioning
-        var provisioningMetadata = currentVM.metadata
-        provisioningMetadata.dockerSidecar = settings
-        try bundle.writeMetadata(provisioningMetadata)
+        _ = try bundle.updateMetadata { metadata in
+            metadata.dockerSidecar = settings
+        }
 
         do {
             try Task.checkCancellation()
@@ -202,16 +202,16 @@ extension MacVMService {
                   [.pendingGuestProvisioning, .ready].contains(descriptor.state) else {
                 throw MacVMError.message("The Docker sidecar became unavailable while guest integration was being installed.")
             }
-            var metadata = try bundle.readMetadata()
-            guard var currentSettings = metadata.dockerSidecar,
-                  currentSettings.enabled,
-                  sameDockerSidecarIdentity(currentSettings, settings) else {
-                throw MacVMError.message("Docker settings changed while guest integration was being installed.")
+            let metadata = try bundle.updateMetadata { metadata in
+                guard var currentSettings = metadata.dockerSidecar,
+                      currentSettings.enabled,
+                      sameDockerSidecarIdentity(currentSettings, settings) else {
+                    throw MacVMError.message("Docker settings changed while guest integration was being installed.")
+                }
+                currentSettings.guestProvisioningState = .ready
+                currentSettings.guestProvisioningVersion = DockerSidecarSettings.currentGuestProvisioningVersion
+                metadata.dockerSidecar = currentSettings
             }
-            currentSettings.guestProvisioningState = .ready
-            currentSettings.guestProvisioningVersion = DockerSidecarSettings.currentGuestProvisioningVersion
-            metadata.dockerSidecar = currentSettings
-            try bundle.writeMetadata(metadata)
             try? FileManager.default.removeItem(at: sidecar.pendingDockerPrivateKeyURL)
             try? FileManager.default.removeItem(at: sidecar.pendingDockerPublicKeyURL)
             try? FileManager.default.removeItem(at: sidecar.pendingMountBrokerPrivateKeyURL)
@@ -220,12 +220,11 @@ extension MacVMService {
             return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
         } catch {
             let cancelled = error is CancellationError
-            if var metadata = try? bundle.readMetadata(),
-               var currentSettings = metadata.dockerSidecar,
-               sameDockerSidecarIdentity(currentSettings, settings) {
+            _ = try? bundle.updateMetadata { metadata in
+                guard var currentSettings = metadata.dockerSidecar,
+                      sameDockerSidecarIdentity(currentSettings, settings) else { return }
                 currentSettings.guestProvisioningState = cancelled ? .pending : .failed
                 metadata.dockerSidecar = currentSettings
-                try? bundle.writeMetadata(metadata)
             }
             throw error
         }

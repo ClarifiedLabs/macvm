@@ -96,3 +96,75 @@ func appControlQueueKeepsConcurrentRequestsDistinct() throws {
 
     #expect(try queue.pendingRequests().map(\.id) == [first.id, second.id])
 }
+
+@Test
+func appControlQueueClaimsARequestExactlyOnceAcrossConsumers() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("macvm-control-claim-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let queue = MacVMAppControlQueue(directoryURL: rootURL)
+    let request = MacVMAppControlRequest(
+        operation: .attach,
+        bundleURL: URL(fileURLWithPath: "/tmp/atomic-claim.macvm")
+    )
+    try queue.submit(request)
+
+    let claims = try await withThrowingTaskGroup(of: Bool.self, returning: [Bool].self) { group in
+        for _ in 0..<16 {
+            group.addTask { try queue.claim(request) }
+        }
+        var values: [Bool] = []
+        for try await value in group {
+            values.append(value)
+        }
+        return values
+    }
+
+    #expect(claims.filter { $0 }.count == 1)
+    #expect(try queue.pendingRequests().isEmpty)
+    #expect(try queue.interruptedRequests().map(\.id) == [request.id])
+    #expect(queue.isClaimed(request.id))
+}
+
+@Test
+func appControlQueueAllowsOnlyOneLiveConsumerAndReleasesAfterExit() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("macvm-control-lease-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let queue = MacVMAppControlQueue(directoryURL: rootURL)
+    var first = try queue.acquireConsumerLease()
+    #expect(first != nil)
+    #expect(try queue.acquireConsumerLease() == nil)
+
+    let attributes = try FileManager.default.attributesOfItem(
+        atPath: rootURL.appendingPathComponent("consumer.lock").path
+    )
+    #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+
+    first = nil
+    #expect(try queue.acquireConsumerLease() != nil)
+}
+
+@Test
+func appControlQueueTreatsAnExistingProcessingFileAsALostClaim() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("macvm-control-existing-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let queue = MacVMAppControlQueue(directoryURL: rootURL)
+    let request = MacVMAppControlRequest(
+        operation: .stop,
+        bundleURL: URL(fileURLWithPath: "/tmp/existing-claim.macvm")
+    )
+    try queue.submit(request)
+    #expect(try queue.claim(request))
+
+    // Model a duplicate submission with the same request ID while recovery owns
+    // the processing file. The second consumer must not replace that claim.
+    try queue.submit(request)
+    #expect(try !queue.claim(request))
+    #expect(try queue.pendingRequests().map(\.id) == [request.id])
+    #expect(try queue.interruptedRequests().map(\.id) == [request.id])
+}

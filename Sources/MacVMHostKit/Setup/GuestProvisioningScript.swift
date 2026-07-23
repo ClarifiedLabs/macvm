@@ -14,6 +14,8 @@ struct GuestProvisioningInputs {
     var passwordFilePath: String
     /// Path in the shared folder used to report running/done/failed status to the host.
     var statusFilePath: String
+    /// Path in the shared folder used to authenticate the guest's SSH host keys.
+    var sshHostKeysFilePath: String
 }
 
 /// Builds the shell script that runs inside the guest to make it Ansible-ready.
@@ -57,6 +59,7 @@ enum GuestProvisioningScript {
 
         PW_FILE=\(shellQuote(inputs.passwordFilePath))
         STATUS_FILE=\(shellQuote(inputs.statusFilePath))
+        SSH_HOST_KEYS_FILE=\(shellQuote(inputs.sshHostKeysFilePath))
         printf 'running\\n' > "$STATUS_FILE"
         trap 'status=$?; if (( status != 0 )); then printf "failed:%s\\n" "$status" > "$STATUS_FILE"; fi' EXIT
 
@@ -70,6 +73,14 @@ enum GuestProvisioningScript {
         \(authorizedKeys)
         MACVM_KEYS
         chmod 600 "$HOME/.ssh/authorized_keys"
+
+        # Export the SSH host public keys through the Virtualization.framework shared
+        # directory before any network trust decision. The host pins these exact keys.
+        echo "$PW" | sudo -S sh -c 'cat /etc/ssh/ssh_host_*_key.pub' \
+          | awk 'NF >= 2 { print $1 " " $2 }' | sort -u > "$SSH_HOST_KEYS_FILE.tmp"
+        [[ -s "$SSH_HOST_KEYS_FILE.tmp" ]]
+        mv -f "$SSH_HOST_KEYS_FILE.tmp" "$SSH_HOST_KEYS_FILE"
+        chmod 600 "$SSH_HOST_KEYS_FILE"
 
         # Enable Remote Login (SSH) without needing Full Disk Access.
         echo "$PW" | sudo -S launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true

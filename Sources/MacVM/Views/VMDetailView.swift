@@ -29,6 +29,7 @@ struct VMDetailView: View {
                     SpecCardsView(vm: vm, status: status)
                     DockerSectionView(vm: vm, vmStatus: status)
                     AccessSectionView(vm: vm, status: status)
+                    ClipboardSectionView(vm: vm, vmStatus: status)
                     AutomationSectionView(vm: vm)
                     ProvisioningSectionView(vm: vm, status: status)
                     BundleSectionView(vm: vm)
@@ -269,6 +270,64 @@ struct DockerResourceFormValues: Equatable {
 
     mutating func synchronize(with settings: DockerSidecarSettings?) {
         self = DockerResourceFormValues(settings: settings)
+    }
+}
+
+struct ClipboardSectionView: View {
+    @Environment(AppStore.self) private var store
+    let vm: ManagedVM
+    let vmStatus: VMStatus
+
+    var body: some View {
+        let status = store.clipboardStatus(for: vm)
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(title: "Clipboard")
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Toggle(
+                            "Automatic Clipboard Sync",
+                            isOn: Binding(
+                                get: { status.enabled },
+                                set: { store.setAutomaticClipboardSync($0, for: vm) }
+                            )
+                        )
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        Spacer()
+                        Text(statusText(status))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Automatic Clipboard Sync status")
+                            .accessibilityValue(statusText(status))
+                    }
+                    Text(explanation(status))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(14)
+            }
+        }
+    }
+
+    private func statusText(_ status: ClipboardRuntimeStatus) -> String {
+        if !status.enabled {
+            return "Off · Helper \(status.helper.displayName.lowercased())"
+        }
+        if !status.viewerActive {
+            return "Inactive window · Helper \(status.helper.displayName.lowercased())"
+        }
+        return status.helper.displayName
+    }
+
+    private func explanation(_ status: ClipboardRuntimeStatus) -> String {
+        if vmStatus == .stopped {
+            return "Synchronization starts only after the VM boots and its native viewer becomes the key window."
+        }
+        if !status.viewerActive {
+            return "Synchronization is inactive until this VM's native viewer is the key window."
+        }
+        return "Plain UTF-8 text only, up to 1 MiB."
     }
 }
 

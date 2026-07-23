@@ -1,14 +1,32 @@
+import Darwin
 import Foundation
+
+public final class MacVMAppControlConsumerLease: @unchecked Sendable {
+    private let descriptor: Int32
+
+    fileprivate init(descriptor: Int32) {
+        self.descriptor = descriptor
+    }
+
+    deinit {
+        _ = flock(descriptor, LOCK_UN)
+        _ = Darwin.close(descriptor)
+    }
+}
 
 public enum MacVMAppControlOperation: Codable, Equatable, Sendable {
     case run(headless: Bool, recovery: Bool, vncPort: UInt)
     case attach
     case stop
+    case installClipboardHelper
 }
 
 public struct MacVMAppControlRequest: Codable, Equatable, Sendable {
-    public static let currentProtocolVersion = 1
+    public static let currentProtocolVersion = 2
+    /// Maximum time for MacVM.app to claim a newly submitted request.
     public static let validityInterval: TimeInterval = 90
+    /// App-enforced upper bound after pickup. Individual subprocesses have tighter limits.
+    public static let operationCompletionTimeout: TimeInterval = 15 * 60
 
     public var protocolVersion: Int
     public var id: UUID
@@ -80,6 +98,48 @@ public struct MacVMAppControlQueue: Sendable {
             .appendingPathComponent("Control", isDirectory: true)
     }
 
+    /// Acquire the exclusive live-app lease before inspecting claimed requests.
+    /// Advisory locking releases automatically when an app crashes, allowing the
+    /// next instance to recover `.processing` files without racing a live owner.
+    public func acquireConsumerLease() throws -> MacVMAppControlConsumerLease? {
+        try ensureDirectory()
+        let url = directoryURL.appendingPathComponent("consumer.lock", isDirectory: false)
+        let descriptor = Darwin.open(
+            url.path,
+            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else {
+            let code = errno
+            _ = Darwin.close(descriptor)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        guard status.st_mode & S_IFMT == S_IFREG,
+              status.st_uid == getuid(),
+              status.st_nlink == 1 else {
+            _ = Darwin.close(descriptor)
+            throw POSIXError(.EPERM)
+        }
+        guard fchmod(descriptor, S_IRUSR | S_IWUSR) == 0 else {
+            let code = errno
+            _ = Darwin.close(descriptor)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let code = errno
+            _ = Darwin.close(descriptor)
+            if code == EWOULDBLOCK || code == EAGAIN { return nil }
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        return MacVMAppControlConsumerLease(descriptor: descriptor)
+    }
+
     public func submit(_ request: MacVMAppControlRequest) throws {
         try ensureDirectory()
         try removeResponse(for: request.id)
@@ -88,23 +148,36 @@ public struct MacVMAppControlQueue: Sendable {
     }
 
     public func pendingRequests() throws -> [MacVMAppControlRequest] {
+        try requests(withExtension: "request")
+    }
+
+    /// Requests claimed by an app instance that exited before publishing a response.
+    public func interruptedRequests() throws -> [MacVMAppControlRequest] {
+        try requests(withExtension: "processing")
+    }
+
+    /// Atomically claim a request before beginning a potentially long operation.
+    /// The processing file is the CLI's pickup acknowledgement.
+    @discardableResult
+    public func claim(_ request: MacVMAppControlRequest) throws -> Bool {
         try ensureDirectory()
-        let urls = try FileManager.default.contentsOfDirectory(
-            at: directoryURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
-        return urls
-            .filter { $0.pathExtension == "request" }
-            .compactMap { url in
-                guard let data = try? Data(contentsOf: url),
-                      let request = try? Self.decoder.decode(MacVMAppControlRequest.self, from: data) else {
-                    try? FileManager.default.removeItem(at: url)
-                    return nil
-                }
-                return request
-            }
-            .sorted { $0.createdAt < $1.createdAt }
+        let source = requestURL(for: request.id)
+        let destination = processingURL(for: request.id)
+        guard FileManager.default.fileExists(atPath: source.path) else { return false }
+        do {
+            try FileManager.default.moveItem(at: source, to: destination)
+            return true
+        } catch CocoaError.fileNoSuchFile {
+            return false
+        } catch CocoaError.fileWriteFileExists {
+            // A processing file is itself proof that another app instance won
+            // the claim, including the interrupted-request recovery case.
+            return false
+        }
+    }
+
+    public func isClaimed(_ requestID: UUID) -> Bool {
+        FileManager.default.fileExists(atPath: processingURL(for: requestID).path)
     }
 
     public func complete(_ request: MacVMAppControlRequest, with response: MacVMAppControlResponse) throws {
@@ -112,6 +185,7 @@ public struct MacVMAppControlQueue: Sendable {
         let data = try Self.encoder.encode(response)
         try data.write(to: responseURL(for: request.id), options: .atomic)
         try? FileManager.default.removeItem(at: requestURL(for: request.id))
+        try? FileManager.default.removeItem(at: processingURL(for: request.id))
     }
 
     public func response(for requestID: UUID) throws -> MacVMAppControlResponse? {
@@ -143,6 +217,30 @@ public struct MacVMAppControlQueue: Sendable {
 
     private func responseURL(for id: UUID) -> URL {
         directoryURL.appendingPathComponent(id.uuidString.lowercased()).appendingPathExtension("response")
+    }
+
+    private func processingURL(for id: UUID) -> URL {
+        directoryURL.appendingPathComponent(id.uuidString.lowercased()).appendingPathExtension("processing")
+    }
+
+    private func requests(withExtension pathExtension: String) throws -> [MacVMAppControlRequest] {
+        try ensureDirectory()
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        return urls
+            .filter { $0.pathExtension == pathExtension }
+            .compactMap { url in
+                guard let data = try? Data(contentsOf: url),
+                      let request = try? Self.decoder.decode(MacVMAppControlRequest.self, from: data) else {
+                    try? FileManager.default.removeItem(at: url)
+                    return nil
+                }
+                return request
+            }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     private func ensureDirectory() throws {

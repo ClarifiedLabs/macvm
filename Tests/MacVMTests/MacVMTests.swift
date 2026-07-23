@@ -412,19 +412,25 @@ func viewerWindowProvidesPasteboardTransferToolbarButtons() throws {
     let controller = VMViewerController(managedVM: ManagedVM(bundleURL: bundleURL, metadata: metadata))
     let window = try controller.makeWindow()
     let items = try #require(window.toolbar?.items)
-    let pasteToVM = try #require(items.first { $0.label == "Paste to VM" })
-    let copyFromVM = try #require(items.first { $0.label == "Copy from VM" })
+    let automaticSync = try #require(items.first { $0.label == "Automatic Clipboard Sync" })
+    let pasteToVM = try #require(items.first { $0.label == "Paste to VM →" })
+    let copyFromVM = try #require(items.first { $0.label == "← Copy from VM" })
 
-    #expect(window.toolbarStyle == .unifiedCompact)
-    #expect(window.toolbar?.displayMode == .iconOnly)
+    #expect(window.toolbarStyle == .expanded)
+    #expect(window.toolbar?.displayMode == .iconAndLabel)
     #expect(items.first?.itemIdentifier == .flexibleSpace)
-    #expect(items.suffix(2).map(\.label) == ["Paste to VM", "Copy from VM"])
+    #expect(items.suffix(3).map(\.label) == [
+        "Automatic Clipboard Sync",
+        "Paste to VM →",
+        "← Copy from VM",
+    ])
+    #expect(automaticSync.view != nil)
     #expect(pasteToVM.action == #selector(VMViewerController.copyHostPasteboardToGuest(_:)))
     #expect(copyFromVM.action == #selector(VMViewerController.copyGuestPasteboardToHost(_:)))
     #expect(pasteToVM.target === controller)
     #expect(copyFromVM.target === controller)
     #expect(pasteToVM.toolTip?.contains("host pasteboard") == true)
-    #expect(copyFromVM.toolTip?.contains("next plain-text copy") == true)
+    #expect(copyFromVM.toolTip?.contains("current plain text") == true)
     #expect(!controller.validateToolbarItem(pasteToVM))
     #expect(!controller.validateToolbarItem(copyFromVM))
 
@@ -530,6 +536,21 @@ func createCommandRendersHomebrewSetupOptOut() {
             setupAfter: true,
             installHomebrew: false
         ) == "macvm create --name minimal --setup --no-homebrew"
+    )
+}
+
+@Test
+func createCommandRendersClipboardHelperSetupOptOut() {
+    let defaults = makeDraft(name: "")
+    let draft = makeDraft(name: "minimal")
+
+    #expect(
+        CLIEquivalent.create(
+            draft,
+            defaults: defaults,
+            setupAfter: true,
+            installClipboardHelper: false
+        ) == "macvm create --name minimal --setup --no-clipboard-helper"
     )
 }
 

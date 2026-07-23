@@ -150,9 +150,9 @@ extension MacVMService {
             existing.memorySizeBytes = configuration.memorySizeBytes
             existing.dataDiskSizeBytes = configuration.dataDiskSizeBytes
             existing.amd64Enabled = configuration.amd64Enabled
-            var metadata = currentVM.metadata
-            metadata.dockerSidecar = existing
-            try ownerBundle.writeMetadata(metadata)
+            let metadata = try ownerBundle.updateMetadata { metadata in
+                metadata.dockerSidecar = existing
+            }
             ownerBundle.clearDockerSidecarRuntimeDescriptor()
             return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
         }
@@ -212,9 +212,9 @@ extension MacVMService {
         settings.memorySizeBytes = requested.memorySizeBytes
         settings.dataDiskSizeBytes = requested.dataDiskSizeBytes
         settings.amd64Enabled = requested.amd64Enabled
-        var metadata = currentVM.metadata
-        metadata.dockerSidecar = settings
-        try bundle.writeMetadata(metadata)
+        let metadata = try bundle.updateMetadata { metadata in
+            metadata.dockerSidecar = settings
+        }
         return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
     }
 
@@ -229,9 +229,9 @@ extension MacVMService {
         try requireStopped(currentVM, operation: "disable Docker")
         guard var settings = currentVM.metadata.dockerSidecar else { return currentVM }
         settings.enabled = false
-        var metadata = currentVM.metadata
-        metadata.dockerSidecar = settings
-        try bundle.writeMetadata(metadata)
+        let metadata = try bundle.updateMetadata { metadata in
+            metadata.dockerSidecar = settings
+        }
         bundle.clearDockerSidecarRuntimeDescriptor()
         return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
     }

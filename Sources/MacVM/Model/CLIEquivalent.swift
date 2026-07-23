@@ -92,6 +92,7 @@ enum CLIEquivalent {
         defaults: VMCreationDraft,
         setupAfter: Bool,
         installHomebrew: Bool = true,
+        installClipboardHelper: Bool = true,
         xcodeXIPURL: URL? = nil,
         profileIDs: [String] = [],
         profileInputs: [String: [String: String]] = [:]
@@ -122,6 +123,9 @@ enum CLIEquivalent {
             command += " --setup"
             if !installHomebrew {
                 command += " --no-homebrew"
+            }
+            if !installClipboardHelper {
+                command += " --no-clipboard-helper"
             }
             if let xcodeXIPURL {
                 command += " --xcode \(abbreviatePath(xcodeXIPURL.path))"

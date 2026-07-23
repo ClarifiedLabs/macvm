@@ -197,6 +197,14 @@ struct VMBundle {
         url.appendingPathComponent("Metadata.json")
     }
 
+    var metadataLockURL: URL {
+        let resolvedBundleURL = url.resolvingSymlinksInPath().standardizedFileURL
+        return resolvedBundleURL.deletingLastPathComponent().appendingPathComponent(
+            ".\(resolvedBundleURL.lastPathComponent).metadata.lock",
+            isDirectory: false
+        )
+    }
+
     var hardwareModelURL: URL {
         url.appendingPathComponent("HardwareModel")
     }
@@ -243,6 +251,12 @@ struct VMBundle {
 
     var setupPublicKeyURL: URL {
         setupDirectoryURL.appendingPathComponent("id_ed25519.pub")
+    }
+
+    /// Guest SSH host public keys exported over the trusted setup shared directory.
+    /// Clipboard installation renders these for the currently resolved guest address.
+    var setupSSHHostKeysURL: URL {
+        setupDirectoryURL.appendingPathComponent("ssh-host-keys")
     }
 
     var vncSessionURL: URL {
@@ -302,14 +316,58 @@ struct VMBundle {
     }
 
     func writeMetadata(_ metadata: VMMetadata) throws {
+        try encodedMetadata(metadata).write(to: metadataURL, options: .atomic)
+    }
+
+    /// Serialize metadata read-modify-write operations across app and CLI processes.
+    /// The sibling lock inode remains stable while the atomic metadata write replaces
+    /// `Metadata.json`, and it is not copied as part of a VM clone.
+    @discardableResult
+    func updateMetadata(
+        defaultingTo initialMetadata: VMMetadata? = nil,
+        _ mutation: (inout VMMetadata) throws -> Void
+    ) throws -> VMMetadata {
+        try FileManager.default.createDirectory(
+            at: metadataLockURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let descriptor = open(metadataLockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else {
+            throw MacVMError.message(
+                "Couldn't lock metadata for '\(url.lastPathComponent)': \(String(cString: strerror(errno)))"
+            )
+        }
+        defer {
+            _ = flock(descriptor, LOCK_UN)
+            _ = close(descriptor)
+        }
+        guard flock(descriptor, LOCK_EX) == 0 else {
+            throw MacVMError.message(
+                "Couldn't lock metadata for '\(url.lastPathComponent)': \(String(cString: strerror(errno)))"
+            )
+        }
+
+        var metadata: VMMetadata
+        if FileManager.default.fileExists(atPath: metadataURL.path) {
+            metadata = try readMetadata()
+        } else if let initialMetadata {
+            metadata = initialMetadata
+        } else {
+            throw MacVMError.invalidBundle(url)
+        }
+        try mutation(&metadata)
+        try encodedMetadata(metadata).write(to: metadataURL, options: .atomic)
+        return metadata
+    }
+
+    private func encodedMetadata(_ metadata: VMMetadata) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .custom { date, encoder in
             var container = encoder.singleValueContainer()
             try container.encode(makeMetadataDateFormatter().string(from: date))
         }
-        let data = try encoder.encode(metadata)
-        try data.write(to: metadataURL, options: .atomic)
+        return try encoder.encode(metadata)
     }
 
     func readMetadata() throws -> VMMetadata {
@@ -342,10 +400,11 @@ struct VMBundle {
             return metadata
         }
 
-        var updated = metadata
-        updated.macAddress = VZMACAddress.randomLocallyAdministered().string
-        try writeMetadata(updated)
-        return updated
+        return try updateMetadata(defaultingTo: metadata) { current in
+            if current.macAddress.flatMap(VZMACAddress.init(string:)) == nil {
+                current.macAddress = VZMACAddress.randomLocallyAdministered().string
+            }
+        }
     }
 
     func writeVNCSession(_ session: VNCSession) throws {
@@ -641,6 +700,7 @@ struct VMBundle {
         configuration.storageDevices = [try makeStorageDevice()]
         configuration.graphicsDevices = [makeGraphicsDevice(metadata: metadata)]
         configuration.networkDevices = [makeNetworkDevice(metadata: metadata)] + additionalNetworkDevices
+        configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
         configuration.keyboards = [VZMacKeyboardConfiguration()]
         configuration.pointingDevices = [VZMacTrackpadConfiguration()]
         if memoryBalloonEnabled {

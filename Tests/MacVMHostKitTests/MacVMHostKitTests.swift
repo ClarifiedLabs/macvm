@@ -502,10 +502,12 @@ func cloneVMPreservesPersistentStateAndRefreshesHostIdentity() async throws {
         macAddress: "02:00:00:00:00:01",
         setupUsername: "developer",
         setupFullName: "Developer",
-        setupCompletedAt: createdAt
+        setupCompletedAt: createdAt,
+        automaticClipboardSyncEnabled: true
     )
     let sourceBundle = VMBundle(url: sourceURL)
     try sourceBundle.writeMetadata(metadata)
+    let sourceClipboardSecret = try ClipboardPairingStore(bundle: sourceBundle).ensureSecret()
 
     let persistentFiles: [(URL, Data)] = [
         (sourceBundle.hardwareModelURL, Data("hardware".utf8)),
@@ -550,6 +552,10 @@ func cloneVMPreservesPersistentStateAndRefreshesHostIdentity() async throws {
     #expect(clonedMetadata.setupUsername == metadata.setupUsername)
     #expect(clonedMetadata.setupFullName == metadata.setupFullName)
     #expect(clonedMetadata.setupCompletedAt == metadata.setupCompletedAt)
+    #expect(!clonedMetadata.isAutomaticClipboardSyncEnabled)
+    let clonedClipboardSecret = try ClipboardPairingStore(bundle: clonedBundle).readSecret()
+    #expect(clonedClipboardSecret != sourceClipboardSecret)
+    #expect(try ClipboardPairingStore(bundle: sourceBundle).readSecret() == sourceClipboardSecret)
     #expect(!FileManager.default.fileExists(atPath: clonedBundle.runtimeDirectoryURL.path))
     #expect(service.launchOnBootStatus(for: clone).enabled == false)
 
@@ -1566,8 +1572,8 @@ func setupFlowDrivesEarlyOnboardingPanesReactivelyBeforeAccountCreation() throws
 func setupPlanExposesPhasesWithAnchors() {
     let plan = try! SetupFlows.builtIn(for: macOS26Release, options: SetupOptions())
 
-    #expect(plan.phases.count == 10)
-    #expect(plan.phases.map(\.id) == Array(0..<10))
+    #expect(plan.phases.count == 11)
+    #expect(plan.phases.map(\.id) == Array(0..<11))
     #expect(plan.phases.map(\.title) == [
         "Boot headless, connect RFB client",
         "Language and region",
@@ -1578,13 +1584,15 @@ func setupPlanExposesPhasesWithAnchors() {
         "Reach the desktop",
         "Enable SSH, install per-VM key",
         "Wait for IP and SSH",
+        "Install clipboard helper",
         "Install Homebrew",
     ])
     #expect(plan.phases[2].anchor == #"advanceUntilText "Create a.*Account""#)
     #expect(plan.phases[3].anchor == "createAccount")
     #expect(plan.phases[4].anchor == "advanceUntilScreen loginWindowOrDesktop")
     #expect(plan.phases[8].anchor == "dhcpd_leases")
-    #expect(plan.phases[9].anchor == "install Homebrew")
+    #expect(plan.phases[9].anchor == "install clipboard helper")
+    #expect(plan.phases[10].anchor == "install Homebrew")
 
     // Pipeline-owned phases carry no step index; OCR phases point into the flow
     // in step order.
@@ -1592,6 +1600,7 @@ func setupPlanExposesPhasesWithAnchors() {
     #expect(plan.phases[7].firstStepIndex == nil)
     #expect(plan.phases[8].firstStepIndex == nil)
     #expect(plan.phases[9].firstStepIndex == nil)
+    #expect(plan.phases[10].firstStepIndex == nil)
     let stepIndexes = plan.phases.compactMap(\.firstStepIndex)
     #expect(stepIndexes.count == 6)
     #expect(stepIndexes == stepIndexes.sorted())
@@ -1622,8 +1631,15 @@ func setupPlanOmitsHomebrewPhaseWhenDisabled() {
         options: SetupOptions(installHomebrew: false)
     )
 
-    #expect(plan.phases.count == 9)
-    #expect(plan.phases.last?.title == "Wait for IP and SSH")
+    #expect(plan.phases.count == 10)
+    #expect(plan.phases.last?.title == "Install clipboard helper")
+
+    let withoutClipboardHelper = try! SetupFlows.builtIn(
+        for: macOS26Release,
+        options: SetupOptions(installHomebrew: false, installClipboardHelper: false)
+    )
+    #expect(withoutClipboardHelper.phases.count == 9)
+    #expect(withoutClipboardHelper.phases.last?.title == "Wait for IP and SSH")
 }
 
 @Test
@@ -1667,7 +1683,7 @@ func setupPlanAddsResolvedProvisioningProfilesInExecutionOrder() throws {
 func setupPhasesForCustomFlowLeaveUnmatchedMarkersWithoutStepIndexes() {
     let phases = SetupFlows.phases(for: [.waitText("Custom"), .clickText("Go")])
 
-    #expect(phases.count == 10)
+    #expect(phases.count == 11)
     #expect(phases[1].firstStepIndex == 0)
     #expect(phases[2].firstStepIndex == nil)
     #expect(phases[4].firstStepIndex == nil)
@@ -2160,6 +2176,13 @@ private actor GuestHardenerMockClient: GuestHardenerClient {
             commandSubmissionCount += 1
             if commandSubmissionCount == statusAfterCommandCount {
                 try statusValue.write(to: statusFileURL, atomically: true, encoding: .utf8)
+                if statusValue.trimmingCharacters(in: .whitespacesAndNewlines) == "done" {
+                    try "ssh-ed25519 AAAA\n".write(
+                        to: statusFileURL.appendingPathExtension("ssh-host-keys"),
+                        atomically: true,
+                        encoding: .utf8
+                    )
+                }
             }
             currentInput = ""
         }
@@ -2415,7 +2438,8 @@ func provisioningScriptContainsExpectedCommands() {
         extraAuthorizedKey: nil,
         enableAutoLogin: true,
         passwordFilePath: "/Volumes/My Shared Files/Transfers/.macvm-pw",
-        statusFilePath: "/Volumes/My Shared Files/Transfers/.macvm-status"
+        statusFilePath: "/Volumes/My Shared Files/Transfers/.macvm-status",
+        sshHostKeysFilePath: "/Volumes/My Shared Files/Transfers/.macvm-ssh-host-keys"
     ))
 
     #expect(script.contains("launchctl load -w /System/Library/LaunchDaemons/ssh.plist"))
@@ -2430,12 +2454,17 @@ func provisioningScriptContainsExpectedCommands() {
     #expect(script.contains("printf 'done\\n' > \"$STATUS_FILE\""))
     #expect(script.contains("failed:%s\\n"))
     #expect(script.contains("'/Volumes/My Shared Files/Transfers/.macvm-status'"))
+    #expect(script.contains("cat /etc/ssh/ssh_host_*_key.pub"))
+    #expect(script.contains("sort -u > \"$SSH_HOST_KEYS_FILE.tmp\""))
+    #expect(script.contains("mv -f \"$SSH_HOST_KEYS_FILE.tmp\" \"$SSH_HOST_KEYS_FILE\""))
+    #expect(script.contains("chmod 600 \"$SSH_HOST_KEYS_FILE\""))
 
     // Auto-login off removes the sysadminctl line.
     let noAutoLogin = GuestProvisioningScript.build(GuestProvisioningInputs(
         username: "admin", password: "admin", authorizedKey: "k",
         extraAuthorizedKey: nil, enableAutoLogin: false,
-        passwordFilePath: "/tmp/pw", statusFilePath: "/tmp/status"
+        passwordFilePath: "/tmp/pw", statusFilePath: "/tmp/status",
+        sshHostKeysFilePath: "/tmp/ssh-host-keys"
     ))
     #expect(!noAutoLogin.contains("sysadminctl -autologin set"))
     #expect(noAutoLogin.contains("defaults write com.apple.loginwindow LoginwindowLaunchesRelaunchApps -bool false"))
@@ -3124,8 +3153,10 @@ func guestSSHArgumentsAreWellFormed() {
         host: "host",
         user: "admin",
         identityFile: nil,
-        knownHostsFile: URL(fileURLWithPath: "/state/docker-known-hosts")
+        knownHostsFile: URL(fileURLWithPath: "/state/docker-known-hosts"),
+        requirePinnedHostKey: true
     )
+    #expect(pinned.contains("StrictHostKeyChecking=yes"))
     #expect(pinned.contains("UserKnownHostsFile=/state/docker-known-hosts"))
 }
 
@@ -3337,6 +3368,27 @@ func setupRFBConnectionRetriesDroppedInitialFramebufferRequest() async throws {
 }
 
 @Test
+func rfbClientHandshakeUsesAnAbsoluteDeadline() async throws {
+    let server = try MinimalRFBServer(maxConnections: 1, mode: .idleBeforeHandshake)
+    server.start()
+    defer { server.stop() }
+
+    let client = RFBClient(port: server.port)
+    let startedAt = Date()
+    do {
+        try await client.connect(password: nil, timeout: 0.05)
+        Issue.record("Expected the VNC handshake to time out")
+    } catch RFBError.handshakeTimeout {
+        // Expected.
+    } catch {
+        Issue.record("Expected a VNC handshake timeout, got \(error)")
+    }
+    await client.close()
+
+    #expect(Date().timeIntervalSince(startedAt) < 0.25)
+}
+
+@Test
 func rfbClientSendsClipboardText() async throws {
     let server = try MinimalRFBServer(maxConnections: 1, mode: .captureClientCutText)
     server.start()
@@ -3427,6 +3479,7 @@ private final class RFBEventRecorder: @unchecked Sendable {
 }
 
 private enum MinimalRFBServerMode {
+    case idleBeforeHandshake
     case framebufferCaptures
     case dropFirstFramebufferRequestThenCapture
     case stallFirstFramebufferRequestThenCapture
@@ -3570,6 +3623,10 @@ private final class MinimalRFBServer: @unchecked Sendable {
     }
 
     private func serve(clientFD: Int32, connectionIndex: Int) throws {
+        if case .idleBeforeHandshake = mode {
+            usleep(300 * 1000)
+            return
+        }
         try writeAll([UInt8]("RFB 003.008\n".utf8), to: clientFD)
         _ = try readExactly(12, from: clientFD)
 
@@ -3591,6 +3648,8 @@ private final class MinimalRFBServer: @unchecked Sendable {
         _ = try readExactly(encodingCount * 4, from: clientFD)
 
         switch mode {
+        case .idleBeforeHandshake:
+            break
         case .framebufferCaptures:
             try serveFramebufferCapture(clientFD: clientFD, connectionIndex: connectionIndex)
         case .dropFirstFramebufferRequestThenCapture:

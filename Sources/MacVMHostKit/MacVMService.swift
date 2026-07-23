@@ -131,6 +131,7 @@ public final class MacVMService: Sendable {
 
     private static let cloneExcludedRelativePaths: Set<String> = [
         "Runtime",
+        "Secrets",
         "Shared/.DocumentRevisions-V100",
         "Shared/.Spotlight-V100",
         "Shared/.TemporaryItems",
@@ -491,6 +492,7 @@ public final class MacVMService: Sendable {
         metadata.name = name
         metadata.createdAt = Date()
         metadata.macAddress = VZMACAddress.randomLocallyAdministered().string
+        metadata.automaticClipboardSyncEnabled = false
         if var dockerSidecar = metadata.dockerSidecar {
             // Keep private-link addressing/MACs and pairing keys: every clone gets
             // a distinct socketpair. Refresh the externally visible NAT identity.
@@ -541,6 +543,8 @@ public final class MacVMService: Sendable {
                 try ignition.write(to: sidecar.initialIgnitionURL, options: .atomic)
             }
             try temporaryBundle.writeMetadata(metadata)
+            _ = try ClipboardPairingStore(bundle: temporaryBundle).ensureSecret()
+            try? fileManager.removeItem(at: temporaryBundle.clipboardOperationLockURL)
             try fileManager.moveItem(at: temporaryURL, to: destinationURL)
 
             progress?(.status("Clone complete."))
@@ -1088,6 +1092,18 @@ public final class MacVMService: Sendable {
             emitPhaseWithAnchor(SetupFlows.sshReadyAnchor)
             setupProgress(.status("Waiting for the guest to obtain an IP and accept SSH"))
             let result = try await waitForSSHReady(vm, options: options, progress: setupProgress)
+            if options.installClipboardHelper {
+                emitPhaseWithAnchor(SetupFlows.clipboardInstallAnchor)
+                guard result.sshReady, let host = result.ipAddress else {
+                    throw MacVMError.message("Clipboard helper installation requires the guest IP address and authenticated SSH.")
+                }
+                _ = try await installClipboardHelperDuringSetup(
+                    for: vm,
+                    host: host,
+                    user: options.username,
+                    progress: setupProgress
+                )
+            }
             if options.xcodeXIPURL != nil && result.sshReady {
                 emitPhaseWithAnchor(SetupFlows.xcodeInstallAnchor)
             }
@@ -1128,11 +1144,11 @@ public final class MacVMService: Sendable {
                 profilePhases: profilePhases
             )
 
-            var metadata = vm.metadata
-            metadata.setupUsername = options.username
-            metadata.setupFullName = options.fullName
-            metadata.setupCompletedAt = Date()
-            try bundle.writeMetadata(metadata)
+            _ = try bundle.updateMetadata { metadata in
+                metadata.setupUsername = options.username
+                metadata.setupFullName = options.fullName
+                metadata.setupCompletedAt = Date()
+            }
             runtimePublisher.clear()
 
             return result
@@ -1207,10 +1223,11 @@ public final class MacVMService: Sendable {
     private static func shouldRetryInitialSetupRFBError(_ error: Error) -> Bool {
         if let error = error as? RFBError {
             switch error {
-            case .authenticationFailed, .passwordRequired, .noSupportedSecurityType, .unsupportedEncoding, .unexpectedMessage:
+            case .authenticationFailed, .passwordRequired, .noSupportedSecurityType, .clipboardTextTooLarge,
+                 .unsupportedEncoding, .unexpectedMessage:
                 return false
-            case .connectionClosed, .handshakeFailed, .notConnected, .framebufferTimeout,
-                 .clipboardTimeout, .invalidClipboardText:
+            case .connectionClosed, .handshakeFailed, .handshakeTimeout, .notConnected,
+                 .framebufferTimeout, .clipboardTimeout, .invalidClipboardText:
                 return true
             }
         }
@@ -1485,6 +1502,7 @@ public final class MacVMService: Sendable {
         DebugLog.log("Creating bundle at \(bundleURL.path)")
         try bundle.createDirectory()
         try bundle.writeMetadata(metadata)
+        _ = try ClipboardPairingStore(bundle: bundle).ensureSecret()
         try bundle.savePlatformArtifacts(
             hardwareModel: requirements.hardwareModel,
             machineIdentifier: VZMacMachineIdentifier()

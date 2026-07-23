@@ -206,6 +206,9 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
     public var setupUsername: String?
     public var setupFullName: String?
     public var setupCompletedAt: Date?
+    /// Optional for compatibility with bundles created before clipboard support.
+    /// Use `isAutomaticClipboardSyncEnabled` for the normalized, default-off value.
+    public var automaticClipboardSyncEnabled: Bool?
     /// Settings for the hidden Linux sidecar associated with this macOS VM.
     /// Nil for bundles created before Docker sidecar support and for VMs where
     /// Docker has never been enabled.
@@ -227,6 +230,7 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         setupUsername: String? = nil,
         setupFullName: String? = nil,
         setupCompletedAt: Date? = nil,
+        automaticClipboardSyncEnabled: Bool? = false,
         dockerSidecar: DockerSidecarSettings? = nil
     ) {
         self.id = id
@@ -244,7 +248,12 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         self.setupUsername = setupUsername
         self.setupFullName = setupFullName
         self.setupCompletedAt = setupCompletedAt
+        self.automaticClipboardSyncEnabled = automaticClipboardSyncEnabled
         self.dockerSidecar = dockerSidecar
+    }
+
+    public var isAutomaticClipboardSyncEnabled: Bool {
+        automaticClipboardSyncEnabled ?? false
     }
 
     public var memoryDescription: String {
@@ -321,6 +330,8 @@ public struct SetupOptions: Sendable {
     public var xcodeXIPURL: URL?
     /// Install Homebrew as a first-class setup phase after SSH becomes ready.
     public var installHomebrew: Bool
+    /// Install the per-user clipboard LaunchAgent after SSH becomes ready.
+    public var installClipboardHelper: Bool
     /// Composable Ansible profiles to apply after SSH becomes ready.
     public var provisioningSelection: ProvisioningSelection
 
@@ -336,6 +347,7 @@ public struct SetupOptions: Sendable {
         scriptOverride: URL? = nil,
         xcodeXIPURL: URL? = nil,
         installHomebrew: Bool = true,
+        installClipboardHelper: Bool = true,
         provisioningSelection: ProvisioningSelection = ProvisioningSelection()
     ) {
         self.username = username
@@ -349,6 +361,7 @@ public struct SetupOptions: Sendable {
         self.scriptOverride = scriptOverride
         self.xcodeXIPURL = xcodeXIPURL
         self.installHomebrew = installHomebrew
+        self.installClipboardHelper = installClipboardHelper
         self.provisioningSelection = provisioningSelection
     }
 }

@@ -136,9 +136,9 @@ enum DockerSidecarReplacement {
                     )
                 }
                 try exchangeDirectoriesAtomically(stageURL, finalSidecar.url)
-                var metadata = try ownerBundle.readMetadata()
-                metadata.dockerSidecar = journal.previousSettings
-                try ownerBundle.writeMetadata(metadata)
+                let metadata = try ownerBundle.updateMetadata { metadata in
+                    metadata.dockerSidecar = journal.previousSettings
+                }
                 // The old appliance is canonical again. Remove the journal first
                 // so interruption during best-effort candidate cleanup cannot be
                 // mistaken for an ambiguous in-flight exchange.
@@ -147,9 +147,9 @@ enum DockerSidecarReplacement {
                 return metadata
             }
 
-            var metadata = try ownerBundle.readMetadata()
-            metadata.dockerSidecar = journal.intendedSettings
-            try ownerBundle.writeMetadata(metadata)
+            let metadata = try ownerBundle.updateMetadata { metadata in
+                metadata.dockerSidecar = journal.intendedSettings
+            }
             if stageSidecar.isPresent {
                 try FileManager.default.removeItem(at: stageURL)
             }
@@ -157,9 +157,9 @@ enum DockerSidecarReplacement {
             return metadata
 
         case .rollBack:
-            var metadata = try ownerBundle.readMetadata()
-            metadata.dockerSidecar = journal.previousSettings
-            try ownerBundle.writeMetadata(metadata)
+            let metadata = try ownerBundle.updateMetadata { metadata in
+                metadata.dockerSidecar = journal.previousSettings
+            }
             // The exchange never committed. Finalize the rollback before
             // deleting its disposable candidate; stale-stage cleanup can finish
             // that deletion after an interruption.

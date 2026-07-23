@@ -16,6 +16,7 @@ APP_NAME="MacVM"
 CLI_NAME="macvm"
 BASE_BUNDLE_IDENTIFIER="dev.macvm.macvm"
 CLI_BUNDLE_IDENTIFIER="$BASE_BUNDLE_IDENTIFIER.cli"
+CLIPBOARD_GUEST_HELPER_IDENTIFIER="dev.macvm.clipboard-guest"
 PKG_IDENTIFIER="$BASE_BUNDLE_IDENTIFIER.pkg"
 ENTITLEMENTS_PATH="$ROOT_DIR/Support/macvm.entitlements"
 COMPONENT_PLIST_PATH="$ROOT_DIR/Support/macvm-component.plist"
@@ -127,6 +128,13 @@ sign_release_payload() {
   codesign --force \
     --timestamp \
     --options runtime \
+    --identifier "$CLIPBOARD_GUEST_HELPER_IDENTIFIER" \
+    --sign "$developer_id_application" \
+    "$CLIPBOARD_GUEST_HELPER_PATH"
+
+  codesign --force \
+    --timestamp \
+    --options runtime \
     --entitlements "$ENTITLEMENTS_PATH" \
     --identifier "$CLI_BUNDLE_IDENTIFIER" \
     --sign "$developer_id_application" \
@@ -140,6 +148,7 @@ sign_release_payload() {
     "$APP_PATH"
 
   codesign --verify --strict --verbose=2 "$DOCKER_GUEST_HELPER_PATH"
+  codesign --verify --strict --verbose=2 "$CLIPBOARD_GUEST_HELPER_PATH"
   codesign --verify --strict --verbose=2 "$EMBEDDED_CLI_PATH"
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 }
@@ -264,12 +273,20 @@ CLI_LINK_PATH="$PAYLOAD_ROOT/usr/local/bin/$CLI_NAME"
 APP_PATH="$PAYLOAD_ROOT/Applications/$APP_NAME.app"
 EMBEDDED_CLI_PATH="$APP_PATH/Contents/Helpers/$CLI_NAME"
 DOCKER_GUEST_HELPER_PATH="$APP_PATH/Contents/Resources/macvm_MacVMHostKit.bundle/Resources/Docker/macvm-docker-guest"
+CLIPBOARD_GUEST_HELPER_PATH="$APP_PATH/Contents/Resources/macvm_MacVMHostKit.bundle/Resources/Clipboard/macvm-clipboard-guest"
 DMG_PATH="$OUTPUT_DIR/MacVM-$VERSION.dmg"
 PKG_PATH="$OUTPUT_DIR/MacVM-$VERSION.pkg"
 
 ditto --norsrc --noextattr "$APP_PRODUCT" "$APP_PATH"
 require_file "$EMBEDDED_CLI_PATH" "staged embedded CLI"
 require_file "$DOCKER_GUEST_HELPER_PATH" "Docker guest helper"
+require_file "$CLIPBOARD_GUEST_HELPER_PATH" "clipboard guest helper"
+if [[ ! -x "$DOCKER_GUEST_HELPER_PATH" || ! -x "$CLIPBOARD_GUEST_HELPER_PATH" ]]; then
+  echo "Bundled guest helpers must be executable." >&2
+  exit 2
+fi
+lipo "$DOCKER_GUEST_HELPER_PATH" -verify_arch arm64
+lipo "$CLIPBOARD_GUEST_HELPER_PATH" -verify_arch arm64
 
 if enabled "$SIGN_RELEASE"; then
   sign_release_payload

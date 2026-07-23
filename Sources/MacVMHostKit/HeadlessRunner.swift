@@ -29,6 +29,7 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     private let processLogPath: String?
 
     private var virtualMachine: VZVirtualMachine?
+    private let clipboardRuntime: ClipboardRuntime
     private var memoryBalloonRegistrationID: UUID?
     private var vncServer: MacVMVNCServer?
     private var stopContinuation: CheckedContinuation<Void, Error>?
@@ -62,6 +63,7 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         self.installSignalHandlers = installSignalHandlers
         self.processRuntimeRole = processRuntimeRole
         self.processLogPath = processLogPath
+        self.clipboardRuntime = ClipboardRuntime(managedVM: managedVM)
         super.init()
     }
 
@@ -87,6 +89,7 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         let virtualMachine = VZVirtualMachine(configuration: configuration, queue: DispatchQueue.main)
         virtualMachine.delegate = self
         self.virtualMachine = virtualMachine
+        clipboardRuntime.prepare(on: virtualMachine)
 
         // The private _VZVNCServer binds all interfaces (not just loopback), so a
         // per-session password is mandatory — never start it without one.
@@ -233,6 +236,7 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         }
         signalSources.removeAll()
 
+        clipboardRuntime.stop()
         vncServer?.stop()
         vncServer = nil
         if let memoryBalloonRegistrationID {

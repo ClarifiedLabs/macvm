@@ -68,6 +68,32 @@ def main() -> None:
     )
     require_contains(
         package_script,
+        'CLIPBOARD_GUEST_HELPER_PATH="$APP_PATH/Contents/Resources/macvm_MacVMHostKit.bundle/Resources/Clipboard/macvm-clipboard-guest"',
+        "package-release.sh",
+    )
+    require_contains(
+        package_script,
+        'CLIPBOARD_GUEST_HELPER_IDENTIFIER="dev.macvm.clipboard-guest"',
+        "package-release.sh",
+    )
+    require_contains(
+        package_script,
+        '--identifier "$CLIPBOARD_GUEST_HELPER_IDENTIFIER"',
+        "package-release.sh",
+    )
+    require_contains(
+        package_script,
+        'lipo "$CLIPBOARD_GUEST_HELPER_PATH" -verify_arch arm64',
+        "package-release.sh",
+    )
+    require_contains(project, "name = MacVMClipboardGuest;", "project.pbxproj")
+    require_contains(project, "PRODUCT_BUNDLE_IDENTIFIER = dev.macvm.clipboard-guest;", "project.pbxproj")
+    require_contains(project, 'PRODUCT_NAME = "macvm-clipboard-guest";', "project.pbxproj")
+    require_contains(project, "ARCHS = arm64;", "project.pbxproj")
+    require_contains(project, "MACOSX_DEPLOYMENT_TARGET = 15.0;", "project.pbxproj")
+    require_contains(project, 'OTHER_SWIFT_FLAGS = "$(inherited) -parse-as-library";', "project.pbxproj")
+    require_contains(
+        package_script,
         'ln -s "../../../Applications/$APP_NAME.app/Contents/Helpers/$CLI_NAME" "$CLI_LINK_PATH"',
         "package-release.sh",
     )

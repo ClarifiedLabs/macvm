@@ -10,12 +10,20 @@ struct GuestSSH {
     var user: String
     var identityFile: URL?
     var knownHostsFile: URL?
+    var requirePinnedHostKey: Bool
 
-    init(host: String, user: String, identityFile: URL?, knownHostsFile: URL? = nil) {
+    init(
+        host: String,
+        user: String,
+        identityFile: URL?,
+        knownHostsFile: URL? = nil,
+        requirePinnedHostKey: Bool = false
+    ) {
         self.host = host
         self.user = user
         self.identityFile = identityFile
         self.knownHostsFile = knownHostsFile
+        self.requirePinnedHostKey = requirePinnedHostKey
     }
 
     /// Assemble the `ssh` argument vector (excluding the `ssh` program itself).
@@ -27,14 +35,15 @@ struct GuestSSH {
         allocateTTY: Bool = false,
         batchMode: Bool = false,
         connectTimeout: Int? = nil,
-        knownHostsFile: URL? = nil
+        knownHostsFile: URL? = nil,
+        requirePinnedHostKey: Bool = false
     ) -> [String] {
         var args: [String] = []
         if allocateTTY {
             args.append("-t")
         }
         args.append(contentsOf: [
-            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "StrictHostKeyChecking=\(requirePinnedHostKey ? "yes" : "accept-new")",
             "-o", "UserKnownHostsFile=\(knownHostsFile?.path ?? "/dev/null")",
             "-o", "LogLevel=ERROR",
         ])
@@ -63,7 +72,8 @@ struct GuestSSH {
             identityFile: identityFile,
             remoteCommand: remoteCommand,
             allocateTTY: allocateTTY,
-            knownHostsFile: knownHostsFile
+            knownHostsFile: knownHostsFile,
+            requirePinnedHostKey: requirePinnedHostKey
         )
         process.standardInput = FileHandle.standardInput
         process.standardOutput = FileHandle.standardOutput
@@ -86,7 +96,8 @@ struct GuestSSH {
             remoteCommand: remoteCommand,
             batchMode: true,
             connectTimeout: 10,
-            knownHostsFile: knownHostsFile
+            knownHostsFile: knownHostsFile,
+            requirePinnedHostKey: requirePinnedHostKey
         )
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
@@ -111,7 +122,8 @@ struct GuestSSH {
             remoteCommand: remoteCommand,
             batchMode: true,
             connectTimeout: 10,
-            knownHostsFile: knownHostsFile
+            knownHostsFile: knownHostsFile,
+            requirePinnedHostKey: requirePinnedHostKey
         )
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
@@ -131,7 +143,7 @@ struct GuestSSH {
         )
 
         let header = """
-        $ ssh \(Self.arguments(host: host, user: user, identityFile: identityFile, remoteCommand: remoteCommand, batchMode: true, connectTimeout: 10, knownHostsFile: knownHostsFile).joined(separator: " "))
+        $ ssh \(Self.arguments(host: host, user: user, identityFile: identityFile, remoteCommand: remoteCommand, batchMode: true, connectTimeout: 10, knownHostsFile: knownHostsFile, requirePinnedHostKey: requirePinnedHostKey).joined(separator: " "))
 
         """
         _ = FileManager.default.createFile(atPath: logFile.path, contents: Data(header.utf8))
@@ -148,7 +160,8 @@ struct GuestSSH {
             remoteCommand: remoteCommand,
             batchMode: true,
             connectTimeout: 10,
-            knownHostsFile: knownHostsFile
+            knownHostsFile: knownHostsFile,
+            requirePinnedHostKey: requirePinnedHostKey
         )
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = logHandle
@@ -169,7 +182,7 @@ struct GuestSSH {
             withIntermediateDirectories: true
         )
         let header = """
-        $ ssh \(Self.arguments(host: host, user: user, identityFile: identityFile, remoteCommand: remoteCommand, batchMode: true, connectTimeout: 10, knownHostsFile: knownHostsFile).joined(separator: " "))
+        $ ssh \(Self.arguments(host: host, user: user, identityFile: identityFile, remoteCommand: remoteCommand, batchMode: true, connectTimeout: 10, knownHostsFile: knownHostsFile, requirePinnedHostKey: requirePinnedHostKey).joined(separator: " "))
 
         """
         _ = FileManager.default.createFile(atPath: logFile.path, contents: Data(header.utf8))
@@ -186,7 +199,8 @@ struct GuestSSH {
             remoteCommand: remoteCommand,
             batchMode: true,
             connectTimeout: 10,
-            knownHostsFile: knownHostsFile
+            knownHostsFile: knownHostsFile,
+            requirePinnedHostKey: requirePinnedHostKey
         )
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = logHandle
@@ -240,7 +254,8 @@ struct GuestSSH {
             remoteCommand: ["true"],
             batchMode: true,
             connectTimeout: 5,
-            knownHostsFile: knownHostsFile
+            knownHostsFile: knownHostsFile,
+            requirePinnedHostKey: requirePinnedHostKey
         )
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice

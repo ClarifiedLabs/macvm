@@ -91,7 +91,10 @@ struct GuestHardener {
 
         let statusFileName = Self.statusFileName(for: runID)
         let statusFileURL = bundle.transfersDirectoryURL.appendingPathComponent(statusFileName)
+        let sshHostKeysFileName = "\(statusFileName).ssh-host-keys"
+        let sshHostKeysFileURL = bundle.transfersDirectoryURL.appendingPathComponent(sshHostKeysFileName)
         try? FileManager.default.removeItem(at: statusFileURL)
+        try? FileManager.default.removeItem(at: sshHostKeysFileURL)
 
         let extraKey = try options.authorizedKeyPath.map {
             try String(contentsOf: $0, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -103,7 +106,8 @@ struct GuestHardener {
             extraAuthorizedKey: extraKey,
             enableAutoLogin: options.autoLogin,
             passwordFilePath: "\(Self.guestTransfersPath)/\(passwordFileName)",
-            statusFilePath: "\(Self.guestTransfersPath)/\(statusFileName)"
+            statusFilePath: "\(Self.guestTransfersPath)/\(statusFileName)",
+            sshHostKeysFilePath: "\(Self.guestTransfersPath)/\(sshHostKeysFileName)"
         ))
         let scriptURL = bundle.transfersDirectoryURL.appendingPathComponent("provision.sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
@@ -115,6 +119,7 @@ struct GuestHardener {
         try await openTerminalFromFinderUtilities()
         if await terminalMayBeActive(after: "Finder Utilities") {
             if try await runProvisioningScript(statusFileURL: statusFileURL) {
+                try persistSSHHostKeys(from: sshHostKeysFileURL)
                 return
             }
         } else {
@@ -129,10 +134,38 @@ struct GuestHardener {
             }
             if await terminalMayBeActive(after: "Apps attempt \(attempt)"),
                try await runProvisioningScript(statusFileURL: statusFileURL) {
+                try persistSSHHostKeys(from: sshHostKeysFileURL)
                 return
             }
         }
         throw MacVMError.message("Couldn't start the provisioning script in the guest.")
+    }
+
+    private func persistSSHHostKeys(from sourceURL: URL) throws {
+        let data = try Data(contentsOf: sourceURL)
+        guard data.count <= 64 * 1_024,
+              let raw = String(data: data, encoding: .utf8) else {
+            throw MacVMError.message("The guest produced invalid SSH host-key enrollment data.")
+        }
+        let lines = raw.split(whereSeparator: \.isNewline).map(String.init)
+        let allowedAlgorithms = ["ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"]
+        guard !lines.isEmpty, lines.allSatisfy({ line in
+            let fields = line.split(separator: " ")
+            return fields.count == 2
+                && allowedAlgorithms.contains(String(fields[0]))
+                && Data(base64Encoded: String(fields[1])) != nil
+        }) else {
+            throw MacVMError.message("The guest produced invalid SSH host-key enrollment data.")
+        }
+        try FileManager.default.createDirectory(at: bundle.setupDirectoryURL, withIntermediateDirectories: true)
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(
+            to: bundle.setupSSHHostKeysURL,
+            options: .atomic
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: bundle.setupSSHHostKeysURL.path
+        )
     }
 
     private func openTerminalFromFinderUtilities() async throws {

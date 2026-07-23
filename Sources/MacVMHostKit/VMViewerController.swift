@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import MacVMClipboardProtocol
 import MacVMPrivateVZ
 import Virtualization
 
@@ -9,6 +10,9 @@ private extension NSToolbar.Identifier {
 }
 
 private extension NSToolbarItem.Identifier {
+    static let automaticClipboardSync = NSToolbarItem.Identifier(
+        "dev.macvm.viewer.automatic-clipboard-sync"
+    )
     static let copyHostPasteboardToGuest = NSToolbarItem.Identifier(
         "dev.macvm.viewer.copy-host-pasteboard-to-guest"
     )
@@ -59,6 +63,13 @@ public final class VMViewerController:
     private let processRuntimeRole: VMProcessRuntimeRole?
     private var vncServer: MacVMVNCServer?
     private var vncSession: VNCSession?
+    private let clipboardRuntime: ClipboardRuntime
+    private let clipboardSyncCoordinator: ClipboardSyncCoordinator
+    private let clipboardActivationOwnerID = UUID()
+    private var clipboardActivationGeneration: UInt64?
+    private weak var clipboardToggle: NSSwitch?
+    private weak var clipboardStatusLabel: NSTextField?
+    private var lastClipboardHelperState: ClipboardHelperConnectionState = .connecting
     private var clipboardTransferInProgress = false
     private var startHeartbeatTimer: Timer?
     private var startupFailureMessage: String?
@@ -74,6 +85,7 @@ public final class VMViewerController:
     /// or failed start). The CLI wrapper terminates the process; a host app
     /// closes the window and releases the controller.
     public var onStop: (@MainActor () -> Void)?
+    public var onClipboardStatusChange: (@MainActor (ClipboardRuntimeStatus) -> Void)?
 
     public init(
         managedVM: ManagedVM,
@@ -85,6 +97,21 @@ public final class VMViewerController:
         self.vmName = managedVM.metadata.name
         self.requestedVNCPort = requestedVNCPort
         self.processRuntimeRole = processRuntimeRole
+        let clipboardRuntime = ClipboardRuntime(managedVM: managedVM)
+        self.clipboardRuntime = clipboardRuntime
+        self.clipboardSyncCoordinator = ClipboardSyncCoordinator(runtime: clipboardRuntime)
+        super.init()
+        clipboardRuntime.onStatusChange = { [weak self] status in
+            guard let self else { return }
+            let reconnected = status.helper == .connected
+                && self.lastClipboardHelperState != .connected
+            self.lastClipboardHelperState = status.helper
+            if reconnected, self.window?.isKeyWindow == true {
+                self.activateClipboard()
+            }
+            self.refreshPasteboardCommandState()
+            self.onClipboardStatusChange?(status)
+        }
     }
 
     public var isRunning: Bool {
@@ -101,6 +128,24 @@ public final class VMViewerController:
 
     public var publishedVNCSession: VNCSession? {
         vncSession
+    }
+
+    public var clipboardStatus: ClipboardRuntimeStatus {
+        clipboardRuntime.status
+    }
+
+    public func setAutomaticClipboardSyncEnabled(_ enabled: Bool) throws {
+        try clipboardRuntime.setEnabled(enabled)
+        if enabled, let generation = clipboardActivationGeneration {
+            clipboardSyncCoordinator.activate(generation: generation)
+        }
+    }
+
+    public func reloadClipboardPairing() throws {
+        guard let virtualMachine else {
+            throw MacVMError.message("The VM is not running.")
+        }
+        clipboardRuntime.prepare(on: virtualMachine)
     }
 
     /// Build the window (restoring persisted geometry) without starting the VM.
@@ -254,6 +299,8 @@ public final class VMViewerController:
         removeWindowObservers()
         stopHeartbeat()
         stopMemoryReclamation()
+        deactivateClipboard()
+        clipboardRuntime.stop()
         vncServer?.stop()
         vncServer = nil
         vncSession = nil
@@ -366,6 +413,8 @@ public final class VMViewerController:
 
     public func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         switch item.itemIdentifier {
+        case .automaticClipboardSync:
+            return virtualMachine?.state == .running
         case .copyHostPasteboardToGuest, .copyGuestPasteboardToHost:
             return canTransferPasteboard
         default:
@@ -374,8 +423,46 @@ public final class VMViewerController:
     }
 
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
+        deactivateClipboard()
         sender.orderOut(nil)
         return false
+    }
+
+    public func windowDidBecomeKey(_ notification: Notification) {
+        activateClipboard()
+    }
+
+    public func windowDidResignKey(_ notification: Notification) {
+        deactivateClipboard()
+    }
+
+    public func windowDidMiniaturize(_ notification: Notification) {
+        deactivateClipboard()
+    }
+
+    public func windowDidDeminiaturize(_ notification: Notification) {
+        if window?.isKeyWindow == true {
+            activateClipboard()
+        }
+    }
+
+    private func activateClipboard() {
+        let ownerID = clipboardActivationOwnerID
+        let generation = ClipboardActivationCoordinator.shared.activate(ownerID: ownerID) { [weak self] in
+            guard let self else { return }
+            let oldGeneration = self.clipboardActivationGeneration
+            self.clipboardActivationGeneration = nil
+            self.clipboardSyncCoordinator.deactivate(generation: oldGeneration)
+        }
+        clipboardActivationGeneration = generation
+        clipboardSyncCoordinator.activate(generation: generation)
+    }
+
+    private func deactivateClipboard() {
+        ClipboardActivationCoordinator.shared.deactivate(
+            ownerID: clipboardActivationOwnerID,
+            generation: clipboardActivationGeneration
+        )
     }
 
     private func setUpWindow() throws {
@@ -414,15 +501,21 @@ public final class VMViewerController:
     private func installToolbar(on window: NSWindow) {
         let toolbar = NSToolbar(identifier: .vmViewer)
         toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
-        window.toolbarStyle = .unifiedCompact
+        // Compact unified toolbars force icon-only presentation on current
+        // macOS releases, so use the expanded style for the product-required
+        // action labels.
+        window.toolbarStyle = .expanded
         window.toolbar = toolbar
+        // Attaching the toolbar can restore AppKit's icon-only default, so
+        // apply the labeled mode afterwards.
+        toolbar.displayMode = .iconAndLabel
     }
 
     public func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .flexibleSpace,
+            .automaticClipboardSync,
             .copyHostPasteboardToGuest,
             .copyGuestPasteboardToHost,
         ]
@@ -431,6 +524,7 @@ public final class VMViewerController:
     public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .flexibleSpace,
+            .automaticClipboardSync,
             .copyHostPasteboardToGuest,
             .copyGuestPasteboardToHost,
         ]
@@ -445,9 +539,29 @@ public final class VMViewerController:
         item.target = self
 
         switch itemIdentifier {
+        case .automaticClipboardSync:
+            item.label = "Automatic Clipboard Sync"
+            item.paletteLabel = "Automatic Clipboard Sync"
+            item.toolTip = "Synchronize plain text while this VM viewer is the key window."
+            let toggle = NSSwitch()
+            toggle.target = self
+            toggle.action = #selector(automaticClipboardSyncChanged(_:))
+            toggle.state = clipboardRuntime.enabled ? .on : .off
+            toggle.setAccessibilityLabel("Automatic Clipboard Sync")
+            let statusLabel = NSTextField(labelWithString: clipboardToolbarStatusDescription)
+            statusLabel.font = .systemFont(ofSize: 10)
+            statusLabel.textColor = .secondaryLabelColor
+            statusLabel.setAccessibilityLabel("Automatic Clipboard Sync status")
+            let stack = NSStackView(views: [toggle, statusLabel])
+            stack.orientation = .horizontal
+            stack.spacing = 5
+            stack.alignment = .centerY
+            item.view = stack
+            clipboardToggle = toggle
+            clipboardStatusLabel = statusLabel
         case .copyHostPasteboardToGuest:
-            item.label = "Paste to VM"
-            item.paletteLabel = "Copy Host Pasteboard to VM"
+            item.label = "Paste to VM →"
+            item.paletteLabel = "Paste to VM →"
             item.toolTip = "Copy plain text from the host pasteboard to the VM pasteboard."
             item.image = NSImage(
                 systemSymbolName: "arrow.right",
@@ -455,9 +569,9 @@ public final class VMViewerController:
             )
             item.action = #selector(copyHostPasteboardToGuest(_:))
         case .copyGuestPasteboardToHost:
-            item.label = "Copy from VM"
-            item.paletteLabel = "Copy VM Pasteboard to Host"
-            item.toolTip = "Wait for the next plain-text copy in the VM, then copy it to the host pasteboard."
+            item.label = "← Copy from VM"
+            item.paletteLabel = "← Copy from VM"
+            item.toolTip = "Copy current plain text from the VM pasteboard to the host pasteboard."
             item.image = NSImage(
                 systemSymbolName: "arrow.left",
                 accessibilityDescription: "Copy VM Pasteboard to Host"
@@ -497,10 +611,33 @@ public final class VMViewerController:
         center.addObserver(self, selector: #selector(windowGeometryDidChange(_:)), name: NSWindow.didEndLiveResizeNotification, object: window)
         center.addObserver(self, selector: #selector(windowGeometryDidChange(_:)), name: NSWindow.didChangeScreenNotification, object: window)
         center.addObserver(self, selector: #selector(windowGeometryDidChange(_:)), name: NSView.frameDidChangeNotification, object: displayView)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(hostWillSleep(_:)),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(hostDidWake(_:)),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
     }
 
     private func removeWindowObservers() {
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    @objc private func hostWillSleep(_ notification: Notification) {
+        deactivateClipboard()
+    }
+
+    @objc private func hostDidWake(_ notification: Notification) {
+        if window?.isKeyWindow == true {
+            activateClipboard()
+        }
     }
 
     @objc private func windowGeometryDidChange(_ notification: Notification) {
@@ -598,6 +735,8 @@ public final class VMViewerController:
         virtualMachine.delegate = self
         self.virtualMachine = virtualMachine
         displayView?.virtualMachine = virtualMachine
+
+        clipboardRuntime.prepare(on: virtualMachine)
 
         // _VZVNCServer binds all interfaces, so every viewer session must use
         // a per-run password even when its primary display is a local window.
@@ -847,26 +986,82 @@ public final class VMViewerController:
     // MARK: - Clipboard over RFB
 
     private var canTransferPasteboard: Bool {
-        virtualMachine?.state == .running && !clipboardTransferInProgress
+        virtualMachine?.state == .running
+            && clipboardActivationGeneration != nil
+            && !clipboardTransferInProgress
+    }
+
+    private var clipboardToolbarStatusDescription: String {
+        let status = clipboardRuntime.status
+        if !status.enabled {
+            return "Off · Helper \(status.helper.displayName.lowercased())"
+        }
+        return status.displayName
+    }
+
+    @objc private func automaticClipboardSyncChanged(_ sender: NSSwitch) {
+        let enabled = sender.state == .on
+        do {
+            try setAutomaticClipboardSyncEnabled(enabled)
+        } catch {
+            sender.state = clipboardRuntime.enabled ? .on : .off
+            presentClipboardError(error.localizedDescription)
+        }
+        refreshPasteboardCommandState()
     }
 
     @objc public func copyHostPasteboardToGuest(_ sender: Any?) {
-        guard let text = NSPasteboard.general.string(forType: .string) else {
-            presentClipboardError("Host pasteboard does not contain plain text.")
+        guard let generation = clipboardActivationGeneration,
+              let text = NSPasteboard.general.string(forType: .string) else {
+            presentClipboardError("Host pasteboard does not contain plain text or this viewer is inactive.")
+            return
+        }
+        do {
+            _ = try ClipboardPayload.encodeText(text)
+        } catch {
+            presentClipboardError(error.localizedDescription)
             return
         }
 
         runClipboardTransfer {
-            try await self.withClipboardRFBClient { client in
-                try await client.setClipboardText(text)
+            guard self.clipboardActivationGeneration == generation else {
+                throw MacVMError.message("The viewer is no longer active.")
+            }
+            do {
+                _ = try await self.clipboardRuntime.writeText(text, timeout: 1)
+            } catch {
+                guard Self.shouldFallbackToClipboardVNC(for: error) else { throw error }
+                guard self.clipboardActivationGeneration == generation else {
+                    throw MacVMError.message("The viewer is no longer active.")
+                }
+                try await self.withClipboardRFBClient { client in
+                    try await client.setClipboardText(text)
+                }
             }
         }
     }
 
     @objc public func copyGuestPasteboardToHost(_ sender: Any?) {
+        guard let generation = clipboardActivationGeneration else {
+            presentClipboardError("This viewer is not active.")
+            return
+        }
         runClipboardTransfer {
-            let text = try await self.withClipboardRFBClient { client in
-                try await client.waitForClipboardText(timeout: 30)
+            let text: String
+            do {
+                text = try await self.clipboardRuntime.readText(timeout: 1)
+            } catch {
+                guard Self.shouldFallbackToClipboardVNC(for: error) else { throw error }
+                guard self.clipboardActivationGeneration == generation else {
+                    throw MacVMError.message("The viewer is no longer active.")
+                }
+                text = try await self.withClipboardRFBClient { client in
+                    try await client.waitForClipboardText(timeout: 30)
+                }
+            }
+            _ = try ClipboardPayload.encodeText(text)
+            guard self.clipboardActivationGeneration == generation else {
+                throw MacVMError.message("The viewer is no longer active.")
             }
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
@@ -894,6 +1089,9 @@ public final class VMViewerController:
     }
 
     private func refreshPasteboardCommandState() {
+        clipboardToggle?.state = clipboardRuntime.enabled ? .on : .off
+        clipboardStatusLabel?.stringValue = clipboardToolbarStatusDescription
+        clipboardStatusLabel?.setAccessibilityValue(clipboardToolbarStatusDescription)
         NSApplication.shared.mainMenu?.update()
         window?.toolbar?.validateVisibleItems()
     }
@@ -928,6 +1126,27 @@ public final class VMViewerController:
         } else {
             alert.runModal()
         }
+    }
+
+    static func shouldFallbackToClipboardVNC(for error: Error) -> Bool {
+        if let unavailable = error as? ClipboardHelperUnavailableError,
+           case .unavailable(let state) = unavailable {
+            switch state {
+            case .connecting, .disconnected, .unavailable:
+                return true
+            case .connected, .unpaired, .outdatedHelper, .hostUpdateRequired:
+                return false
+            }
+        }
+        if let protocolError = error as? ClipboardProtocolError {
+            switch protocolError {
+            case .connectionClosed, .timedOut:
+                return true
+            default:
+                return false
+            }
+        }
+        return error is POSIXError
     }
 
     private static func randomVNCPassword() -> String {

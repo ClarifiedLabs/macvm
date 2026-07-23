@@ -32,4 +32,15 @@ rm -rf "$APP_DIR"
 mkdir -p "$OUTPUT_DIR"
 ditto "$PRODUCTS_DIR/$APP_NAME.app" "$APP_DIR"
 
+DOCKER_GUEST_HELPER="$APP_DIR/Contents/Resources/macvm_MacVMHostKit.bundle/Resources/Docker/macvm-docker-guest"
+CLIPBOARD_GUEST_HELPER="$APP_DIR/Contents/Resources/macvm_MacVMHostKit.bundle/Resources/Clipboard/macvm-clipboard-guest"
+for helper in "$DOCKER_GUEST_HELPER" "$CLIPBOARD_GUEST_HELPER"; do
+  if [[ ! -x "$helper" ]]; then
+    echo "Missing bundled guest helper: $helper" >&2
+    exit 2
+  fi
+  lipo "$helper" -verify_arch arm64
+  codesign --verify --strict --verbose=2 "$helper"
+done
+
 echo "Built $APP_DIR with Xcode signing ($CONFIGURATION)"

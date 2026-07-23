@@ -68,13 +68,17 @@ struct MacVMApp: App {
         }
         .commands {
             CommandMenu("VM") {
-                Button("Copy Host Pasteboard to VM Pasteboard") {
+                Button {
                     store.activeViewer?.copyHostPasteboardToGuest(nil)
+                } label: {
+                    Label("Paste to VM →", systemImage: "arrow.right")
                 }
                 .disabled(!(store.activeViewer?.isRunning ?? false))
 
-                Button("Copy Next VM Pasteboard Update to Host") {
+                Button {
                     store.activeViewer?.copyGuestPasteboardToHost(nil)
+                } label: {
+                    Label("← Copy from VM", systemImage: "arrow.left")
                 }
                 .disabled(!(store.activeViewer?.isRunning ?? false))
             }

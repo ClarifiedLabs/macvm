@@ -56,6 +56,9 @@ struct SetupArguments: ParsableArguments {
     @Flag(name: .customLong("homebrew"), inversion: .prefixedNo, help: "Install Homebrew during setup.")
     var homebrew = true
 
+    @Flag(name: .customLong("clipboard-helper"), inversion: .prefixedNo, help: "Install the Automatic Clipboard Sync guest helper during setup.")
+    var clipboardHelper = true
+
     @Option(name: .long, help: "Provisioning profile to apply after setup. Repeat for multiple profiles.")
     var profile: [String] = []
 
@@ -79,6 +82,7 @@ struct SetupArguments: ParsableArguments {
             scriptOverride: script.map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) },
             xcodeXIPURL: xcodeXIPURL,
             installHomebrew: homebrew,
+            installClipboardHelper: clipboardHelper,
             provisioningSelection: try provisioningSelection(profileIDs: profileIDs, values: profileInput)
         )
     }
@@ -207,6 +211,7 @@ struct MacVMCommand: AsyncParsableCommand {
             Stop.self,
             Config.self,
             Docker.self,
+            Clipboard.self,
             Autostart.self,
             Shutdown.self,
             IP.self,
@@ -727,6 +732,32 @@ extension MacVMCommand {
             func run() {
                 MacVMSettings.shared.setVMRootDirectory(nil)
                 print("VM root: \(MacVMSettings.shared.effectiveVMRootDirectory.path)")
+            }
+        }
+    }
+
+    struct Clipboard: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Manage the Automatic Clipboard Sync guest helper.",
+            subcommands: [Install.self]
+        )
+
+        struct Install: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "Install or upgrade the per-user clipboard helper in a running app-owned VM."
+            )
+
+            @OptionGroup var storage: StorageOptions
+            @Argument(help: "VM name, bundle basename, or full bundle path.") var identifier: String
+
+            func run() async throws {
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let vm = try service.resolveVM(identifier: identifier)
+                let response = try await AppControlClient().send(
+                    operation: .installClipboardHelper,
+                    for: vm
+                )
+                print(response.message)
             }
         }
     }

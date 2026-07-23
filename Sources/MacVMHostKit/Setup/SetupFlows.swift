@@ -80,6 +80,7 @@ public enum SetupFlows {
 
     static let provisioningAnchor = "provisioning script"
     static let sshReadyAnchor = "dhcpd_leases"
+    static let clipboardInstallAnchor = "install clipboard helper"
     static let xcodeInstallAnchor = "bootstrap-tools --install-xcode"
     static let homebrewInstallAnchor = "install Homebrew"
 
@@ -135,6 +136,7 @@ public enum SetupFlows {
                 for: steps,
                 includeXcodeInstall: options.xcodeXIPURL != nil,
                 includeHomebrewInstall: options.installHomebrew,
+                includeClipboardInstall: options.installClipboardHelper,
                 provisioningProfiles: provisioningProfiles
             ),
             automationStrategy: automationStrategy,
@@ -172,6 +174,7 @@ public enum SetupFlows {
                     for: steps,
                     includeXcodeInstall: options.xcodeXIPURL != nil,
                     includeHomebrewInstall: options.installHomebrew,
+                    includeClipboardInstall: options.installClipboardHelper,
                     provisioningProfiles: provisioningProfiles
                 ),
                 ruleSet: SetupPolicy.macOS26RuleSet
@@ -188,6 +191,7 @@ public enum SetupFlows {
                     for: steps,
                     includeXcodeInstall: options.xcodeXIPURL != nil,
                     includeHomebrewInstall: options.installHomebrew,
+                    includeClipboardInstall: options.installClipboardHelper,
                     provisioningProfiles: provisioningProfiles
                 ),
                 ruleSet: SetupPolicy.macOS26RuleSet
@@ -231,6 +235,7 @@ public enum SetupFlows {
         for steps: [SetupStep],
         includeXcodeInstall: Bool = false,
         includeHomebrewInstall: Bool = true,
+        includeClipboardInstall: Bool = true,
         provisioningProfiles: [ProvisioningProfile] = []
     ) -> [SetupPhase] {
         func firstIndex(_ action: SetupStep.Action, containing marker: String) -> Int? {
@@ -256,6 +261,15 @@ public enum SetupFlows {
             SetupPhase(id: 7, title: "Enable SSH, install per-VM key", anchor: provisioningAnchor, firstStepIndex: nil),
             SetupPhase(id: 8, title: "Wait for IP and SSH", anchor: sshReadyAnchor, firstStepIndex: nil),
         ]
+
+        if includeClipboardInstall {
+            phases.append(SetupPhase(
+                id: phases.count,
+                title: "Install clipboard helper",
+                anchor: clipboardInstallAnchor,
+                firstStepIndex: nil
+            ))
+        }
 
         if includeXcodeInstall {
             phases.append(SetupPhase(

@@ -188,8 +188,11 @@ Setup starts the completed VM through `MacVM.app` by default. Pass
 macvm setup dev-02 --username developer --password 'secret' --shutdown-after
 ```
 
-Setup installs Homebrew by default. Use `--no-homebrew` for an offline or
-minimal guest. Docker setup requires Homebrew.
+Setup installs Homebrew and the clipboard guest helper by default. Use
+`--no-homebrew` for an offline or minimal guest and `--no-clipboard-helper` to
+omit the helper. Installing the helper adds clipboard capability but does not
+enable **Automatic Clipboard Sync**, which remains off for every VM until you
+opt in. Docker setup requires Homebrew.
 
 Install Xcode during setup by passing a local `.xip` archive:
 
@@ -238,10 +241,32 @@ Bare `macvm vnc <vm>` prints the live `vnc://` URL; `macvm vnc --open <vm>`
 opens it in macOS Screen Sharing. VNC sessions use temporary credentials and
 may be reachable from the local network, so treat the URL as a secret.
 
-Native attached display windows include two pasteboard buttons in the right
-side of the title bar. **Paste to VM** sends the current plain-text host
-pasteboard to the guest. **Copy from VM** waits for the next plain-text copy in
-the guest and writes it to the host pasteboard.
+Native attached display windows include clipboard controls in the right side
+of the title bar. **Paste to VM →** sends the current plain-text host pasteboard
+to the guest, while **← Copy from VM** reads the current guest pasteboard into
+the host. These one-shot actions prefer the authenticated guest helper and use
+VNC only when the helper is unavailable. The VNC path is best-effort: clipboard
+bridging is not functional on every macOS guest/Virtualization.framework
+combination, so install the helper for reliable transfers.
+
+**Automatic Clipboard Sync** is separately opt-in per VM in the viewer toolbar
+or VM detail view. It is active only while that VM's native viewer is the key
+window; manager, hidden, miniaturized, closed, and headless windows do not read
+or write either pasteboard. Only one VM can be the active synchronization
+target.
+
+Setup installs the guest helper by default. To install or upgrade it later,
+start the VM normally and run:
+
+```bash
+macvm clipboard install dev-02
+```
+
+Host and guest authenticate each connection over virtio sockets with a unique
+per-VM pairing key. Only plain UTF-8 text up to 1 MiB is accepted. Clones do not
+inherit the source pairing key or its automatic-sync preference. See
+[Clipboard](docs/clipboard.md) for activation details, security, installation,
+and troubleshooting.
 
 ## Launch on Boot
 

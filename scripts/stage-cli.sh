@@ -29,10 +29,14 @@ for bundle in "$PRODUCTS_DIR"/*.bundle(N); do
 done
 
 DOCKER_GUEST_HELPER="$OUTPUT_DIR/macvm_MacVMHostKit.bundle/Resources/Docker/macvm-docker-guest"
-if [[ ! -x "$DOCKER_GUEST_HELPER" ]]; then
-  echo "Missing bundled Docker guest helper: $DOCKER_GUEST_HELPER" >&2
-  exit 2
-fi
-codesign --verify --strict --verbose=2 "$DOCKER_GUEST_HELPER"
+CLIPBOARD_GUEST_HELPER="$OUTPUT_DIR/macvm_MacVMHostKit.bundle/Resources/Clipboard/macvm-clipboard-guest"
+for helper in "$DOCKER_GUEST_HELPER" "$CLIPBOARD_GUEST_HELPER"; do
+  if [[ ! -x "$helper" ]]; then
+    echo "Missing bundled guest helper: $helper" >&2
+    exit 2
+  fi
+  lipo "$helper" -verify_arch arm64
+  codesign --verify --strict --verbose=2 "$helper"
+done
 
 echo "Built ad-hoc Xcode-signed $OUTPUT_DIR/$PRODUCT_NAME with resource bundles"

@@ -8,14 +8,17 @@ struct AppControlClient {
     private static let appName = "MacVM.app"
 
     let queue: MacVMAppControlQueue
-    let timeout: TimeInterval
+    let pickupTimeout: TimeInterval
+    let completionTimeout: TimeInterval
 
     init(
         queue: MacVMAppControlQueue = MacVMAppControlQueue(),
-        timeout: TimeInterval = MacVMAppControlRequest.validityInterval + 45
+        pickupTimeout: TimeInterval = MacVMAppControlRequest.validityInterval + 45,
+        completionTimeout: TimeInterval = MacVMAppControlRequest.operationCompletionTimeout + 30
     ) {
         self.queue = queue
-        self.timeout = timeout
+        self.pickupTimeout = pickupTimeout
+        self.completionTimeout = completionTimeout
     }
 
     func send(operation: MacVMAppControlOperation, for vm: ManagedVM) async throws -> MacVMAppControlResponse {
@@ -34,22 +37,35 @@ struct AppControlClient {
             }
             return response
         } catch {
-            try? queue.removeRequest(request.id)
+            // A request may be removed only before the app claims it. Once claimed,
+            // MacVM owns completion/cancellation and will always publish a response.
+            if !queue.isClaimed(request.id) {
+                try? queue.removeRequest(request.id)
+            }
             throw error
         }
     }
 
     private func waitForResponse(to request: MacVMAppControlRequest) async throws -> MacVMAppControlResponse {
-        let deadline = Date().addingTimeInterval(timeout)
-        repeat {
-            if let response = try queue.response(for: request.id) {
-                return response
-            }
+        let pickupDeadline = Date().addingTimeInterval(pickupTimeout)
+        while Date() < pickupDeadline {
+            if let response = try queue.response(for: request.id) { return response }
+            if queue.isClaimed(request.id) { return try await waitForClaimedResponse(to: request) }
             try await Task.sleep(for: .milliseconds(100))
-        } while Date() < deadline
-
+        }
         throw ValidationError(
-            "Timed out waiting for MacVM.app to handle the request. Open MacVM and try again."
+            "Timed out waiting for MacVM.app to pick up the request. Open MacVM and try again."
+        )
+    }
+
+    private func waitForClaimedResponse(to request: MacVMAppControlRequest) async throws -> MacVMAppControlResponse {
+        let completionDeadline = Date().addingTimeInterval(completionTimeout)
+        while Date() < completionDeadline {
+            if let response = try queue.response(for: request.id) { return response }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw ValidationError(
+            "MacVM.app acknowledged the request but did not complete it within the operation deadline."
         )
     }
 

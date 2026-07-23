@@ -94,6 +94,7 @@ final class AppStore {
     var draft: VMCreationDraft
     var setupAfterInstall = false
     var installHomebrewAfterSetup = true
+    var installClipboardHelperAfterSetup = true
     var selectedXcodeXIPURL: URL?
     var selectedProfileIDs: Set<String> = []
     var profileInputValues: [String: [String: String]] = [:]
@@ -119,6 +120,7 @@ final class AppStore {
     private(set) var liveSetupStates: [String: VMSetupRuntimeState] = [:]
     private(set) var launchOnBootStatuses: [String: VMLaunchOnBootStatus] = [:]
     private(set) var dockerStatuses: [String: DockerSidecarStatus] = [:]
+    private(set) var clipboardStatuses: [String: ClipboardRuntimeStatus] = [:]
     private(set) var dockerOperationMessages: [String: String] = [:]
     private var pendingDockerEnables: [String: DockerSidecarResourceConfiguration] = [:]
     private(set) var guestIPs: [String: String] = [:]
@@ -137,6 +139,8 @@ final class AppStore {
     private var runtimes: [String: VMViewerController] = [:]
     private var headlessRunners: [String: HeadlessRunner] = [:]
     private let controlQueue: MacVMAppControlQueue?
+    private var controlConsumerLease: MacVMAppControlConsumerLease?
+    private var lastControlLeaseError: String?
     private var refreshTimer: Timer?
     private var controlTimer: Timer?
     private var isProcessingControlRequest = false
@@ -162,6 +166,7 @@ final class AppStore {
         updateCommandForSelection()
         startRefreshTimer()
         if controlQueue != nil {
+            _ = ensureControlConsumerLease()
             startControlTimer()
         }
     }
@@ -223,11 +228,10 @@ final class AppStore {
         return "\(metadata.cpuCount) CPU · \(memory) GiB · \(disk) GiB · \(status.sidebarLabel)"
     }
 
-    /// The viewer controller whose window is key, for the VM menu commands.
+    /// The viewer controller whose native window is currently key. The manager
+    /// window and hidden/headless runtimes never qualify for clipboard actions.
     var activeViewer: VMViewerController? {
-        let viewers = runtimes.values.filter(\.hasWindow)
-        return viewers.first { $0.window?.isKeyWindow == true }
-            ?? (viewers.count == 1 ? viewers.first : nil)
+        runtimes.values.first { $0.hasWindow && $0.window?.isKeyWindow == true }
     }
 
     func hasViewer(forName name: String) -> Bool {
@@ -255,7 +259,8 @@ final class AppStore {
         controlTimer?.invalidate()
         controlTimer = nil
 
-        guard let controlQueue,
+        guard controlConsumerLease != nil,
+              let controlQueue,
               let requests = try? controlQueue.pendingRequests() else { return }
         for request in requests {
             let response = controlFailure(
@@ -312,13 +317,29 @@ final class AppStore {
     private func processPendingControlRequest() {
         guard !isTerminating, !isProcessingControlRequest else { return }
 
-        guard let controlQueue else { return }
+        guard let controlQueue, ensureControlConsumerLease() else { return }
         let request: MacVMAppControlRequest
         do {
+            if let interrupted = try controlQueue.interruptedRequests().first {
+                let response = controlFailure(
+                    interrupted,
+                    "MacVM restarted after claiming this operation. Any detached guest installation will finish or roll back safely; retry the command to verify and recover it."
+                )
+                try controlQueue.complete(interrupted, with: response)
+                processPendingControlRequest()
+                return
+            }
             guard let pending = try controlQueue.pendingRequests().first else { return }
             request = pending
         } catch {
             DebugLog.log("Unable to read app control requests: \(error.localizedDescription)")
+            return
+        }
+
+        do {
+            guard try controlQueue.claim(request) else { return }
+        } catch {
+            DebugLog.log("Unable to claim app control request: \(error.localizedDescription)")
             return
         }
 
@@ -333,6 +354,23 @@ final class AppStore {
             }
             isProcessingControlRequest = false
             processPendingControlRequest()
+        }
+    }
+
+    private func ensureControlConsumerLease() -> Bool {
+        if controlConsumerLease != nil { return true }
+        guard let controlQueue else { return false }
+        do {
+            controlConsumerLease = try controlQueue.acquireConsumerLease()
+            if controlConsumerLease != nil { lastControlLeaseError = nil }
+            return controlConsumerLease != nil
+        } catch {
+            let message = error.localizedDescription
+            if lastControlLeaseError != message {
+                DebugLog.log("Unable to acquire the app control consumer lease: \(message)")
+                lastControlLeaseError = message
+            }
+            return false
         }
     }
 
@@ -393,6 +431,47 @@ final class AppStore {
                     message: "Stopped in MacVM.",
                     vmName: resolved.metadata.name,
                     ownerPID: ownerPID
+                )
+
+            case .installClipboardHelper:
+                guard let controller = runtimeController(for: resolved) else {
+                    if headlessRunners[resolved.metadata.name] != nil {
+                        throw AppRuntimeError(message: "Clipboard helper installation cannot overlap setup for this VM.")
+                    }
+                    if service.hasLiveRuntime(for: resolved) {
+                        throw AppRuntimeError(message: "The running VM is not owned by this MacVM app instance. Stop that owner and restart it through MacVM.app.")
+                    }
+                    throw AppRuntimeError(message: "Start the VM with `macvm run \(resolved.metadata.name) --headless`, then retry `macvm clipboard install \(resolved.metadata.name)`." )
+                }
+                guard controller.isRunning else {
+                    throw AppRuntimeError(message: "Wait for \(resolved.metadata.name) to finish starting, then retry clipboard helper installation.")
+                }
+                let disposition = try await withThrowingTaskGroup(
+                    of: ClipboardGuestInstallDisposition.self
+                ) { group in
+                    group.addTask { [service] in
+                        try await service.installClipboardHelper(for: resolved)
+                    }
+                    group.addTask {
+                        try await Task.sleep(
+                            for: .seconds(MacVMAppControlRequest.operationCompletionTimeout)
+                        )
+                        throw AppRuntimeError(message: "Clipboard helper installation exceeded the operation deadline.")
+                    }
+                    guard let result = try await group.next() else {
+                        throw AppRuntimeError(message: "Clipboard helper installation ended unexpectedly.")
+                    }
+                    group.cancelAll()
+                    return result
+                }
+                try controller.reloadClipboardPairing()
+                refresh()
+                return MacVMAppControlResponse(
+                    requestID: request.id,
+                    succeeded: true,
+                    message: disposition.message,
+                    vmName: resolved.metadata.name,
+                    ownerPID: getpid()
                 )
             }
         } catch {
@@ -673,10 +752,15 @@ final class AppStore {
             requestedVNCPort: requestedVNCPort,
             processRuntimeRole: .manager
         )
+        controller.onClipboardStatusChange = { [weak self] status in
+            self?.clipboardStatuses[vm.metadata.name] = status
+        }
+        clipboardStatuses[vm.metadata.name] = controller.clipboardStatus
         controller.onStop = { [weak self] in
             guard let self else { return }
             self.runtimes[key]?.window?.orderOut(nil)
             self.runtimes[key] = nil
+            self.clipboardStatuses[vm.metadata.name] = nil
             self.refresh()
         }
         runtimes[key] = controller
@@ -839,6 +923,29 @@ final class AppStore {
                 alertMessage = "Failed to install Rosetta for Linux: \(error.localizedDescription)"
             }
         }
+    }
+
+    func setAutomaticClipboardSync(_ enabled: Bool, for vm: ManagedVM) {
+        do {
+            if let controller = runtimeController(for: vm) {
+                try controller.setAutomaticClipboardSyncEnabled(enabled)
+                clipboardStatuses[vm.metadata.name] = controller.clipboardStatus
+            } else {
+                _ = try service.setAutomaticClipboardSync(enabled, for: vm)
+            }
+            refresh()
+        } catch {
+            alertMessage = "Failed to update Automatic Clipboard Sync for \(vm.metadata.name): \(error.localizedDescription)"
+            refresh()
+        }
+    }
+
+    func clipboardStatus(for vm: ManagedVM) -> ClipboardRuntimeStatus {
+        clipboardStatuses[vm.metadata.name] ?? ClipboardRuntimeStatus(
+            enabled: vm.metadata.isAutomaticClipboardSyncEnabled,
+            viewerActive: false,
+            helper: .disconnected
+        )
     }
 
     func setLaunchOnBoot(_ enabled: Bool, for vm: ManagedVM) {
@@ -1183,6 +1290,7 @@ final class AppStore {
             defaults: service.defaultDraft(),
             setupAfter: setupAfterInstall || draft.dockerEnabled,
             installHomebrew: installHomebrewAfterSetup,
+            installClipboardHelper: installClipboardHelperAfterSetup,
             xcodeXIPURL: setupAfterInstall ? selectedXcodeXIPURL : nil,
             profileIDs: Array(selectedProfileIDs),
             profileInputs: profileInputValues
@@ -1228,6 +1336,7 @@ final class AppStore {
             defaults: service.defaultDraft(),
             setupAfter: shouldSetup,
             installHomebrew: installHomebrewAfterSetup,
+            installClipboardHelper: installClipboardHelperAfterSetup,
             xcodeXIPURL: shouldSetup ? selectedXcodeXIPURL : nil,
             profileIDs: Array(effectiveProfileIDs),
             profileInputs: profileInputValues
@@ -1241,6 +1350,7 @@ final class AppStore {
         let runSetupAfter = shouldSetup
         let setupXcodeXIPURL = shouldSetup ? selectedXcodeXIPURL : nil
         let setupInstallHomebrew = installHomebrewAfterSetup
+        let setupInstallClipboardHelper = installClipboardHelperAfterSetup
         if draft.dockerEnabled {
             pendingDockerEnables[name] = DockerSidecarResourceConfiguration(
                 cpuCount: draft.dockerCPUCount,
@@ -1256,6 +1366,7 @@ final class AppStore {
                 let creationSetupOptions = runSetupAfter ? SetupOptions(
                     xcodeXIPURL: setupXcodeXIPURL,
                     installHomebrew: setupInstallHomebrew,
+                    installClipboardHelper: setupInstallClipboardHelper,
                     provisioningSelection: setupSelection
                 ) : nil
                 let vm = try await service.createVM(
@@ -1294,6 +1405,7 @@ final class AppStore {
                             shutdownAfter: draft.dockerEnabled,
                             xcodeXIPURL: setupXcodeXIPURL,
                             installHomebrew: setupInstallHomebrew,
+                            installClipboardHelper: setupInstallClipboardHelper,
                             provisioningSelection: setupSelection
                         )
                     )

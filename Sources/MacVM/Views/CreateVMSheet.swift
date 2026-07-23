@@ -131,6 +131,11 @@ struct CreateVMSheet: View {
                                 if store.setupAfterInstall {
                                     Toggle("Install Homebrew", isOn: $store.installHomebrewAfterSetup)
                                         .disabled(store.draft.dockerEnabled)
+                                    Toggle("Install clipboard helper", isOn: $store.installClipboardHelperAfterSetup)
+                                    Text("Enables the guest capability; Automatic Clipboard Sync remains off until you turn it on per VM.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.tertiary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                     HStack(spacing: 8) {
                                         Text("Xcode:")
                                             .foregroundStyle(.secondary)

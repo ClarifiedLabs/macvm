@@ -1,4 +1,5 @@
 import Foundation
+import MacVMClipboardProtocol
 import Network
 
 struct RFBTraceEvent: Sendable {
@@ -16,8 +17,10 @@ enum RFBError: LocalizedError {
     case passwordRequired
     case notConnected
     case framebufferTimeout
+    case handshakeTimeout
     case clipboardTimeout
     case invalidClipboardText
+    case clipboardTextTooLarge(Int)
     case unsupportedEncoding(Int32)
     case unexpectedMessage(UInt8)
 
@@ -37,10 +40,14 @@ enum RFBError: LocalizedError {
             return "The VNC client is not connected."
         case .framebufferTimeout:
             return "Timed out waiting for a VNC framebuffer update."
+        case .handshakeTimeout:
+            return "Timed out while connecting to the VNC server."
         case .clipboardTimeout:
             return "Timed out waiting for the VM pasteboard to publish text."
         case .invalidClipboardText:
-            return "The VM pasteboard update was not valid text."
+            return "The VM pasteboard update was not valid UTF-8 text."
+        case .clipboardTextTooLarge(let count):
+            return "The VM pasteboard update is \(count) UTF-8 bytes; the maximum is 1 MiB."
         case .unsupportedEncoding(let encoding):
             return "The VNC server used an unsupported encoding (\(encoding)). Only Raw is supported."
         case .unexpectedMessage(let type):
@@ -163,42 +170,69 @@ actor RFBClient {
 
     /// Perform the full RFB 3.8 handshake: version, security/auth, init, then set
     /// our pixel format (BGRA32) and Raw encoding.
-    func connect(password: String?) async throws {
+    func connect(password: String?, timeout: TimeInterval = 10) async throws {
         emit("connection_open")
-        try await startConnection()
+        let deadline = Date().addingTimeInterval(timeout)
+        try await startConnection(deadline: deadline)
 
-        _ = try await receive(exactly: 12) // ProtocolVersion greeting
-        try await send(Array("RFB 003.008\n".utf8))
+        _ = try await receive(exactly: 12, deadline: deadline, timeoutError: .handshakeTimeout)
+        try await send(Array("RFB 003.008\n".utf8), deadline: deadline, timeoutError: .handshakeTimeout)
 
-        let securityCount = Int(try await receive(exactly: 1)[0])
+        let securityCount = Int(try await receive(
+            exactly: 1,
+            deadline: deadline,
+            timeoutError: .handshakeTimeout
+        )[0])
         if securityCount == 0 {
-            let reasonLength = Int(try await readUInt32())
-            let reason = try await receive(exactly: reasonLength)
+            let reasonLength = Int(try await readUInt32(deadline: deadline, timeoutError: .handshakeTimeout))
+            guard reasonLength <= ClipboardProtocolConstants.maximumTextBytes else {
+                throw RFBError.handshakeFailed("the failure reason is too large")
+            }
+            let reason = try await receive(
+                exactly: reasonLength,
+                deadline: deadline,
+                timeoutError: .handshakeTimeout
+            )
             throw RFBError.handshakeFailed(String(decoding: reason, as: UTF8.self))
         }
-        let securityTypes = try await receive(exactly: securityCount)
+        let securityTypes = try await receive(
+            exactly: securityCount,
+            deadline: deadline,
+            timeoutError: .handshakeTimeout
+        )
 
         let chosen = try selectSecurityType(from: securityTypes, hasPassword: password != nil)
-        try await send([chosen])
+        try await send([chosen], deadline: deadline, timeoutError: .handshakeTimeout)
 
         if chosen == RFB.securityVNCAuth {
             guard let password else { throw RFBError.passwordRequired }
-            let challenge = try await receive(exactly: 16)
-            try await send(RFBAuth.response(challenge: challenge, password: password))
+            let challenge = try await receive(exactly: 16, deadline: deadline, timeoutError: .handshakeTimeout)
+            try await send(
+                RFBAuth.response(challenge: challenge, password: password),
+                deadline: deadline,
+                timeoutError: .handshakeTimeout
+            )
         }
 
         // SecurityResult (RFB 3.8 sends it for every security type, including None).
-        let result = try await readUInt32()
+        let result = try await readUInt32(deadline: deadline, timeoutError: .handshakeTimeout)
         if result != 0 {
-            let reasonLength = Int(try await readUInt32())
-            let reason = try await receive(exactly: reasonLength)
+            let reasonLength = Int(try await readUInt32(deadline: deadline, timeoutError: .handshakeTimeout))
+            guard reasonLength <= ClipboardProtocolConstants.maximumTextBytes else {
+                throw RFBError.authenticationFailed("the failure reason is too large")
+            }
+            let reason = try await receive(
+                exactly: reasonLength,
+                deadline: deadline,
+                timeoutError: .handshakeTimeout
+            )
             throw RFBError.authenticationFailed(String(decoding: reason, as: UTF8.self))
         }
 
-        try await send(RFBMessage.clientInit(shared: true))
+        try await send(RFBMessage.clientInit(shared: true), deadline: deadline, timeoutError: .handshakeTimeout)
 
         // ServerInit: width(2) height(2) pixelFormat(16) nameLength(4) then name.
-        let header = try await receive(exactly: 24)
+        let header = try await receive(exactly: 24, deadline: deadline, timeoutError: .handshakeTimeout)
         framebufferWidth = Int(UInt16(header[0]) << 8 | UInt16(header[1]))
         framebufferHeight = Int(UInt16(header[2]) << 8 | UInt16(header[3]))
         emit("server_init", fields: [
@@ -208,10 +242,17 @@ actor RFBClient {
         let nameLength = Int(
             UInt32(header[20]) << 24 | UInt32(header[21]) << 16 | UInt32(header[22]) << 8 | UInt32(header[23])
         )
-        _ = try await receive(exactly: nameLength)
+        guard nameLength <= ClipboardProtocolConstants.maximumTextBytes else {
+            throw RFBError.handshakeFailed("the server name is too large")
+        }
+        _ = try await receive(exactly: nameLength, deadline: deadline, timeoutError: .handshakeTimeout)
 
-        try await send(RFBMessage.setPixelFormat(.bgra32))
-        try await send(RFBMessage.setEncodings(RFB.clientEncodings))
+        try await send(RFBMessage.setPixelFormat(.bgra32), deadline: deadline, timeoutError: .handshakeTimeout)
+        try await send(
+            RFBMessage.setEncodings(RFB.clientEncodings),
+            deadline: deadline,
+            timeoutError: .handshakeTimeout
+        )
     }
 
     /// Request and decode a full (non-incremental) framebuffer update. The server
@@ -292,6 +333,9 @@ actor RFBClient {
             case RFB.serverCutTextType:
                 _ = try await receiveFramebuffer(exactly: 3, deadline: deadline)
                 let length = Int(try await readFramebufferUInt32(deadline: deadline))
+                guard length <= ClipboardProtocolConstants.maximumTextBytes else {
+                    throw RFBError.clipboardTextTooLarge(length)
+                }
                 _ = try await receiveFramebuffer(exactly: length, deadline: deadline)
 
             default:
@@ -413,7 +457,19 @@ actor RFBClient {
     /// Replace the guest-side VNC cut buffer with plain UTF-8 text. The guest may
     /// expose that as its pasteboard depending on the server/guest integration.
     func setClipboardText(_ text: String) async throws {
-        try await send(RFBMessage.clientCutText(text))
+        try await setClipboardText(text, timeout: 10)
+    }
+
+    func setClipboardText(_ text: String, timeout: TimeInterval) async throws {
+        let count = text.utf8.count
+        guard count <= ClipboardProtocolConstants.maximumTextBytes else {
+            throw RFBError.clipboardTextTooLarge(count)
+        }
+        try await send(
+            RFBMessage.clientCutText(text),
+            deadline: Date().addingTimeInterval(timeout),
+            timeoutError: .clipboardTimeout
+        )
     }
 
     /// Wait for the guest VNC server to publish a clipboard update. RFB has no
@@ -509,10 +565,12 @@ actor RFBClient {
         throw RFBError.noSupportedSecurityType
     }
 
-    private func startConnection() async throws {
+    private func startConnection(deadline: Date) async throws {
         guard !started else { return }
         started = true
 
+        let timeout = deadline.timeIntervalSinceNow
+        guard timeout > 0 else { throw RFBError.handshakeTimeout }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let resumed = OneShot()
             connection.stateUpdateHandler = { state in
@@ -528,6 +586,9 @@ actor RFBClient {
                 }
             }
             connection.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + timeout) {
+                if resumed.fire() { continuation.resume(throwing: RFBError.handshakeTimeout) }
+            }
         }
     }
 
@@ -540,6 +601,24 @@ actor RFBClient {
                     continuation.resume()
                 }
             })
+        }
+    }
+
+    private func send(_ bytes: [UInt8], deadline: Date, timeoutError: RFBError) async throws {
+        let timeout = deadline.timeIntervalSinceNow
+        guard timeout > 0 else { throw timeoutError }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let resumed = OneShot()
+            connection.send(content: Data(bytes), completion: .contentProcessed { error in
+                if let error {
+                    if resumed.fire() { continuation.resume(throwing: error) }
+                } else if resumed.fire() {
+                    continuation.resume()
+                }
+            })
+            queue.asyncAfter(deadline: .now() + timeout) {
+                if resumed.fire() { continuation.resume(throwing: timeoutError) }
+            }
         }
     }
 
@@ -640,16 +719,16 @@ actor RFBClient {
     private func readServerCutText(deadline: Date) async throws -> String {
         _ = try await receive(exactly: 3, deadline: deadline) // padding
         let length = Int(try await readUInt32(deadline: deadline))
+        guard length <= ClipboardProtocolConstants.maximumTextBytes else {
+            throw RFBError.clipboardTextTooLarge(length)
+        }
         let bytes = try await receive(exactly: length, deadline: deadline)
         let data = Data(bytes)
 
-        if let text = String(data: data, encoding: .utf8) {
-            return text
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw RFBError.invalidClipboardText
         }
-        if let text = String(data: data, encoding: .isoLatin1) {
-            return text
-        }
-        throw RFBError.invalidClipboardText
+        return text
     }
 
     private func discardFramebufferUpdate(deadline: Date) async throws {
