@@ -10,15 +10,38 @@ private extension NSToolbar.Identifier {
 }
 
 private extension NSToolbarItem.Identifier {
-    static let automaticClipboardSync = NSToolbarItem.Identifier(
-        "dev.macvm.viewer.automatic-clipboard-sync"
+    static let clipboardControls = NSToolbarItem.Identifier(
+        "dev.macvm.viewer.clipboard-controls"
     )
-    static let copyHostPasteboardToGuest = NSToolbarItem.Identifier(
-        "dev.macvm.viewer.copy-host-pasteboard-to-guest"
-    )
-    static let copyGuestPasteboardToHost = NSToolbarItem.Identifier(
-        "dev.macvm.viewer.copy-guest-pasteboard-to-host"
-    )
+}
+
+enum ClipboardToolbarStatusTone: Equatable {
+    case off
+    case inactive
+    case connecting
+    case connected
+    case warning
+
+    var color: NSColor {
+        switch self {
+        case .off:
+            return .tertiaryLabelColor
+        case .inactive:
+            return .secondaryLabelColor
+        case .connecting:
+            return .systemOrange
+        case .connected:
+            return .systemGreen
+        case .warning:
+            return .systemRed
+        }
+    }
+}
+
+struct ClipboardToolbarStatusPresentation: Equatable {
+    let symbolName: String
+    let tone: ClipboardToolbarStatusTone
+    let toolTip: String
 }
 
 /// Owns one VM and its optional native display: the `VZVirtualMachine`
@@ -68,7 +91,9 @@ public final class VMViewerController:
     private let clipboardActivationOwnerID = UUID()
     private var clipboardActivationGeneration: UInt64?
     private weak var clipboardToggle: NSSwitch?
-    private weak var clipboardStatusLabel: NSTextField?
+    private weak var clipboardStatusImageView: NSImageView?
+    private weak var copyHostPasteboardToGuestButton: NSButton?
+    private weak var copyGuestPasteboardToHostButton: NSButton?
     private var lastClipboardHelperState: ClipboardHelperConnectionState = .connecting
     private var clipboardTransferInProgress = false
     private var startHeartbeatTimer: Timer?
@@ -413,10 +438,8 @@ public final class VMViewerController:
 
     public func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         switch item.itemIdentifier {
-        case .automaticClipboardSync:
-            return virtualMachine?.state == .running
-        case .copyHostPasteboardToGuest, .copyGuestPasteboardToHost:
-            return canTransferPasteboard
+        case .clipboardControls:
+            return true
         default:
             return true
         }
@@ -502,31 +525,24 @@ public final class VMViewerController:
         let toolbar = NSToolbar(identifier: .vmViewer)
         toolbar.delegate = self
         toolbar.allowsUserCustomization = false
-        // Compact unified toolbars force icon-only presentation on current
-        // macOS releases, so use the expanded style for the product-required
-        // action labels.
-        window.toolbarStyle = .expanded
+        // The custom clipboard view supplies its own concise labels, allowing
+        // AppKit to keep the controls in the compact titlebar row.
+        window.toolbarStyle = .unifiedCompact
         window.toolbar = toolbar
-        // Attaching the toolbar can restore AppKit's icon-only default, so
-        // apply the labeled mode afterwards.
-        toolbar.displayMode = .iconAndLabel
+        toolbar.displayMode = .iconOnly
     }
 
     public func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .flexibleSpace,
-            .automaticClipboardSync,
-            .copyHostPasteboardToGuest,
-            .copyGuestPasteboardToHost,
+            .clipboardControls,
         ]
     }
 
     public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .flexibleSpace,
-            .automaticClipboardSync,
-            .copyHostPasteboardToGuest,
-            .copyGuestPasteboardToHost,
+            .clipboardControls,
         ]
     }
 
@@ -539,50 +555,112 @@ public final class VMViewerController:
         item.target = self
 
         switch itemIdentifier {
-        case .automaticClipboardSync:
-            item.label = "Automatic Clipboard Sync"
-            item.paletteLabel = "Automatic Clipboard Sync"
-            item.toolTip = "Synchronize plain text while this VM viewer is the key window."
+        case .clipboardControls:
+            item.label = "Clipboard"
+            item.paletteLabel = "Clipboard"
+
+            let headingLabel = clipboardToolbarLabel("Clipboard:", weight: .semibold)
             let toggle = NSSwitch()
             toggle.target = self
             toggle.action = #selector(automaticClipboardSyncChanged(_:))
             toggle.state = clipboardRuntime.enabled ? .on : .off
+            toggle.controlSize = .small
+            toggle.isEnabled = virtualMachine?.state == .running
             toggle.setAccessibilityLabel("Automatic Clipboard Sync")
-            let statusLabel = NSTextField(labelWithString: clipboardToolbarStatusDescription)
-            statusLabel.font = .systemFont(ofSize: 10)
-            statusLabel.textColor = .secondaryLabelColor
-            statusLabel.setAccessibilityLabel("Automatic Clipboard Sync status")
-            let stack = NSStackView(views: [toggle, statusLabel])
+            let automaticSyncLabel = clipboardToolbarLabel("Auto Sync")
+
+            let statusImageView = NSImageView()
+            statusImageView.imageScaling = .scaleProportionallyDown
+            statusImageView.translatesAutoresizingMaskIntoConstraints = false
+            statusImageView.widthAnchor.constraint(equalToConstant: 14).isActive = true
+            statusImageView.heightAnchor.constraint(equalToConstant: 14).isActive = true
+            statusImageView.setAccessibilityElement(true)
+            statusImageView.setAccessibilityLabel("Automatic Clipboard Sync status")
+            applyClipboardToolbarStatusPresentation(to: statusImageView)
+
+            let copyInButton = clipboardToolbarButton(
+                title: "In",
+                systemImage: "arrow.right",
+                accessibilityLabel: "Copy Host Pasteboard into VM",
+                toolTip: "Copy plain text from the host pasteboard into the VM pasteboard.",
+                action: #selector(copyHostPasteboardToGuest(_:))
+            )
+            let copyOutButton = clipboardToolbarButton(
+                title: "Out",
+                systemImage: "arrow.left",
+                accessibilityLabel: "Copy VM Pasteboard out to Host",
+                toolTip: "Copy current plain text from the VM pasteboard to the host pasteboard.",
+                action: #selector(copyGuestPasteboardToHost(_:))
+            )
+            copyInButton.isEnabled = canTransferPasteboard
+            copyOutButton.isEnabled = canTransferPasteboard
+
+            let stack = NSStackView(views: [
+                headingLabel,
+                toggle,
+                automaticSyncLabel,
+                statusImageView,
+                clipboardToolbarSeparator(),
+                copyInButton,
+                clipboardToolbarSeparator(),
+                copyOutButton,
+            ])
             stack.orientation = .horizontal
-            stack.spacing = 5
+            stack.spacing = 6
             stack.alignment = .centerY
+            stack.setHuggingPriority(.required, for: .horizontal)
+            stack.setContentCompressionResistancePriority(.required, for: .horizontal)
             item.view = stack
+
             clipboardToggle = toggle
-            clipboardStatusLabel = statusLabel
-        case .copyHostPasteboardToGuest:
-            item.label = "Paste to VM →"
-            item.paletteLabel = "Paste to VM →"
-            item.toolTip = "Copy plain text from the host pasteboard to the VM pasteboard."
-            item.image = NSImage(
-                systemSymbolName: "arrow.right",
-                accessibilityDescription: "Copy Host Pasteboard to VM"
-            )
-            item.action = #selector(copyHostPasteboardToGuest(_:))
-        case .copyGuestPasteboardToHost:
-            item.label = "← Copy from VM"
-            item.paletteLabel = "← Copy from VM"
-            item.toolTip = "Copy current plain text from the VM pasteboard to the host pasteboard."
-            item.image = NSImage(
-                systemSymbolName: "arrow.left",
-                accessibilityDescription: "Copy VM Pasteboard to Host"
-            )
-            item.action = #selector(copyGuestPasteboardToHost(_:))
+            clipboardStatusImageView = statusImageView
+            copyHostPasteboardToGuestButton = copyInButton
+            copyGuestPasteboardToHostButton = copyOutButton
         default:
             return nil
         }
 
-        item.isEnabled = canTransferPasteboard
+        item.isEnabled = true
         return item
+    }
+
+    private func clipboardToolbarLabel(
+        _ title: String,
+        weight: NSFont.Weight = .regular
+    ) -> NSTextField {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: weight)
+        return label
+    }
+
+    private func clipboardToolbarButton(
+        title: String,
+        systemImage: String,
+        accessibilityLabel: String,
+        toolTip: String,
+        action: Selector
+    ) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.image = NSImage(
+            systemSymbolName: systemImage,
+            accessibilityDescription: accessibilityLabel
+        )
+        button.imagePosition = .imageLeading
+        button.isBordered = false
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        button.toolTip = toolTip
+        button.setAccessibilityLabel(accessibilityLabel)
+        return button
+    }
+
+    private func clipboardToolbarSeparator() -> NSBox {
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        separator.heightAnchor.constraint(equalToConstant: 16).isActive = true
+        return separator
     }
 
     private func restoredWindowFrame() -> NSRect? {
@@ -991,12 +1069,58 @@ public final class VMViewerController:
             && !clipboardTransferInProgress
     }
 
-    private var clipboardToolbarStatusDescription: String {
-        let status = clipboardRuntime.status
+    static func clipboardToolbarStatusPresentation(
+        for status: ClipboardRuntimeStatus
+    ) -> ClipboardToolbarStatusPresentation {
         if !status.enabled {
-            return "Off · Helper \(status.helper.displayName.lowercased())"
+            return ClipboardToolbarStatusPresentation(
+                symbolName: "minus.circle.fill",
+                tone: .off,
+                toolTip: "Automatic Clipboard Sync is off. Clipboard helper: \(status.helper.displayName)."
+            )
         }
-        return status.displayName
+        if !status.viewerActive {
+            return ClipboardToolbarStatusPresentation(
+                symbolName: "pause.circle.fill",
+                tone: .inactive,
+                toolTip: "Automatic Clipboard Sync is inactive until this VM viewer is the key window. Clipboard helper: \(status.helper.displayName)."
+            )
+        }
+        switch status.helper {
+        case .connecting:
+            return ClipboardToolbarStatusPresentation(
+                symbolName: "ellipsis.circle.fill",
+                tone: .connecting,
+                toolTip: "Automatic Clipboard Sync is connecting to the guest clipboard helper."
+            )
+        case .connected:
+            return ClipboardToolbarStatusPresentation(
+                symbolName: "checkmark.circle.fill",
+                tone: .connected,
+                toolTip: "Automatic Clipboard Sync is connected."
+            )
+        case .disconnected, .unpaired, .outdatedHelper, .hostUpdateRequired, .unavailable:
+            return ClipboardToolbarStatusPresentation(
+                symbolName: "exclamationmark.triangle.fill",
+                tone: .warning,
+                toolTip: "Automatic Clipboard Sync is unavailable. Clipboard helper: \(status.helper.displayName)."
+            )
+        }
+    }
+
+    private func applyClipboardToolbarStatusPresentation(to imageView: NSImageView) {
+        let presentation = Self.clipboardToolbarStatusPresentation(for: clipboardRuntime.status)
+        let symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: 12,
+            weight: .semibold
+        )
+        imageView.image = NSImage(
+            systemSymbolName: presentation.symbolName,
+            accessibilityDescription: presentation.toolTip
+        )?.withSymbolConfiguration(symbolConfiguration)
+        imageView.contentTintColor = presentation.tone.color
+        imageView.toolTip = presentation.toolTip
+        imageView.setAccessibilityValue(presentation.toolTip)
     }
 
     @objc private func automaticClipboardSyncChanged(_ sender: NSSwitch) {
@@ -1090,8 +1214,12 @@ public final class VMViewerController:
 
     private func refreshPasteboardCommandState() {
         clipboardToggle?.state = clipboardRuntime.enabled ? .on : .off
-        clipboardStatusLabel?.stringValue = clipboardToolbarStatusDescription
-        clipboardStatusLabel?.setAccessibilityValue(clipboardToolbarStatusDescription)
+        clipboardToggle?.isEnabled = virtualMachine?.state == .running
+        if let clipboardStatusImageView {
+            applyClipboardToolbarStatusPresentation(to: clipboardStatusImageView)
+        }
+        copyHostPasteboardToGuestButton?.isEnabled = canTransferPasteboard
+        copyGuestPasteboardToHostButton?.isEnabled = canTransferPasteboard
         NSApplication.shared.mainMenu?.update()
         window?.toolbar?.validateVisibleItems()
     }

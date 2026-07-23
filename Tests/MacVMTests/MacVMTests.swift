@@ -392,7 +392,7 @@ func viewerCloseHidesWindowAndShowRestoresIt() throws {
 
 @Test
 @MainActor
-func viewerWindowProvidesPasteboardTransferToolbarButtons() throws {
+func viewerWindowProvidesCompactClipboardToolbarControls() throws {
     _ = NSApplication.shared
     let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -412,29 +412,88 @@ func viewerWindowProvidesPasteboardTransferToolbarButtons() throws {
     let controller = VMViewerController(managedVM: ManagedVM(bundleURL: bundleURL, metadata: metadata))
     let window = try controller.makeWindow()
     let items = try #require(window.toolbar?.items)
-    let automaticSync = try #require(items.first { $0.label == "Automatic Clipboard Sync" })
-    let pasteToVM = try #require(items.first { $0.label == "Paste to VM →" })
-    let copyFromVM = try #require(items.first { $0.label == "← Copy from VM" })
+    let clipboardItem = try #require(items.first { $0.label == "Clipboard" })
+    let controls = try #require(clipboardItem.view as? NSStackView)
+    let labels = controls.views.compactMap { ($0 as? NSTextField)?.stringValue }
+    let toggle = try #require(controls.views.compactMap { $0 as? NSSwitch }.first)
+    let statusImage = try #require(controls.views.compactMap { $0 as? NSImageView }.first)
+    let buttons = controls.views.compactMap { $0 as? NSButton }
+    let pasteToVM = try #require(buttons.first { $0.title == "In" })
+    let copyFromVM = try #require(buttons.first { $0.title == "Out" })
 
-    #expect(window.toolbarStyle == .expanded)
-    #expect(window.toolbar?.displayMode == .iconAndLabel)
+    #expect(window.toolbarStyle == .unifiedCompact)
+    #expect(window.toolbar?.displayMode == .iconOnly)
     #expect(items.first?.itemIdentifier == .flexibleSpace)
-    #expect(items.suffix(3).map(\.label) == [
-        "Automatic Clipboard Sync",
-        "Paste to VM →",
-        "← Copy from VM",
-    ])
-    #expect(automaticSync.view != nil)
+    #expect(items.suffix(1).map(\.label) == ["Clipboard"])
+    #expect(controls.fittingSize.height <= 24)
+    #expect(labels == ["Clipboard:", "Auto Sync"])
+    #expect(toggle.target === controller)
+    #expect(toggle.accessibilityLabel() == "Automatic Clipboard Sync")
+    #expect(statusImage.accessibilityLabel() == "Automatic Clipboard Sync status")
     #expect(pasteToVM.action == #selector(VMViewerController.copyHostPasteboardToGuest(_:)))
     #expect(copyFromVM.action == #selector(VMViewerController.copyGuestPasteboardToHost(_:)))
     #expect(pasteToVM.target === controller)
     #expect(copyFromVM.target === controller)
+    #expect(pasteToVM.accessibilityLabel() == "Copy Host Pasteboard into VM")
+    #expect(copyFromVM.accessibilityLabel() == "Copy VM Pasteboard out to Host")
     #expect(pasteToVM.toolTip?.contains("host pasteboard") == true)
     #expect(copyFromVM.toolTip?.contains("current plain text") == true)
-    #expect(!controller.validateToolbarItem(pasteToVM))
-    #expect(!controller.validateToolbarItem(copyFromVM))
+    #expect(statusImage.toolTip?.contains("is off") == true)
+    #expect(!toggle.isEnabled)
+    #expect(!pasteToVM.isEnabled)
+    #expect(!copyFromVM.isEnabled)
+    #expect(controller.validateToolbarItem(clipboardItem))
 
     controller.tearDown()
+}
+
+@Test
+@MainActor
+func clipboardToolbarStatusPresentationCoversRuntimeStates() {
+    let off = VMViewerController.clipboardToolbarStatusPresentation(
+        for: ClipboardRuntimeStatus(enabled: false, viewerActive: true, helper: .connected)
+    )
+    #expect(off.symbolName == "minus.circle.fill")
+    #expect(off.tone == .off)
+    #expect(off.toolTip.contains("is off"))
+    #expect(off.toolTip.contains("Connected"))
+
+    let inactive = VMViewerController.clipboardToolbarStatusPresentation(
+        for: ClipboardRuntimeStatus(enabled: true, viewerActive: false, helper: .connected)
+    )
+    #expect(inactive.symbolName == "pause.circle.fill")
+    #expect(inactive.tone == .inactive)
+    #expect(inactive.toolTip.contains("key window"))
+    #expect(inactive.toolTip.contains("Connected"))
+
+    let connecting = VMViewerController.clipboardToolbarStatusPresentation(
+        for: ClipboardRuntimeStatus(enabled: true, viewerActive: true, helper: .connecting)
+    )
+    #expect(connecting.symbolName == "ellipsis.circle.fill")
+    #expect(connecting.tone == .connecting)
+    #expect(connecting.toolTip.contains("connecting"))
+
+    let connected = VMViewerController.clipboardToolbarStatusPresentation(
+        for: ClipboardRuntimeStatus(enabled: true, viewerActive: true, helper: .connected)
+    )
+    #expect(connected.symbolName == "checkmark.circle.fill")
+    #expect(connected.tone == .connected)
+    #expect(connected.toolTip.contains("is connected"))
+
+    for helper in [
+        ClipboardHelperConnectionState.disconnected,
+        .unpaired,
+        .outdatedHelper,
+        .hostUpdateRequired,
+        .unavailable,
+    ] {
+        let warning = VMViewerController.clipboardToolbarStatusPresentation(
+            for: ClipboardRuntimeStatus(enabled: true, viewerActive: true, helper: helper)
+        )
+        #expect(warning.symbolName == "exclamationmark.triangle.fill")
+        #expect(warning.tone == .warning)
+        #expect(warning.toolTip.contains(helper.displayName))
+    }
 }
 
 @Test
