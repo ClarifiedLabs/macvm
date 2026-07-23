@@ -3558,7 +3558,10 @@ func rfbClientRejectsOversizedCursorRectangle() async throws {
 func rfbClientBoundsColourMapPayloads() async throws {
     // A bounded colour-map payload is consumed and the loop continues to the
     // bounded wait for further messages.
-    let idleServer = try MinimalRFBServer(maxConnections: 1, mode: .sendColourMapEntries(2))
+    let idleServer = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .sendColourMapEntries(2, includePayload: true)
+    )
     idleServer.start()
     defer { idleServer.stop() }
 
@@ -3639,7 +3642,10 @@ func rfbClientClipboardWaitRejectsOversizedDesktopSize() async throws {
 
 @Test
 func rfbClientClipboardWaitRejectsOversizedColourMap() async throws {
-    let server = try MinimalRFBServer(maxConnections: 1, mode: .sendColourMapEntries(65_535))
+    let server = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .sendColourMapEntries(65_535, includePayload: false)
+    )
     server.start()
     defer { server.stop() }
 
@@ -3757,7 +3763,7 @@ private enum MinimalRFBServerMode {
     case oversizedDesktopSize(width: UInt16, height: UInt16)
     case oversizedRawRectangle(width: UInt16, height: UInt16)
     case oversizedCursorRectangle(width: UInt16, height: UInt16)
-    case sendColourMapEntries(UInt16)
+    case sendColourMapEntries(UInt16, includePayload: Bool)
 }
 
 private final class MinimalRFBServer: @unchecked Sendable {
@@ -3981,8 +3987,8 @@ private final class MinimalRFBServer: @unchecked Sendable {
                 encoding: RFB.cursorEncoding,
                 to: clientFD
             )
-        case .sendColourMapEntries(let count):
-            try sendColourMapEntries(count, to: clientFD)
+        case .sendColourMapEntries(let count, let includePayload):
+            try sendColourMapEntries(count, includePayload: includePayload, to: clientFD)
         }
     }
 
@@ -4006,14 +4012,21 @@ private final class MinimalRFBServer: @unchecked Sendable {
         usleep(300 * 1000)
     }
 
-    private func sendColourMapEntries(_ count: UInt16, to clientFD: Int32) throws {
+    private func sendColourMapEntries(
+        _ count: UInt16,
+        includePayload: Bool,
+        to clientFD: Int32
+    ) throws {
         var message: [UInt8] = [RFB.setColourMapEntriesType, 0]
         message.appendBigEndian(UInt16(0)) // first colour
         message.appendBigEndian(count)
-        // A real peer would send `count * 6` bytes; send nothing so a client that
-        // fails to bound the count would stall or allocate for the full payload.
+        if includePayload {
+            message.append(contentsOf: [UInt8](repeating: 0, count: Int(count) * 6))
+        }
         try writeAll(message, to: clientFD)
-        usleep(300 * 1000)
+        // Let the client's protocol deadline or validation close the connection.
+        // A fixed server delay races with the client's deadline on loaded runners.
+        _ = try readExactly(1, from: clientFD)
     }
 
     private func serveFramebufferCapture(clientFD: Int32, connectionIndex: Int) throws {
