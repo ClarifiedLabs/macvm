@@ -3417,6 +3417,263 @@ func rfbClientReceivesClipboardText() async throws {
 }
 
 @Test
+func rfbLimitsRejectOversizedFramebufferDimensions() throws {
+    #expect(throws: RFBError.self) {
+        try RFBClient.Limits.validateFramebufferSize(width: 0, height: 100)
+    }
+    #expect(throws: RFBError.self) {
+        try RFBClient.Limits.validateFramebufferSize(
+            width: RFBClient.Limits.maximumFramebufferDimension + 1,
+            height: 1
+        )
+    }
+    // Both dimensions fit individually but the pixel count exceeds the cap.
+    #expect(throws: RFBError.self) {
+        try RFBClient.Limits.validateFramebufferSize(width: 16_384, height: 16_384)
+    }
+    try RFBClient.Limits.validateFramebufferSize(width: 16_384, height: 4_096)
+}
+
+@Test
+func rfbLimitsPayloadBytesAreOverflowChecked() throws {
+    #expect(try RFBClient.Limits.payloadBytes(width: 1, height: 1, bytesPerPixel: 4) == 4)
+    #expect(try RFBClient.Limits.payloadBytes(width: 0, height: 0, bytesPerPixel: 4) == 0)
+    // 65535x65535 pixels at 4 bytes overflows UInt32 and exceeds the byte cap.
+    #expect(throws: RFBError.self) {
+        _ = try RFBClient.Limits.payloadBytes(width: 65_535, height: 65_535, bytesPerPixel: 4)
+    }
+    // A rectangle whose byte count would sit exactly at the cap is allowed.
+    #expect(
+        try RFBClient.Limits.payloadBytes(
+            width: 4_096,
+            height: 4_096,
+            bytesPerPixel: 4
+        ) == RFBClient.Limits.maximumPayloadBytes
+    )
+}
+
+@Test
+func rfbLimitsRejectOversizedColourMaps() throws {
+    #expect(try RFBClient.Limits.colourMapBytes(entries: 4_096, bytesPerEntry: 6) == 24_576)
+    #expect(throws: RFBError.self) {
+        _ = try RFBClient.Limits.colourMapBytes(entries: 4_097, bytesPerEntry: 6)
+    }
+}
+
+@Test
+func rfbClientRejectsOversizedServerInitFramebuffer() async throws {
+    let server = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .oversizedServerInit(
+            width: UInt16(RFBClient.Limits.maximumFramebufferDimension + 1),
+            height: 1
+        )
+    )
+    server.start()
+    defer { server.stop() }
+
+    let startedAt = Date()
+    do {
+        try await RFBClient.withConnection(port: server.port, password: nil) { _ in }
+        Issue.record("Expected the oversized ServerInit framebuffer to be rejected")
+    } catch RFBError.framebufferTooLarge {
+        // Expected.
+    } catch {
+        Issue.record("Expected framebufferTooLarge, got \(error)")
+    }
+
+    // Rejection happens before any payload read, not after a timeout.
+    #expect(Date().timeIntervalSince(startedAt) < 0.5)
+}
+
+@Test
+func rfbClientRejectsOversizedDesktopSizeRectangle() async throws {
+    let server = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .oversizedDesktopSize(width: 65_535, height: 65_535)
+    )
+    server.start()
+    defer { server.stop() }
+
+    do {
+        _ = try await RFBClient.captureOnce(port: server.port, password: nil, timeout: 1)
+        Issue.record("Expected the oversized DesktopSize rectangle to be rejected")
+    } catch RFBError.framebufferTooLarge {
+        // Expected.
+    } catch {
+        Issue.record("Expected framebufferTooLarge, got \(error)")
+    }
+}
+
+@Test
+func rfbClientRejectsOversizedRawRectangle() async throws {
+    let server = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .oversizedRawRectangle(width: 65_535, height: 65_535)
+    )
+    server.start()
+    defer { server.stop() }
+
+    let startedAt = Date()
+    do {
+        _ = try await RFBClient.captureOnce(port: server.port, password: nil, timeout: 1)
+        Issue.record("Expected the oversized Raw rectangle to be rejected")
+    } catch RFBError.rectangleTooLarge {
+        // Expected.
+    } catch {
+        Issue.record("Expected rectangleTooLarge, got \(error)")
+    }
+
+    // The size is rejected from the header alone; no pixel payload is awaited.
+    #expect(Date().timeIntervalSince(startedAt) < 0.5)
+}
+
+@Test
+func rfbClientRejectsOversizedCursorRectangle() async throws {
+    let server = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .oversizedCursorRectangle(width: 65_535, height: 65_535)
+    )
+    server.start()
+    defer { server.stop() }
+
+    do {
+        _ = try await RFBClient.captureOnce(port: server.port, password: nil, timeout: 1)
+        Issue.record("Expected the oversized cursor rectangle to be rejected")
+    } catch RFBError.rectangleTooLarge {
+        // Expected.
+    } catch {
+        Issue.record("Expected rectangleTooLarge, got \(error)")
+    }
+}
+
+@Test
+func rfbClientBoundsColourMapPayloads() async throws {
+    // A bounded colour-map payload is consumed and the loop continues to the
+    // bounded wait for further messages.
+    let idleServer = try MinimalRFBServer(maxConnections: 1, mode: .sendColourMapEntries(2))
+    idleServer.start()
+    defer { idleServer.stop() }
+
+    do {
+        try await RFBClient.withConnection(port: idleServer.port, password: nil) { client in
+            _ = try await client.waitForClipboardText(timeout: 0.25)
+        }
+        Issue.record("Expected the clipboard wait to time out after the colour map")
+    } catch RFBError.clipboardTimeout {
+        // Expected: the colour map was skipped and no clipboard text arrived.
+    } catch {
+        Issue.record("Expected clipboardTimeout, got \(error)")
+    }
+}
+
+@Test
+func rfbClientClipboardWaitRejectsOversizedRawRectangle() async throws {
+    let server = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .oversizedRawRectangle(width: 65_535, height: 65_535)
+    )
+    server.start()
+    defer { server.stop() }
+
+    do {
+        try await RFBClient.withConnection(port: server.port, password: nil) { client in
+            _ = try await client.waitForClipboardText(timeout: 1)
+        }
+        Issue.record("Expected the oversized Raw rectangle to be rejected")
+    } catch RFBError.rectangleTooLarge {
+        // Expected.
+    } catch {
+        Issue.record("Expected rectangleTooLarge, got \(error)")
+    }
+}
+
+@Test
+func rfbClientClipboardWaitRejectsOversizedCursorRectangle() async throws {
+    let server = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .oversizedCursorRectangle(width: 65_535, height: 65_535)
+    )
+    server.start()
+    defer { server.stop() }
+
+    do {
+        try await RFBClient.withConnection(port: server.port, password: nil) { client in
+            _ = try await client.waitForClipboardText(timeout: 1)
+        }
+        Issue.record("Expected the oversized cursor rectangle to be rejected")
+    } catch RFBError.rectangleTooLarge {
+        // Expected.
+    } catch {
+        Issue.record("Expected rectangleTooLarge, got \(error)")
+    }
+}
+
+@Test
+func rfbClientClipboardWaitRejectsOversizedDesktopSize() async throws {
+    let server = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .oversizedDesktopSize(width: 65_535, height: 65_535)
+    )
+    server.start()
+    defer { server.stop() }
+
+    do {
+        try await RFBClient.withConnection(port: server.port, password: nil) { client in
+            _ = try await client.waitForClipboardText(timeout: 1)
+        }
+        Issue.record("Expected the oversized DesktopSize rectangle to be rejected")
+    } catch RFBError.framebufferTooLarge {
+        // Expected.
+    } catch {
+        Issue.record("Expected framebufferTooLarge, got \(error)")
+    }
+}
+
+@Test
+func rfbClientClipboardWaitRejectsOversizedColourMap() async throws {
+    let server = try MinimalRFBServer(maxConnections: 1, mode: .sendColourMapEntries(65_535))
+    server.start()
+    defer { server.stop() }
+
+    do {
+        try await RFBClient.withConnection(port: server.port, password: nil) { client in
+            _ = try await client.waitForClipboardText(timeout: 1)
+        }
+        Issue.record("Expected the oversized colour map to be rejected")
+    } catch RFBError.colourMapTooLarge {
+        // Expected.
+    } catch {
+        Issue.record("Expected colourMapTooLarge, got \(error)")
+    }
+}
+
+@Test
+func rfbClientClipboardWaitRejectsOversizedServerCutText() async throws {
+    let server = try MinimalRFBServer(
+        maxConnections: 1,
+        mode: .sendServerCutText("x", claimedLength: 1_048_577) // 1 MiB cap + 1.
+    )
+    server.start()
+    defer { server.stop() }
+
+    let startedAt = Date()
+    do {
+        try await RFBClient.withConnection(port: server.port, password: nil) { client in
+            _ = try await client.waitForClipboardText(timeout: 1)
+        }
+        Issue.record("Expected the oversized ServerCutText to be rejected")
+    } catch RFBError.clipboardTextTooLarge {
+        // Expected.
+    } catch {
+        Issue.record("Expected clipboardTextTooLarge, got \(error)")
+    }
+
+    // The declared length is rejected before any payload bytes are awaited.
+    #expect(Date().timeIntervalSince(startedAt) < 0.5)
+}
+
+@Test
 func rfbClientClipboardWaitTimesOut() async throws {
     let server = try MinimalRFBServer(maxConnections: 1, mode: .idleAfterHandshake)
     server.start()
@@ -3487,8 +3744,13 @@ private enum MinimalRFBServerMode {
     case pointSizedThenDesktopSizeAndClick
     case partialFramebufferThenIdle
     case captureClientCutText
-    case sendServerCutText(String)
+    case sendServerCutText(String, claimedLength: UInt32? = nil)
     case idleAfterHandshake
+    case oversizedServerInit(width: UInt16, height: UInt16)
+    case oversizedDesktopSize(width: UInt16, height: UInt16)
+    case oversizedRawRectangle(width: UInt16, height: UInt16)
+    case oversizedCursorRectangle(width: UInt16, height: UInt16)
+    case sendColourMapEntries(UInt16)
 }
 
 private final class MinimalRFBServer: @unchecked Sendable {
@@ -3636,11 +3898,23 @@ private final class MinimalRFBServer: @unchecked Sendable {
         _ = try readExactly(1, from: clientFD)
 
         var serverInit: [UInt8] = []
-        serverInit.appendBigEndian(UInt16(1))
-        serverInit.appendBigEndian(UInt16(1))
+        if case .oversizedServerInit(let width, let height) = mode {
+            serverInit.appendBigEndian(width)
+            serverInit.appendBigEndian(height)
+        } else {
+            serverInit.appendBigEndian(UInt16(1))
+            serverInit.appendBigEndian(UInt16(1))
+        }
         serverInit.append(contentsOf: RFBPixelFormat.bgra32.encoded)
         serverInit.appendBigEndian(UInt32(0))
         try writeAll(serverInit, to: clientFD)
+
+        if case .oversizedServerInit = mode {
+            // The client must reject the advertised framebuffer size without reading
+            // any further messages.
+            usleep(300 * 1000)
+            return
+        }
 
         _ = try readExactly(20, from: clientFD) // SetPixelFormat.
         let encodingsHeader = try readExactly(4, from: clientFD)
@@ -3673,11 +3947,66 @@ private final class MinimalRFBServer: @unchecked Sendable {
             try partialFramebufferThenIdle(clientFD: clientFD)
         case .captureClientCutText:
             try captureClientCutText(clientFD: clientFD)
-        case .sendServerCutText(let text):
-            try sendServerCutText(text, to: clientFD)
+        case .sendServerCutText(let text, let claimedLength):
+            try sendServerCutText(text, claimedLength: claimedLength, to: clientFD)
         case .idleAfterHandshake:
             usleep(300 * 1000)
+        case .oversizedServerInit:
+            break
+        case .oversizedDesktopSize(let width, let height):
+            try oversizedRectangleHeader(
+                width: width,
+                height: height,
+                encoding: RFB.desktopSizeEncoding,
+                to: clientFD
+            )
+        case .oversizedRawRectangle(let width, let height):
+            try oversizedRectangleHeader(
+                width: width,
+                height: height,
+                encoding: RFB.rawEncoding,
+                to: clientFD
+            )
+        case .oversizedCursorRectangle(let width, let height):
+            try oversizedRectangleHeader(
+                width: width,
+                height: height,
+                encoding: RFB.cursorEncoding,
+                to: clientFD
+            )
+        case .sendColourMapEntries(let count):
+            try sendColourMapEntries(count, to: clientFD)
         }
+    }
+
+    /// Send one spontaneous update whose only rectangle claims `width`x`height`
+    /// pixels, then idle without sending the implied payload. The client must
+    /// reject the size from the header alone, before waiting for any pixel bytes.
+    private func oversizedRectangleHeader(
+        width: UInt16,
+        height: UInt16,
+        encoding: Int32,
+        to clientFD: Int32
+    ) throws {
+        var update: [UInt8] = [RFB.framebufferUpdateType, 0]
+        update.appendBigEndian(UInt16(1))
+        update.appendBigEndian(UInt16(0))
+        update.appendBigEndian(UInt16(0))
+        update.appendBigEndian(width)
+        update.appendBigEndian(height)
+        update.appendBigEndian(UInt32(bitPattern: encoding))
+        try writeAll(update, to: clientFD)
+        usleep(300 * 1000)
+    }
+
+    private func sendColourMapEntries(_ count: UInt16, to clientFD: Int32) throws {
+        var message: [UInt8] = [RFB.setColourMapEntriesType, 0]
+        message.appendBigEndian(UInt16(0)) // first colour
+        message.appendBigEndian(count)
+        // A real peer would send `count * 6` bytes; send nothing so a client that
+        // fails to bound the count would stall or allocate for the full payload.
+        try writeAll(message, to: clientFD)
+        usleep(300 * 1000)
     }
 
     private func serveFramebufferCapture(clientFD: Int32, connectionIndex: Int) throws {
@@ -3811,12 +4140,17 @@ private final class MinimalRFBServer: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func sendServerCutText(_ text: String, to clientFD: Int32) throws {
+    private func sendServerCutText(_ text: String, claimedLength: UInt32? = nil, to clientFD: Int32) throws {
         let textBytes = [UInt8](text.utf8)
         var message: [UInt8] = [RFB.serverCutTextType, 0, 0, 0]
-        message.appendBigEndian(UInt32(textBytes.count))
+        message.appendBigEndian(claimedLength ?? UInt32(textBytes.count))
         message.append(contentsOf: textBytes)
         try writeAll(message, to: clientFD)
+        if claimedLength != nil {
+            // The declared length exceeds the bytes sent; a client that fails to
+            // bound it would stall waiting for the rest of the payload.
+            usleep(300 * 1000)
+        }
     }
 }
 

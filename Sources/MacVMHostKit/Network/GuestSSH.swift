@@ -2,9 +2,12 @@ import Foundation
 
 /// Builds and runs `ssh` invocations against a guest VM.
 ///
-/// Guests are ephemeral and re-created often, so host-key checking is relaxed to
-/// `accept-new` with a throwaway known-hosts file — otherwise every fresh VM
-/// would trip a host-key-changed error.
+/// Host-key policy: privileged provisioning paths pin the guest identity with
+/// the out-of-band enrolled host keys (`Setup/ssh-host-keys`, rendered into a
+/// validated known-hosts file via `MacVMService.provisioningGuestSSH` or
+/// `provisioningKnownHostsFile`) and never silently accept a changed enrolled
+/// key. Bundles created before host-key enrollment carry no enrolled keys and
+/// keep the relaxed `accept-new` default with a throwaway known-hosts file.
 struct GuestSSH {
     var host: String
     var user: String

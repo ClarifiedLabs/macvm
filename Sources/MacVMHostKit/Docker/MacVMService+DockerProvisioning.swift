@@ -60,17 +60,23 @@ extension MacVMService {
             let user = currentVM.metadata.setupUsername ?? "admin"
             let identity = bundle.setupPrivateKeyURL
             try FileManager.default.createDirectory(at: bundle.setupDirectoryURL, withIntermediateDirectories: true)
+            // Prefer the out-of-band enrolled host keys over first-use network
+            // trust; legacy bundles keep the per-bundle TOFU file, and a changed
+            // enrolled key is never silently replaced (ssh rejects it).
+            let knownHostsFile = try provisioningKnownHostsFile(bundle: bundle, host: nil)
+                ?? bundle.dockerGuestKnownHostsURL
             let host = try await waitForDockerProvisioningHost(
                 currentVM,
                 user: user,
                 identity: identity,
-                knownHostsFile: bundle.dockerGuestKnownHostsURL
+                knownHostsFile: knownHostsFile
             )
             let ssh = GuestSSH(
                 host: host,
                 user: user,
                 identityFile: identity,
-                knownHostsFile: bundle.dockerGuestKnownHostsURL
+                knownHostsFile: knownHostsFile,
+                requirePinnedHostKey: knownHostsFile != bundle.dockerGuestKnownHostsURL
             )
             let hasHomebrew = try await ssh.runQuietAsync(remoteCommand: [
                 "test", "-x", DockerGuestToolInstaller.homebrewExecutablePath,
@@ -149,7 +155,7 @@ extension MacVMService {
                     host: host,
                     user: user,
                     identityFile: identity,
-                    knownHostsFile: bundle.dockerGuestKnownHostsURL
+                    knownHostsFile: knownHostsFile
                 )
             }
 
@@ -247,10 +253,15 @@ extension MacVMService {
                     knownHostsFile: knownHostsFile
                 )
                 if (try? await ssh.runQuietAsync(remoteCommand: ["true"], timeout: 15)) == 0 {
-                    try? FileManager.default.setAttributes(
-                        [.posixPermissions: 0o600],
-                        ofItemAtPath: knownHostsFile.path
-                    )
+                    // The enrolled provisioning file is already owner-only; only
+                    // the TOFU fallback file needs its permissions settled after
+                    // the first trust-on-first-use write.
+                    if knownHostsFile.lastPathComponent != "provisioning-known-hosts" {
+                        try? FileManager.default.setAttributes(
+                            [.posixPermissions: 0o600],
+                            ofItemAtPath: knownHostsFile.path
+                        )
+                    }
                     return host
                 }
             }

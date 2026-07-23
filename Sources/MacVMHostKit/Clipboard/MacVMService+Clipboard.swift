@@ -2,6 +2,47 @@ import Darwin
 import Foundation
 import MacVMClipboardProtocol
 
+/// Shared enrolled-host-key SSH helpers for privileged provisioning paths.
+/// Where a bundle already carries out-of-band enrolled host keys, these render
+/// a validated per-host known-hosts file so every privileged `GuestSSH` call can
+/// pin the guest identity instead of trusting the network on first use.
+extension MacVMService {
+    /// Write `Setup/provisioning-known-hosts` from the enrolled host keys and
+    /// return it; nil when the bundle predates host-key enrollment. Pass a host
+    /// to bind the file to one address, or nil to cover any resolved guest
+    /// address (wildcard host patterns).
+    func provisioningKnownHostsFile(bundle: VMBundle, host: String?) throws -> URL? {
+        let source = bundle.setupSSHHostKeysURL
+        guard FileManager.default.fileExists(atPath: source.path) else { return nil }
+        let data = try Data(contentsOf: source)
+        let rendered = try ClipboardKnownHosts.render(enrolledKeys: data, host: host ?? "*")
+        try FileManager.default.createDirectory(
+            at: bundle.setupDirectoryURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let destination = bundle.setupDirectoryURL.appendingPathComponent("provisioning-known-hosts")
+        try rendered.write(to: destination, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        return destination
+    }
+
+    /// Strict-pinned when enrolled host keys exist; legacy bundles without an
+    /// enrolled key keep the relaxed TOFU default rather than failing.
+    func provisioningGuestSSH(host: String, user: String, identityFile: URL?, bundle: VMBundle) throws -> GuestSSH {
+        if let knownHosts = try provisioningKnownHostsFile(bundle: bundle, host: host) {
+            return GuestSSH(
+                host: host,
+                user: user,
+                identityFile: identityFile,
+                knownHostsFile: knownHosts,
+                requirePinnedHostKey: true
+            )
+        }
+        return GuestSSH(host: host, user: user, identityFile: identityFile)
+    }
+}
+
 enum ClipboardKnownHosts {
     private static let allowedAlgorithms = [
         "ssh-ed25519",
@@ -60,13 +101,18 @@ extension MacVMService {
             )
         }
         let host = try resolveGuestIP(vm)
-        return try await installClipboardHelper(
+        let disposition = try await installClipboardHelper(
             for: vm,
             host: host,
             user: user,
             identityFile: bundle.setupPrivateKeyURL,
             progress: progress
         )
+        // A successful explicit install repairs any failure recorded during setup.
+        _ = try bundle.updateMetadata { metadata in
+            metadata.clipboardHelperInstallError = nil
+        }
+        return disposition
     }
 
     func installClipboardHelperDuringSetup(
@@ -224,11 +270,14 @@ extension MacVMService {
                 remoteCommand: ["/bin/rm", "-f", remoteResult, "\(remoteResult).log"],
                 timeout: 15
             )
-            progress?(.status(
-                disposition == .started
-                    ? "Clipboard helper installed and started."
-                    : "Clipboard helper installed for the next GUI login."
-            ))
+            switch disposition {
+            case .started:
+                progress?(.status("Clipboard helper installed and started."))
+            case .deferredUntilLogin:
+                progress?(.status("Clipboard helper installed for the next GUI login."))
+            case .inProgress:
+                progress?(.status("Clipboard helper installation is already in progress in the guest."))
+            }
             return disposition
         } catch {
             // Once detached, the journaled guest transaction owns completion and
@@ -255,6 +304,7 @@ extension MacVMService {
           started) exit 10 ;;
           deferred) exit 11 ;;
           failed:*) exit 12 ;;
+          in-progress) exit 14 ;;
           *) exit 13 ;;
         esac
         """
@@ -273,6 +323,10 @@ extension MacVMService {
                     throw MacVMError.message("Clipboard helper installation rolled back inside the guest.")
                 case 13:
                     throw MacVMError.message("Clipboard helper installation returned an invalid result.")
+                case 14:
+                    // A detached guest transaction is still running; keep waiting
+                    // so its result (aliased into this result file) is reported.
+                    break
                 default: break
                 }
             }

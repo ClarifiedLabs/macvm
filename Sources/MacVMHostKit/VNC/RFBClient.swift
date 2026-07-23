@@ -21,6 +21,9 @@ enum RFBError: LocalizedError {
     case clipboardTimeout
     case invalidClipboardText
     case clipboardTextTooLarge(Int)
+    case framebufferTooLarge(width: Int, height: Int)
+    case rectangleTooLarge(width: Int, height: Int)
+    case colourMapTooLarge(Int)
     case unsupportedEncoding(Int32)
     case unexpectedMessage(UInt8)
 
@@ -48,6 +51,12 @@ enum RFBError: LocalizedError {
             return "The VM pasteboard update was not valid UTF-8 text."
         case .clipboardTextTooLarge(let count):
             return "The VM pasteboard update is \(count) UTF-8 bytes; the maximum is 1 MiB."
+        case .framebufferTooLarge(let width, let height):
+            return "The VNC server reported an implausible framebuffer size (\(width)x\(height))."
+        case .rectangleTooLarge(let width, let height):
+            return "The VNC server sent an implausible rectangle size (\(width)x\(height))."
+        case .colourMapTooLarge(let count):
+            return "The VNC server sent an implausible colour-map size (\(count) entries)."
         case .unsupportedEncoding(let encoding):
             return "The VNC server used an unsupported encoding (\(encoding)). Only Raw is supported."
         case .unexpectedMessage(let type):
@@ -59,6 +68,57 @@ enum RFBError: LocalizedError {
 /// A minimal RFB (VNC) 3.8 client over loopback: enough to capture the framebuffer
 /// and inject keyboard/pointer events. Raw is the only pixel encoding.
 actor RFBClient {
+    /// Practical bounds for server-controlled sizes. The client normally talks to
+    /// MacVM's own loopback VZ VNC server, but a malicious or impersonated local RFB
+    /// peer must not be able to drive excessive allocation, so dimensions and
+    /// counts are validated before any buffer sizing and every payload byte length
+    /// is computed with overflow-checked multiplication against a hard byte cap.
+    enum Limits {
+        /// 16384x16384 pixels comfortably covers any real virtual display.
+        static let maximumFramebufferDimension = 16_384
+        /// 64 Mi pixels (256 MiB at 4 bytes/pixel).
+        static let maximumFramebufferPixels = 67_108_864
+        /// The client negotiates 32bpp true color, so a palette beyond the
+        /// classic 256-entry map is never legitimate; 4096 is generous.
+        static let maximumColourMapEntries = 4_096
+        /// Hard cap for any single server-controlled payload (64 MiB covers the
+        /// largest allowed framebuffer or cursor rectangle).
+        static let maximumPayloadBytes = 67_108_864
+
+        static func validateFramebufferSize(width: Int, height: Int) throws {
+            guard width > 0, height > 0,
+                  width <= maximumFramebufferDimension,
+                  height <= maximumFramebufferDimension,
+                  width <= maximumFramebufferPixels / height else {
+                throw RFBError.framebufferTooLarge(width: width, height: height)
+            }
+        }
+
+        /// Overflow-checked byte count for `width * height * bytesPerPixel`, capped
+        /// at `maximumPayloadBytes`.
+        static func payloadBytes(width: Int, height: Int, bytesPerPixel: Int) throws -> Int {
+            guard width > 0, height > 0, bytesPerPixel > 0 else { return 0 }
+            let (pixels, pixelOverflow) = width.multipliedReportingOverflow(by: height)
+            let (bytes, byteOverflow) = pixels.multipliedReportingOverflow(by: bytesPerPixel)
+            guard !pixelOverflow, !byteOverflow, bytes <= maximumPayloadBytes else {
+                throw RFBError.rectangleTooLarge(width: width, height: height)
+            }
+            return bytes
+        }
+
+        /// Overflow-checked byte count for a colour-map payload.
+        static func colourMapBytes(entries: Int, bytesPerEntry: Int) throws -> Int {
+            guard entries >= 0 else { return 0 }
+            guard entries <= maximumColourMapEntries else {
+                throw RFBError.colourMapTooLarge(entries)
+            }
+            let (bytes, overflow) = entries.multipliedReportingOverflow(by: bytesPerEntry)
+            guard !overflow else {
+                throw RFBError.colourMapTooLarge(entries)
+            }
+            return bytes
+        }
+    }
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "com.twt.macvm.rfb-client")
     private var framebufferWidth: Int?
@@ -233,8 +293,11 @@ actor RFBClient {
 
         // ServerInit: width(2) height(2) pixelFormat(16) nameLength(4) then name.
         let header = try await receive(exactly: 24, deadline: deadline, timeoutError: .handshakeTimeout)
-        framebufferWidth = Int(UInt16(header[0]) << 8 | UInt16(header[1]))
-        framebufferHeight = Int(UInt16(header[2]) << 8 | UInt16(header[3]))
+        let initialWidth = Int(UInt16(header[0]) << 8 | UInt16(header[1]))
+        let initialHeight = Int(UInt16(header[2]) << 8 | UInt16(header[3]))
+        try Limits.validateFramebufferSize(width: initialWidth, height: initialHeight)
+        framebufferWidth = initialWidth
+        framebufferHeight = initialHeight
         emit("server_init", fields: [
             "width": String(framebufferWidth ?? 0),
             "height": String(framebufferHeight ?? 0),
@@ -325,7 +388,8 @@ actor RFBClient {
             case RFB.setColourMapEntriesType:
                 _ = try await receiveFramebuffer(exactly: 3, deadline: deadline)
                 let colourCount = Int(try await readFramebufferUInt16(deadline: deadline))
-                _ = try await receiveFramebuffer(exactly: colourCount * 6, deadline: deadline)
+                let colourBytes = try Limits.colourMapBytes(entries: colourCount, bytesPerEntry: 6)
+                _ = try await receiveFramebuffer(exactly: colourBytes, deadline: deadline)
 
             case RFB.bellType:
                 break
@@ -363,7 +427,11 @@ actor RFBClient {
 
             switch rectangle.encoding {
             case RFB.rawEncoding:
-                let byteCount = Int(rectangle.width) * Int(rectangle.height) * 4
+                let byteCount = try Limits.payloadBytes(
+                    width: Int(rectangle.width),
+                    height: Int(rectangle.height),
+                    bytesPerPixel: 4
+                )
                 let pixels = try await receiveFramebuffer(exactly: byteCount, deadline: deadline)
                 framebuffer.blit(
                     pixels,
@@ -374,14 +442,23 @@ actor RFBClient {
 
             case RFB.cursorEncoding:
                 // Cursor bitmap + 1bpp mask; x/y are the hotspot, not a screen position.
-                let pixelBytes = Int(rectangle.width) * Int(rectangle.height) * 4
-                let maskBytes = ((Int(rectangle.width) + 7) / 8) * Int(rectangle.height)
+                let pixelBytes = try Limits.payloadBytes(
+                    width: Int(rectangle.width),
+                    height: Int(rectangle.height),
+                    bytesPerPixel: 4
+                )
+                let maskBytes = try Limits.payloadBytes(
+                    width: (Int(rectangle.width) + 7) / 8,
+                    height: Int(rectangle.height),
+                    bytesPerPixel: 1
+                )
                 _ = try await receiveFramebuffer(exactly: pixelBytes + maskBytes, deadline: deadline)
 
             case RFB.desktopSizeEncoding:
                 // No pixel data; w/h are the new framebuffer dimensions.
                 let newWidth = Int(rectangle.width)
                 let newHeight = Int(rectangle.height)
+                try Limits.validateFramebufferSize(width: newWidth, height: newHeight)
                 framebufferWidth = newWidth
                 framebufferHeight = newHeight
                 emit("desktop_size", fields: [
@@ -490,7 +567,8 @@ actor RFBClient {
             case RFB.setColourMapEntriesType:
                 _ = try await receive(exactly: 3, deadline: deadline) // padding + first-colour high byte
                 let colourCount = Int(try await readUInt16(deadline: deadline))
-                _ = try await receive(exactly: colourCount * 6, deadline: deadline)
+                let colourBytes = try Limits.colourMapBytes(entries: colourCount, bytesPerEntry: 6)
+                _ = try await receive(exactly: colourBytes, deadline: deadline)
 
             case RFB.bellType:
                 break
@@ -745,17 +823,32 @@ actor RFBClient {
 
             switch rectangle.encoding {
             case RFB.rawEncoding:
-                let byteCount = Int(rectangle.width) * Int(rectangle.height) * 4
+                let byteCount = try Limits.payloadBytes(
+                    width: Int(rectangle.width),
+                    height: Int(rectangle.height),
+                    bytesPerPixel: 4
+                )
                 _ = try await receive(exactly: byteCount, deadline: deadline)
 
             case RFB.cursorEncoding:
-                let pixelBytes = Int(rectangle.width) * Int(rectangle.height) * 4
-                let maskBytes = ((Int(rectangle.width) + 7) / 8) * Int(rectangle.height)
+                let pixelBytes = try Limits.payloadBytes(
+                    width: Int(rectangle.width),
+                    height: Int(rectangle.height),
+                    bytesPerPixel: 4
+                )
+                let maskBytes = try Limits.payloadBytes(
+                    width: (Int(rectangle.width) + 7) / 8,
+                    height: Int(rectangle.height),
+                    bytesPerPixel: 1
+                )
                 _ = try await receive(exactly: pixelBytes + maskBytes, deadline: deadline)
 
             case RFB.desktopSizeEncoding:
-                framebufferWidth = Int(rectangle.width)
-                framebufferHeight = Int(rectangle.height)
+                let newWidth = Int(rectangle.width)
+                let newHeight = Int(rectangle.height)
+                try Limits.validateFramebufferSize(width: newWidth, height: newHeight)
+                framebufferWidth = newWidth
+                framebufferHeight = newHeight
 
             case RFB.lastRectEncoding:
                 return

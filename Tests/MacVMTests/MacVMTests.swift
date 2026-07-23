@@ -1039,6 +1039,44 @@ func restoreImageCatalogMarksOnlyAppleReportedLatestName() throws {
 }
 
 @Test
+func clipboardHelperFailureRecordsAnActionableRepairState() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+    let bundleURL = rootURL
+        .appendingPathComponent("repair", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    let bundle = VMBundle(url: bundleURL)
+
+    var metadata = VMMetadata(
+        name: "repair",
+        cpuCount: 2,
+        memorySizeBytes: 4 * 1024 * 1024 * 1024,
+        diskSizeBytes: 40 * 1024 * 1024 * 1024,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        setupCompletedAt: Date(),
+        clipboardHelperInstallError: "Guest file copy timed out"
+    )
+    try bundle.writeMetadata(metadata)
+
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: try bundle.readMetadata())
+    let text = ClipboardSectionView.helperRepairText(
+        try #require(vm.metadata.clipboardHelperInstallError),
+        vmName: vm.metadata.name
+    )
+    #expect(text.contains("Clipboard helper unavailable"))
+    #expect(text.contains("macvm clipboard install repair"))
+
+    // The repair clears the recorded failure, hiding the banner again.
+    metadata.clipboardHelperInstallError = nil
+    try bundle.writeMetadata(metadata)
+    #expect(try bundle.readMetadata().clipboardHelperInstallError == nil)
+}
+
+@Test
 func restoreImageCatalogHandlesMissingCacheDirectory() {
     let root = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString, isDirectory: true)

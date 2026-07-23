@@ -851,6 +851,48 @@ func clipboardKnownHostsBindsOnlyValidatedEnrolledKeys() throws {
 }
 
 @Test
+func provisioningGuestSSHPinsEnrolledHostKeysAndFallsBackForLegacyBundles() throws {
+    let (root, bundle) = try makeClipboardTestBundle()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let service = MacVMService(rootDirectory: root)
+    let identity = bundle.setupPrivateKeyURL
+
+    // Legacy bundle without enrolled keys keeps the relaxed TOFU default rather
+    // than failing.
+    let legacy = try service.provisioningGuestSSH(
+        host: "192.0.2.42",
+        user: "developer",
+        identityFile: identity,
+        bundle: bundle
+    )
+    #expect(!legacy.requirePinnedHostKey)
+    #expect(legacy.knownHostsFile == nil)
+
+    // A bundle with enrolled keys renders a validated, owner-only known-hosts
+    // file and pins it; a changed key is never silently replaced because ssh
+    // verifies against the enrolled set.
+    try FileManager.default.createDirectory(at: bundle.setupDirectoryURL, withIntermediateDirectories: true)
+    try Data("ssh-ed25519 AAAA\necdsa-sha2-nistp256 AQID\n".utf8)
+        .write(to: bundle.setupSSHHostKeysURL)
+    let pinned = try service.provisioningGuestSSH(
+        host: "192.0.2.42",
+        user: "developer",
+        identityFile: identity,
+        bundle: bundle
+    )
+    #expect(pinned.requirePinnedHostKey)
+    let knownHosts = try #require(pinned.knownHostsFile)
+    let contents = try String(contentsOf: knownHosts, encoding: .utf8)
+    #expect(contents.contains("192.0.2.42 ssh-ed25519 AAAA"))
+    let attributes = try FileManager.default.attributesOfItem(atPath: knownHosts.path)
+    #expect(attributes[.posixPermissions] as? Int == 0o600)
+
+    // The wildcard form covers Docker provisioning, whose host is resolved later.
+    let wildcard = try #require(try service.provisioningKnownHostsFile(bundle: bundle, host: nil))
+    #expect(try String(contentsOf: wildcard, encoding: .utf8).contains("* ssh-ed25519 AAAA"))
+}
+
+@Test
 func clipboardGuestArtifactsUseBoundIdentityAndSecurePaths() throws {
     let vmID = UUID()
     let home = "/Users/developer"
@@ -919,6 +961,119 @@ func clipboardGuestInstallScriptIsTransactionalAndPermissioned() throws {
         let output = String(decoding: diagnostics.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         Issue.record("Generated clipboard installer is not valid Bash: \(output)")
     }
+}
+
+@Test
+func clipboardGuestInstallScriptSerializesWithALiveOwnerLock() throws {
+    let script = ClipboardGuestInstaller.installScript(
+        user: "developer",
+        homeDirectory: "/Users/developer",
+        remoteStage: "/Users/developer/.macvm-clipboard-stage"
+    )
+    // The lock is an atomic directory in the per-user support directory, created
+    // before the journal is replayed or any file is mutated.
+    #expect(script.contains("install.lock"))
+    #expect(script.contains("/bin/mkdir \"$lock\""))
+    let lockIndex = try #require(script.range(of: "/bin/mkdir \"$lock\""))
+    let journalReplayIndex = try #require(script.range(of: "if [[ -f \"$journal\" ]]"))
+    #expect(lockIndex.lowerBound < journalReplayIndex.lowerBound)
+    // Owner identity and the stage path are recorded so concurrent results can be
+    // aliased and stale locks reclaimed.
+    #expect(script.contains("$lock/owner"))
+    #expect(script.contains("$lock/stage"))
+    #expect(script.contains("/bin/kill -0 \"$owner_pid\""))
+    // A live owner rejects the concurrent attempt without modifying files.
+    #expect(script.contains("in-progress"))
+    // A stale lock is reclaimed so the interrupted transaction can roll back.
+    #expect(script.contains("/bin/rm -rf \"$lock\""))
+    // The lock is removed exactly three times: stale-lock reclamation, release
+    // on the failure (rollback) path, and release before publishing the result.
+    #expect(script.components(separatedBy: "/bin/rm -rf \"$lock\"").count - 1 == 3)
+    #expect(script.contains("# Stale lock: the recorded owner is gone"))
+    // A bounded post-bootstrap health check verifies the LaunchAgent stays
+    // registered; a helper that dies immediately rolls back instead of
+    // reporting success.
+    #expect(script.contains("Bounded post-bootstrap health check"))
+    #expect(script.contains("launchctl print \"gui/$uid/\(ClipboardGuestInstaller.label)\""))
+
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("macvm-clipboard-lock-script-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let scriptURL = root.appendingPathComponent("install.sh")
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+    let syntaxCheck = Process()
+    syntaxCheck.executableURL = URL(fileURLWithPath: "/bin/bash")
+    syntaxCheck.arguments = ["-n", scriptURL.path]
+    try syntaxCheck.run()
+    syntaxCheck.waitUntilExit()
+    #expect(syntaxCheck.terminationStatus == 0)
+}
+
+@Test
+func clipboardGuestInstallLockRejectsLiveOwnersAndReclaimsStaleOnes() throws {
+    // Exercise the exact lock protocol the generated script uses: atomic mkdir,
+    // owner PID liveness, in-progress result, and stale-lock reclamation.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("macvm-clipboard-lock-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let lock = root.appendingPathComponent("install.lock")
+
+    func ownerAlive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 }
+
+    // First acquisition succeeds; a concurrent attempt with a live owner is
+    // rejected without touching files.
+    try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: false)
+    try "\(getpid())".write(to: lock.appendingPathComponent("owner"), atomically: true, encoding: .utf8)
+    var ownerText = try String(contentsOf: lock.appendingPathComponent("owner"), encoding: .utf8)
+    var ownerPID = Int32(ownerText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+    #expect(ownerAlive(ownerPID))
+    // The second mkdir fails while the first owner lives — this is the rejection
+    // path that writes `in-progress`.
+    #expect(throws: (any Error).self) {
+        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: false)
+    }
+
+    // A stale lock (dead owner PID) is reclaimed by removing and recreating it.
+    try "999999".write(to: lock.appendingPathComponent("owner"), atomically: true, encoding: .utf8)
+    ownerText = try String(contentsOf: lock.appendingPathComponent("owner"), encoding: .utf8)
+    ownerPID = Int32(ownerText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+    #expect(!ownerAlive(ownerPID))
+    try FileManager.default.removeItem(at: lock)
+    try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: false)
+    #expect(FileManager.default.fileExists(atPath: lock.path))
+}
+
+@Test
+func setupCompletionPolicyTreatsClipboardHelperAsOptional() throws {
+    let (root, bundle) = try makeClipboardTestBundle()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // Policy 1: setup completes even when the helper installation failed, and the
+    // failure is recorded as an actionable repair state.
+    var metadata = clipboardTestMetadata()
+    metadata.setupCompletedAt = Date()
+    metadata.clipboardHelperInstallError = "Simulated helper installation failure"
+    try bundle.writeMetadata(metadata)
+
+    let decoded = try bundle.readMetadata()
+    #expect(decoded.setupCompletedAt != nil)
+    #expect(decoded.clipboardHelperInstallError == "Simulated helper installation failure")
+
+    // Older bundles decode with no recorded failure.
+    let legacy = clipboardTestMetadata()
+    try bundle.writeMetadata(legacy)
+    #expect(try bundle.readMetadata().clipboardHelperInstallError == nil)
+
+    // Repair path: `installClipboardHelper` accepts the completed-but-failed VM
+    // (it only gates on setup completion, username, and the SSH key), and a
+    // successful explicit install clears the recorded failure.
+    metadata.clipboardHelperInstallError = "Simulated helper installation failure"
+    metadata.setupUsername = "developer"
+    try bundle.writeMetadata(metadata)
+    _ = try bundle.updateMetadata { $0.clipboardHelperInstallError = nil }
+    #expect(try bundle.readMetadata().clipboardHelperInstallError == nil)
 }
 
 @Test

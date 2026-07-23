@@ -301,6 +301,12 @@ struct ClipboardSectionView: View {
                             .accessibilityLabel("Automatic Clipboard Sync status")
                             .accessibilityValue(statusText(status))
                     }
+                    if let installError = vm.metadata.clipboardHelperInstallError {
+                        Text(ClipboardSectionView.helperRepairText(installError, vmName: vm.metadata.name))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("Clipboard helper repair needed")
+                    }
                     Text(explanation(status))
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
@@ -328,6 +334,12 @@ struct ClipboardSectionView: View {
             return "Synchronization is inactive until this VM's native viewer is the key window."
         }
         return "Plain UTF-8 text only, up to 1 MiB."
+    }
+
+    /// The helper is optional: setup completed without it, so the VM stays usable
+    /// and the failure is repaired explicitly with `macvm clipboard install`.
+    static func helperRepairText(_ installError: String, vmName: String) -> String {
+        "Clipboard helper unavailable: \(installError) The VM is otherwise ready; run `macvm clipboard install \(vmName)` while the VM is running to repair it."
     }
 }
 

@@ -209,6 +209,10 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
     /// Optional for compatibility with bundles created before clipboard support.
     /// Use `isAutomaticClipboardSyncEnabled` for the normalized, default-off value.
     public var automaticClipboardSyncEnabled: Bool?
+    /// Non-fatal clipboard helper installation failure recorded when setup
+    /// otherwise completed. The VM remains usable; `macvm clipboard install <name>`
+    /// performs the repair and clears the flag.
+    public var clipboardHelperInstallError: String?
     /// Settings for the hidden Linux sidecar associated with this macOS VM.
     /// Nil for bundles created before Docker sidecar support and for VMs where
     /// Docker has never been enabled.
@@ -231,6 +235,7 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         setupFullName: String? = nil,
         setupCompletedAt: Date? = nil,
         automaticClipboardSyncEnabled: Bool? = false,
+        clipboardHelperInstallError: String? = nil,
         dockerSidecar: DockerSidecarSettings? = nil
     ) {
         self.id = id
@@ -249,6 +254,7 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         self.setupFullName = setupFullName
         self.setupCompletedAt = setupCompletedAt
         self.automaticClipboardSyncEnabled = automaticClipboardSyncEnabled
+        self.clipboardHelperInstallError = clipboardHelperInstallError
         self.dockerSidecar = dockerSidecar
     }
 

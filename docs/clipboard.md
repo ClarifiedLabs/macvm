@@ -8,7 +8,10 @@ but never enables automatic synchronization on its own.
 
 Automated setup installs the helper by default after the guest becomes reachable
 over SSH. Pass `--no-clipboard-helper` to `macvm create --setup` or `macvm setup`
-to omit it.
+to omit it. The helper is optional: if its installation fails, setup still
+completes and the VM remains usable. The failure is recorded on the VM and shown
+in its detail view; repair it later with `macvm clipboard install <name>` while
+the VM is running.
 
 For an existing VM, start it through `MacVM.app` and run:
 
@@ -31,6 +34,17 @@ exists, installation succeeds in a deferred state and the helper starts at the
 next login. Re-running `macvm clipboard install` upgrades the helper and refreshes
 its configuration. Replaced files are backed up during installation and restored
 if deployment fails.
+
+The guest transaction runs detached from SSH under a live-owner lock
+(`~/Library/Application Support/MacVM/Clipboard/install.lock`, an atomic
+directory whose `owner` file records the transaction PID). A concurrent or
+retried install sees the live owner and reports `in-progress` without modifying
+files; a lock left behind by a crashed transaction is stale — its dead owner PID
+lets the next install reclaim the lock and roll back the interrupted journal
+before upgrading. When the helper is started, the install also runs a bounded
+post-bootstrap health check of the LaunchAgent (`launchctl print`), reporting a
+distinct failure if the agent does not stay registered rather than waiting
+indefinitely for a guest connection.
 
 ## One-shot transfers
 

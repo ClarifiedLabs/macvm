@@ -642,10 +642,11 @@ public final class MacVMService: Sendable {
         remoteCommand: [String],
         allocateTTY: Bool
     ) throws -> Int32 {
-        let ssh = GuestSSH(
+        let ssh = try provisioningGuestSSH(
             host: host,
             user: guestUser(for: vm, override: user),
-            identityFile: guestIdentityFile(for: vm)
+            identityFile: guestIdentityFile(for: vm),
+            bundle: VMBundle(url: vm.bundleURL)
         )
         return try ssh.run(remoteCommand: remoteCommand, allocateTTY: allocateTTY)
     }
@@ -1092,17 +1093,28 @@ public final class MacVMService: Sendable {
             emitPhaseWithAnchor(SetupFlows.sshReadyAnchor)
             setupProgress(.status("Waiting for the guest to obtain an IP and accept SSH"))
             let result = try await waitForSSHReady(vm, options: options, progress: setupProgress)
+            var clipboardHelperInstallError: String?
             if options.installClipboardHelper {
                 emitPhaseWithAnchor(SetupFlows.clipboardInstallAnchor)
-                guard result.sshReady, let host = result.ipAddress else {
-                    throw MacVMError.message("Clipboard helper installation requires the guest IP address and authenticated SSH.")
+                // The helper is optional: a failed installation must not fail setup
+                // for an otherwise usable VM. The failure is recorded on the
+                // metadata and repaired later with `macvm clipboard install`.
+                do {
+                    guard result.sshReady, let host = result.ipAddress else {
+                        throw MacVMError.message("Clipboard helper installation requires the guest IP address and authenticated SSH.")
+                    }
+                    _ = try await installClipboardHelperDuringSetup(
+                        for: vm,
+                        host: host,
+                        user: options.username,
+                        progress: setupProgress
+                    )
+                } catch {
+                    clipboardHelperInstallError = error.localizedDescription
+                    setupProgress(.status(
+                        "Clipboard helper installation failed (\(error.localizedDescription)); continuing setup. Repair it later with `macvm clipboard install \(vm.metadata.name)`."
+                    ))
                 }
-                _ = try await installClipboardHelperDuringSetup(
-                    for: vm,
-                    host: host,
-                    user: options.username,
-                    progress: setupProgress
-                )
             }
             if options.xcodeXIPURL != nil && result.sshReady {
                 emitPhaseWithAnchor(SetupFlows.xcodeInstallAnchor)
@@ -1114,10 +1126,11 @@ public final class MacVMService: Sendable {
                 guard let host = result.ipAddress else {
                     throw MacVMError.message("Homebrew installation requires the guest IP address discovered during setup.")
                 }
-                let ssh = GuestSSH(
+                let ssh = try provisioningGuestSSH(
                     host: host,
                     user: options.username,
-                    identityFile: guestIdentityFile(for: vm)
+                    identityFile: guestIdentityFile(for: vm),
+                    bundle: bundle
                 )
                 try await HomebrewGuestInstaller.install(over: ssh, bundle: bundle, progress: setupProgress)
             }
@@ -1148,6 +1161,7 @@ public final class MacVMService: Sendable {
                 metadata.setupUsername = options.username
                 metadata.setupFullName = options.fullName
                 metadata.setupCompletedAt = Date()
+                metadata.clipboardHelperInstallError = clipboardHelperInstallError
             }
             runtimePublisher.clear()
 
@@ -1224,6 +1238,7 @@ public final class MacVMService: Sendable {
         if let error = error as? RFBError {
             switch error {
             case .authenticationFailed, .passwordRequired, .noSupportedSecurityType, .clipboardTextTooLarge,
+                 .framebufferTooLarge, .rectangleTooLarge, .colourMapTooLarge,
                  .unsupportedEncoding, .unexpectedMessage:
                 return false
             case .connectionClosed, .handshakeFailed, .handshakeTimeout, .notConnected,
@@ -1262,7 +1277,12 @@ public final class MacVMService: Sendable {
         ].joined(separator: " ")
 
         progress?(.status("Xcode: installing \(sourceURL.lastPathComponent) in the guest"))
-        let ssh = GuestSSH(host: ipAddress, user: options.username, identityFile: guestIdentityFile(for: vm))
+        let ssh = try provisioningGuestSSH(
+            host: ipAddress,
+            user: options.username,
+            identityFile: guestIdentityFile(for: vm),
+            bundle: bundle
+        )
         let logURL = bundle.setupDirectoryURL.appendingPathComponent("xcode-install.log")
         progress?(.setupLog(SetupLogArtifact(
             label: "Xcode installation",
@@ -1357,7 +1377,12 @@ public final class MacVMService: Sendable {
                 }
             }
             if let ipAddress {
-                let ssh = GuestSSH(host: ipAddress, user: options.username, identityFile: identity)
+                let ssh = try provisioningGuestSSH(
+                    host: ipAddress,
+                    user: options.username,
+                    identityFile: identity,
+                    bundle: VMBundle(url: vm.bundleURL)
+                )
                 if ssh.waitForSSH(timeout: 0) {
                     progress?(.setupAccess(SetupAccessProgress(ipAddress: ipAddress, sshReady: true)))
                     return SetupResult(
