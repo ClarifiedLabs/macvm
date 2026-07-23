@@ -142,6 +142,13 @@ func ansibleProvisionerUsesExecutableAndPersistsSuccessfulState() throws {
 }
 
 @Test
+func pointingDeviceConfigurationsIncludeMacTrackpadAndGenericUSBMouse() {
+    let pointingDevices = VMBundle.makePointingDeviceConfigurations()
+    #expect(pointingDevices.contains { $0 is VZMacTrackpadConfiguration })
+    #expect(pointingDevices.contains { $0 is VZUSBScreenCoordinatePointingDeviceConfiguration })
+}
+
+@Test
 func sanitizedBundleNameDropsInvalidCharacters() {
     #expect(sanitizedBundleName(" dev vm / 01 ") == "dev-vm-01")
     #expect(sanitizedBundleName("...") == "vm")

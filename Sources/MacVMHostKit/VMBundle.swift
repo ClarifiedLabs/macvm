@@ -702,7 +702,7 @@ struct VMBundle {
         configuration.networkDevices = [makeNetworkDevice(metadata: metadata)] + additionalNetworkDevices
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
         configuration.keyboards = [VZMacKeyboardConfiguration()]
-        configuration.pointingDevices = [VZMacTrackpadConfiguration()]
+        configuration.pointingDevices = VMBundle.makePointingDeviceConfigurations()
         if memoryBalloonEnabled {
             MemoryBalloonConfiguration.install(on: configuration)
         }
@@ -715,6 +715,17 @@ struct VMBundle {
 
         try configuration.validate()
         return configuration
+    }
+
+    // Attach both devices: the Mac trackpad preserves host multi-touch gestures,
+    // while the generic USB absolute-coordinate mouse makes the guest enumerate a
+    // Mouse so System Settings shows the Mouse pane (and its Natural Scrolling
+    // toggle). Apple's VZMacTrackpadConfiguration header documents this pairing.
+    static func makePointingDeviceConfigurations() -> [VZPointingDeviceConfiguration] {
+        [
+            VZMacTrackpadConfiguration(),
+            VZUSBScreenCoordinatePointingDeviceConfiguration(),
+        ]
     }
 
     private func makeStorageDevice() throws -> VZVirtioBlockDeviceConfiguration {
