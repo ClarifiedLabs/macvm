@@ -2478,6 +2478,24 @@ func provisioningScriptContainsExpectedCommands() {
 }
 
 @Test
+func provisioningScriptGeneratesSSHHostKeysBeforeExportingThem() throws {
+    let script = GuestProvisioningScript.build(GuestProvisioningInputs(
+        username: "admin",
+        password: "admin",
+        authorizedKey: "ssh-ed25519 AAAATESTKEY macvm-test",
+        extraAuthorizedKey: nil,
+        enableAutoLogin: true,
+        passwordFilePath: "/tmp/pw",
+        statusFilePath: "/tmp/status",
+        sshHostKeysFilePath: "/tmp/ssh-host-keys"
+    ))
+
+    let generation = try #require(script.range(of: "sudo -S /usr/bin/ssh-keygen -A"))
+    let export = try #require(script.range(of: "cat /etc/ssh/ssh_host_*_key.pub"))
+    #expect(generation.lowerBound < export.lowerBound)
+}
+
+@Test
 func guestHardenerUsesExpectedDockTargets() {
     #expect(GuestHardener.finderDockPoint(width: 2560, height: 1440) == (x: 151, y: 1392))
     #expect(GuestHardener.appsDockPoint(width: 2560, height: 1440) == (x: 261, y: 1392))

@@ -74,6 +74,11 @@ enum GuestProvisioningScript {
         MACVM_KEYS
         chmod 600 "$HOME/.ssh/authorized_keys"
 
+        # Fresh macOS installs do not create SSH host keys until sshd's launch wrapper
+        # first runs. Generate them explicitly so the host can pin them before making
+        # its first network connection.
+        echo "$PW" | sudo -S /usr/bin/ssh-keygen -A
+
         # Export the SSH host public keys through the Virtualization.framework shared
         # directory before any network trust decision. The host pins these exact keys.
         echo "$PW" | sudo -S sh -c 'cat /etc/ssh/ssh_host_*_key.pub' \
