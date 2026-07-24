@@ -469,9 +469,9 @@ public final class MacVMService: Sendable {
                 "'\(sourceMetadata.name)' has inconsistent Docker metadata and sidecar storage. Run `macvm docker reset \(sourceMetadata.name) --force` before cloning."
             )
         }
-        if bundleHasDocker {
-            _ = try sourceBundle.dockerSidecarBundle.validateIntegrity()
-        }
+        let sourceSidecarMetadata = bundleHasDocker
+            ? try sourceBundle.dockerSidecarBundle.validateIntegrity()
+            : nil
         guard sourceBundle.liveVMProcessRuntimeState() == nil,
               sourceBundle.liveVNCSession() == nil,
               sourceBundle.liveDisplayRuntimeState() == nil,
@@ -506,6 +506,19 @@ public final class MacVMService: Sendable {
             metadata.memorySizeBytes = memorySizeBytes
         }
 
+        var dockerBaseImageURL: URL?
+        if let sourceSidecarMetadata {
+            progress?(.status(
+                "Preparing a fresh Fedora CoreOS \(sourceSidecarMetadata.image.release) system disk for the clone..."
+            ))
+            dockerBaseImageURL = try await FedoraCoreOSImageProvider(
+                cacheDirectory: storage.dockerImageCacheDirectory
+            ).prepareBaseImage(
+                image: sourceSidecarMetadata.image,
+                progress: progress
+            )
+        }
+
         progress?(.status("Cloning \(sourceMetadata.name)..."))
         return try await Task.detached {
             let fileManager = FileManager.default
@@ -524,8 +537,22 @@ public final class MacVMService: Sendable {
             if let dockerSettings = metadata.dockerSidecar,
                temporaryBundle.dockerSidecarBundle.isPresent {
                 let sidecar = temporaryBundle.dockerSidecarBundle
+                guard let dockerBaseImageURL else {
+                    throw MacVMError.message(
+                        "The Docker sidecar base image was not prepared before cloning."
+                    )
+                }
+                try fileManager.removeItem(at: sidecar.systemDiskURL)
+                try MacVMFileStager.copyCloneFirst(
+                    from: dockerBaseImageURL,
+                    to: sidecar.systemDiskURL
+                )
+                try fileManager.removeItem(at: sidecar.efiVariableStoreURL)
+                try sidecar.createEFIVariableStore()
                 let machineDigest = try sidecar.refreshGenericMachineIdentifier()
                 var sidecarMetadata = try sidecar.readMetadata()
+                sidecarMetadata.createdAt = Date()
+                sidecarMetadata.ignitionVersion = DockerSidecarMetadata.currentIgnitionVersion
                 sidecarMetadata.genericMachineIdentifierDigest = machineDigest
                 try sidecar.writeMetadata(sidecarMetadata)
                 let dockerKey = try String(contentsOf: sidecar.dockerAuthorizedKeyURL, encoding: .utf8)
@@ -538,7 +565,8 @@ public final class MacVMService: Sendable {
                     mountBrokerAuthorizedKey: mountKey,
                     linuxHostPrivateKey: try String(contentsOf: sidecar.linuxHostPrivateKeyURL, encoding: .utf8),
                     linuxHostPublicKey: try String(contentsOf: sidecar.linuxHostPublicKeyURL, encoding: .utf8),
-                    genericMachineIdentifierDigest: machineDigest
+                    genericMachineIdentifierDigest: machineDigest,
+                    refreshClonedIdentity: true
                 ).makeData()
                 try ignition.write(to: sidecar.initialIgnitionURL, options: .atomic)
             }

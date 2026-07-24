@@ -1,0 +1,8 @@
+# target	test_id	reference	reason
+#
+# The only valid target is "macvm"; the comparison baseline is diagnostic.
+#
+# Add only confirmed incompatibilities with a stable tracking reference. A
+# matching failure is reported as XFAIL; a later pass is XPASS and fails the
+# run so that this registry cannot silently become stale.
+macvm	bind.inotify	docs/docker.md#bind-mount-file-events	SSHFS does not propagate macOS filesystem notifications into Linux inotify.

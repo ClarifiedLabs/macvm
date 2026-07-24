@@ -19,11 +19,30 @@ public struct DockerAPIPathRewriter {
 
     public static func rewritesResponse(method: String, uri: String, status: Int) -> Bool {
         guard method == "GET", (200...299).contains(status) else { return false }
-        let path = normalizedAPIPath(uri)
-        if path.hasPrefix("/containers/"), path.hasSuffix("/json") { return true }
-        if path.hasPrefix("/services/") { return true }
-        if path.hasPrefix("/volumes/") { return true }
+        let components = normalizedAPIPath(uri).split(separator: "/").map(String.init)
+        if components.count == 3,
+           components[0] == "containers",
+           components[2] == "json" {
+            return true
+        }
+        if components.count == 2, components[0] == "services" { return true }
+        if components.count == 2, components[0] == "volumes" { return true }
         return false
+    }
+
+    public static func affectsPublishedPorts(method: String, uri: String, status: Int) -> Bool {
+        guard (200...299).contains(status) else { return false }
+        let components = normalizedAPIPath(uri).split(separator: "/").map(String.init)
+        guard components.count >= 2, components[0] == "containers" else { return false }
+        switch method.uppercased() {
+        case "POST":
+            guard components.count == 3 else { return false }
+            return ["kill", "restart", "start", "stop"].contains(components[2])
+        case "DELETE":
+            return components.count == 2
+        default:
+            return false
+        }
     }
 
     public static func rewriteRequestBody(

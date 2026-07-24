@@ -165,6 +165,63 @@ func unknownDockerEndpointsRemainUntouchedBySchemaRewriter() throws {
 }
 
 @Test
+func dockerSwarmLogStreamsAreNotBufferedAsInspectJSON() throws {
+    let body = Data([1, 2, 3, 4, 0xff])
+    var transformed = false
+
+    #expect(DockerAPIPathRewriter.rewritesResponse(
+        method: "GET",
+        uri: "/v1.51/services/example",
+        status: 200
+    ))
+    #expect(!DockerAPIPathRewriter.rewritesResponse(
+        method: "GET",
+        uri: "/v1.51/services/example/logs?stdout=1&stderr=1",
+        status: 200
+    ))
+    let response = try DockerAPIPathRewriter.rewriteResponseBody(
+        body,
+        method: "GET",
+        uri: "/v1.51/services/example/logs?stdout=1&stderr=1",
+        status: 200
+    ) { value in
+        transformed = true
+        return value
+    }
+    #expect(response == body)
+    #expect(!transformed)
+}
+
+@Test
+func successfulContainerLifecycleMutationsReconcilePublishedPorts() {
+    #expect(DockerAPIPathRewriter.affectsPublishedPorts(
+        method: "POST",
+        uri: "/v1.51/containers/example/start",
+        status: 204
+    ))
+    #expect(DockerAPIPathRewriter.affectsPublishedPorts(
+        method: "POST",
+        uri: "/containers/example/restart?t=10",
+        status: 204
+    ))
+    #expect(DockerAPIPathRewriter.affectsPublishedPorts(
+        method: "DELETE",
+        uri: "/v1.51/containers/example?force=1",
+        status: 204
+    ))
+    #expect(!DockerAPIPathRewriter.affectsPublishedPorts(
+        method: "POST",
+        uri: "/v1.51/containers/example/exec",
+        status: 201
+    ))
+    #expect(!DockerAPIPathRewriter.affectsPublishedPorts(
+        method: "POST",
+        uri: "/v1.51/containers/example/start",
+        status: 500
+    ))
+}
+
+@Test
 func dockerCreateRejectsIPv6PublishedPorts() {
     let body = Data("""
     {"HostConfig":{"PortBindings":{"8080/tcp":[{"HostIp":"::1","HostPort":"28183"}]}}}

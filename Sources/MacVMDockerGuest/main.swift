@@ -273,12 +273,18 @@ private func main() throws {
         socketRelaySupervisor: socketRelaySupervisor
     )
     mapper.reconcileSidecarMounts()
-    let proxy = DockerAPIProxy(mapper: mapper, socketGroupName: configuration.socketGroupName)
     let portReconciler = PublishedPortReconciler(
         dockerSocketPath: "/var/run/macvm-docker-forward.sock",
         linuxAddress: configuration.privateLinuxAddress,
         brokerKeyURL: brokerKeyURL,
         brokerKnownHostsURL: brokerKnownHostsURL
+    )
+    let proxy = DockerAPIProxy(
+        mapper: mapper,
+        socketGroupName: configuration.socketGroupName,
+        publishedPortsDidChange: {
+            try portReconciler.reconcileImmediately()
+        }
     )
     portReconciler.start()
     defer { portReconciler.stop() }

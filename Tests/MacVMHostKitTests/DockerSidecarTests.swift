@@ -712,7 +712,9 @@ func ignitionPinsPrivateNetworkingRestrictedSSHDataDiskAndRosetta() throws {
     #expect(rendered.contains("/usr/bin/mktemp -d /tmp/macvm-filesystem-key.XXXXXX"))
     #expect(rendered.contains("/usr/bin/ssh-keygen -q -t ed25519"))
     #expect(rendered.contains("/usr/bin/install -m 0600 \"$temporary/macos_fs_ed25519\""))
-    #expect(rendered.contains("Requires=docker.service sshd.service macvm-filesystem-key.service"))
+    #expect(rendered.contains(
+        "Requires=docker.service sshd.service macvm-resolver.service macvm-filesystem-key.service"
+    ))
     #expect(!rendered.contains("firewall-cmd"))
     #expect(rendered.contains("/var/lib/docker/engine-id"))
     #expect(rendered.contains("mount-sshfs|mount-sshfs-file"))
@@ -782,6 +784,41 @@ func ignitionConfiguresHostDockerInternalWithPairNetworkAddresses() throws {
         "unix:///run/docker.sock",
         "tcp://127.0.0.1:2375",
     ])
+
+    let systemd = try #require(document["systemd"] as? [String: Any])
+    let units = try #require(systemd["units"] as? [[String: Any]])
+    let resolvedUnit = try #require(units.first(where: {
+        $0["name"] as? String == "systemd-resolved.service"
+    }))
+    #expect(resolvedUnit["enabled"] as? Bool == true)
+    #expect(resolvedUnit["dropins"] == nil)
+
+    let resolverUnit = try #require(units.first(where: {
+        $0["name"] as? String == "macvm-resolver.service"
+    }))
+    let resolverConfiguration = try #require(resolverUnit["contents"] as? String)
+    #expect(resolverConfiguration.contains(
+        "After=NetworkManager-wait-online.service systemd-resolved.service"
+    ))
+    #expect(resolverConfiguration.contains("Requires=NetworkManager-wait-online.service"))
+    #expect(resolverConfiguration.contains("Wants=systemd-resolved.service"))
+    #expect(!resolverConfiguration.contains(
+        "Requires=NetworkManager-wait-online.service systemd-resolved.service"
+    ))
+    #expect(resolverConfiguration.contains(
+        "ExecStart=/usr/bin/systemctl restart systemd-resolved.service"
+    ))
+    #expect(resolverConfiguration.contains(
+        "ExecStart=/usr/bin/systemctl is-active --quiet systemd-resolved.service"
+    ))
+
+    let readyUnit = try #require(units.first(where: {
+        $0["name"] as? String == "macvm-ready.service"
+    }))
+    let readyConfiguration = try #require(readyUnit["contents"] as? String)
+    #expect(readyConfiguration.contains(
+        "Requires=docker.service sshd.service macvm-resolver.service"
+    ))
 }
 
 @Test
@@ -869,13 +906,31 @@ func dockerStatusDistinguishesDisabledCorruptAndStopped() throws {
 }
 
 @Test
-func cloneCopiesDockerPayloadButRefreshesConcurrentIdentities() async throws {
+func cloneReprovisionsFCOSWhileCopyingDockerDataAndRefreshingIdentities() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let sourceURL = root.appendingPathComponent("source.macvm", isDirectory: true)
     try FileManager.default.createDirectory(at: sourceURL, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
+
+    let pristineSystemDisk = Data("pristine-fcos-system".utf8)
+    let compressedSystemDisk = try gzipData(pristineSystemDisk)
+    let streamData = try stableStreamData(
+        release: "44.20260718.3.0",
+        compressedImage: compressedSystemDisk,
+        rawImage: pristineSystemDisk
+    )
+    let cachedImage = try await FedoraCoreOSImageProvider(
+        cacheDirectory: root.appendingPathComponent(".docker-images", isDirectory: true),
+        streamURL: URL(string: "https://example.test/stable.json")!,
+        downloader: DockerImageTestDownloader(
+            streamData: streamData,
+            compressedImageData: compressedSystemDisk
+        )
+    ).refresh()
+
     var settings = dockerTestSettings()
     settings.linuxNATMACAddress = "02:00:00:00:00:99"
+    settings.imageVersion = cachedImage.image.release
     let metadata = VMMetadata(
         name: "source",
         cpuCount: 2,
@@ -898,7 +953,8 @@ func cloneCopiesDockerPayloadButRefreshesConcurrentIdentities() async throws {
     }
     let sidecar = sourceBundle.dockerSidecarBundle
     try sidecar.createDirectories()
-    try Data("fcos-state".utf8).write(to: sidecar.systemDiskURL)
+    let provisionedSystemDisk = Data("provisioned-fcos-state".utf8)
+    try provisionedSystemDisk.write(to: sidecar.systemDiskURL)
     try Data("docker-images-volumes".utf8).write(to: sidecar.dataDiskURL)
     try Data("efi-state".utf8).write(to: sidecar.efiVariableStoreURL)
     let identifier = try sidecar.createGenericMachineIdentifier()
@@ -915,25 +971,39 @@ func cloneCopiesDockerPayloadButRefreshesConcurrentIdentities() async throws {
         genericMachineIdentifierDigest: DockerSidecarBundle.sha256Hex(identifier.dataRepresentation)
     ).makeData().write(to: sidecar.initialIgnitionURL)
     try sidecar.writeMetadata(DockerSidecarMetadata(
-        image: dockerTestImage,
+        image: cachedImage.image,
         genericMachineIdentifierDigest: DockerSidecarBundle.sha256Hex(identifier.dataRepresentation)
     ))
     try FileManager.default.createDirectory(at: sourceBundle.runtimeDirectoryURL, withIntermediateDirectories: true)
     try Data("stale".utf8).write(to: sourceBundle.dockerSidecarRuntimeURL)
 
-    let clone = try await MacVMService(rootDirectory: root).cloneVM(
+    let clone = try await MacVMService(
+        rootDirectory: root,
+        dockerImageAutoRefreshEnabled: false
+    ).cloneVM(
         from: ManagedVM(bundleURL: sourceURL, metadata: metadata),
         named: "clone"
     )
     let cloneBundle = VMBundle(url: clone.bundleURL)
     let clonedSidecar = cloneBundle.dockerSidecarBundle
 
-    #expect(try Data(contentsOf: clonedSidecar.systemDiskURL) == Data("fcos-state".utf8))
+    #expect(try Data(contentsOf: sidecar.systemDiskURL) == provisionedSystemDisk)
+    #expect(try Data(contentsOf: clonedSidecar.systemDiskURL) == pristineSystemDisk)
     #expect(try Data(contentsOf: clonedSidecar.dataDiskURL) == Data("docker-images-volumes".utf8))
-    #expect(try Data(contentsOf: clonedSidecar.efiVariableStoreURL) == Data("efi-state".utf8))
+    #expect(try Data(contentsOf: clonedSidecar.efiVariableStoreURL) != Data("efi-state".utf8))
     #expect(try Data(contentsOf: clonedSidecar.dockerAuthorizedKeyURL) == Data(contentsOf: sidecar.dockerAuthorizedKeyURL))
     #expect(try Data(contentsOf: clonedSidecar.linuxHostPrivateKeyURL) == Data(contentsOf: sidecar.linuxHostPrivateKeyURL))
     #expect(try Data(contentsOf: clonedSidecar.genericMachineIdentifierURL) != Data(contentsOf: sidecar.genericMachineIdentifierURL))
+    #expect(try clonedSidecar.readMetadata().ignitionVersion == DockerSidecarMetadata.currentIgnitionVersion)
+    let clonedIgnition = try #require(
+        try JSONSerialization.jsonObject(with: Data(contentsOf: clonedSidecar.initialIgnitionURL)) as? [String: Any]
+    )
+    let clonedStorage = try #require(clonedIgnition["storage"] as? [String: Any])
+    let clonedFiles = try #require(clonedStorage["files"] as? [[String: Any]])
+    let cloneIdentity = try #require(clonedFiles.first(where: {
+        $0["path"] as? String == "/usr/local/libexec/macvm-clone-identity"
+    }))
+    #expect(decodedIgnitionFile(cloneIdentity).contains("force_refresh=1"))
     #expect(clone.metadata.dockerSidecar?.linuxNATMACAddress != settings.linuxNATMACAddress)
     #expect(clone.metadata.dockerSidecar?.linuxPrivateMACAddress == settings.linuxPrivateMACAddress)
     #expect(!FileManager.default.fileExists(atPath: cloneBundle.runtimeDirectoryURL.path))

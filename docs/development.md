@@ -132,6 +132,65 @@ Real-guest release checks are required for:
 - clone source/destination concurrent use, Docker engine ID refresh, recovery
   bypass, degraded startup, disable preservation, and destructive reset
 
+### Docker compatibility suite
+
+Run the real-guest contract against a stopped, SSH-ready, Docker-ready seed:
+
+```bash
+make test-docker-e2e MACVM_DOCKER_E2E_SEED=docker-seed
+```
+
+The seed is never started or modified. The harness creates disposable
+copy-on-write clones, uses the Debug CLI and app built from the current
+checkout, and removes the clones only after a successful run. Failed clones are
+retained with their names printed at exit. Quit any installed or older
+`MacVM.app` before starting; the preflight refuses to hand test VMs to an app
+from a different path.
+
+The default `full` suite runs the black-box contract, Testcontainers for Go,
+kind, and destructive lifecycle checks. A quicker `smoke` run omits the
+ecosystem and lifecycle portions:
+
+```bash
+MACVM_DOCKER_E2E_SUITE=smoke \
+  make test-docker-e2e MACVM_DOCKER_E2E_SEED=docker-seed
+```
+
+The host needs Python and Docker for the comparison run; `full` comparisons
+also need Go, kind, and kubectl. The harness installs missing Python, Go, kind,
+and kubectl tools only inside its disposable macOS clone. Use the baseline skip
+below when those host-side comparison tools are intentionally unavailable.
+
+By default, the same black-box contract first runs against the active host
+Docker selection. `MACVM_DOCKER_E2E_BASELINE_CONTEXT=<context>` selects an
+explicit Docker context; if it is omitted, `DOCKER_HOST`, `DOCKER_CONTEXT`, and
+the current Docker context retain their normal meaning. Remote contexts still
+exercise portable engine operations but skip host-path and local-socket
+assertions. Baseline failures are diagnostic and never waive a MacVM contract
+failure.
+
+Useful controls are:
+
+- `MACVM_E2E_ROOT=<directory>` when the seed is outside the default
+  `~/VirtualMachines/MacVMHost`
+- `MACVM_DOCKER_E2E_SKIP_BASELINE=1` when no traditional host Docker endpoint
+  is available
+- `MACVM_DOCKER_E2E_KEEP_VM=1` to retain successful disposable clones
+- `MACVM_DOCKER_E2E_REQUIRE_AMD64=1` to make unavailable Rosetta/amd64 support a
+  required-test failure
+- `MACVM_DOCKER_E2E_TIMEOUT_SECONDS=<seconds>` to change the 15-minute sidecar
+  and SSH readiness timeout
+- `MACVM_DOCKER_E2E_ARTIFACTS=<directory>` to override the default
+  `.build/docker-compat/<run-id>` report location
+
+Each run writes per-test logs, raw TSV results, host and sidecar engine
+metadata, TAP, JUnit XML, a JSON summary, and a Markdown comparison. Expected
+failures live in `Tests/DockerCompatibility/xfail.tsv`: every entry needs a
+stable tracking reference, an expected failure is reported as `XFAIL`, and an
+unexpected pass is a failing `XPASS` until the stale entry is removed. Coverage
+sources and licenses are recorded in
+`Tests/DockerCompatibility/UPSTREAM.md`.
+
 ## Clone Invariants
 
 Cloning requires the source VM to remain stopped. APFS uses copy-on-write clones
@@ -143,10 +202,11 @@ state, setup metadata, shared files, and any CPU or memory value that was not
 overridden. It receives a new MacVM UUID, creation date, and MAC address. Runtime
 session files and launch-on-boot state are not copied.
 
-For a Docker-enabled VM, cloning copies the complete nested appliance and then
-refreshes its generic machine identity, Docker engine identity, and NAT MAC
-address. Pairing state and Docker data remain usable while the new identities
-allow source and clone to run concurrently.
+For a Docker-enabled VM, cloning provisions a fresh Fedora CoreOS system disk
+and EFI state from the verified cached release, copies the Docker data disk and
+pairing state, and refreshes the generic machine identity, Docker engine
+identity, and NAT MAC address. Source and clone can then run concurrently
+without rerunning Ignition against an already provisioned root filesystem.
 
 ## Memory Pressure Invariants
 

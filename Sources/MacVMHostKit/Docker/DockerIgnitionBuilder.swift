@@ -10,6 +10,25 @@ struct DockerIgnitionBuilder {
     let linuxHostPrivateKey: String
     let linuxHostPublicKey: String
     let genericMachineIdentifierDigest: String
+    let refreshClonedIdentity: Bool
+
+    init(
+        settings: DockerSidecarSettings,
+        dockerAuthorizedKey: String,
+        mountBrokerAuthorizedKey: String,
+        linuxHostPrivateKey: String,
+        linuxHostPublicKey: String,
+        genericMachineIdentifierDigest: String,
+        refreshClonedIdentity: Bool = false
+    ) {
+        self.settings = settings
+        self.dockerAuthorizedKey = dockerAuthorizedKey
+        self.mountBrokerAuthorizedKey = mountBrokerAuthorizedKey
+        self.linuxHostPrivateKey = linuxHostPrivateKey
+        self.linuxHostPublicKey = linuxHostPublicKey
+        self.genericMachineIdentifierDigest = genericMachineIdentifierDigest
+        self.refreshClonedIdentity = refreshClonedIdentity
+    }
 
     func makeData() throws -> Data {
         let linuxAddress = Self.addressWithoutPrefix(settings.linuxAddress)
@@ -245,6 +264,7 @@ struct DockerIgnitionBuilder {
                     "contents": "[Unit]\nAfter=NetworkManager-wait-online.service\nWants=NetworkManager-wait-online.service\n",
                 ]]
             ),
+            unit(name: "systemd-resolved.service", enabled: true),
             unit(name: "docker.service", enabled: true),
             unit(
                 name: "var-lib-docker.mount",
@@ -346,13 +366,34 @@ struct DockerIgnitionBuilder {
                 """
             ),
             unit(
+                name: "macvm-resolver.service",
+                enabled: true,
+                contents: """
+                [Unit]
+                Description=Verify Docker sidecar name resolution after networking is online
+                After=NetworkManager-wait-online.service systemd-resolved.service
+                Requires=NetworkManager-wait-online.service
+                Wants=systemd-resolved.service
+                Before=macvm-ready.service
+
+                [Service]
+                Type=oneshot
+                ExecStart=/usr/bin/systemctl restart systemd-resolved.service
+                ExecStart=/usr/bin/systemctl is-active --quiet systemd-resolved.service
+                RemainAfterExit=yes
+
+                [Install]
+                WantedBy=multi-user.target
+                """
+            ),
+            unit(
                 name: "macvm-ready.service",
                 enabled: true,
                 contents: """
                 [Unit]
                 Description=Publish Docker sidecar readiness
-                After=docker.service sshd.service macvm-filesystem-key.service macvm-filesystem-tools.service macvm-firewall.service macvm-rosetta.service
-                Requires=docker.service sshd.service macvm-filesystem-key.service macvm-filesystem-tools.service macvm-firewall.service
+                After=docker.service sshd.service macvm-resolver.service macvm-filesystem-key.service macvm-filesystem-tools.service macvm-firewall.service macvm-rosetta.service
+                Requires=docker.service sshd.service macvm-resolver.service macvm-filesystem-key.service macvm-filesystem-tools.service macvm-firewall.service
 
                 [Service]
                 Type=oneshot
@@ -494,9 +535,11 @@ struct DockerIgnitionBuilder {
         #!/bin/bash
         set -euo pipefail
         install -d -m 0700 /var/lib/macvm
+        force_refresh=\(refreshClonedIdentity ? "1" : "0")
+        refresh_complete=/var/lib/macvm/clone-identity-refreshed
         current="$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || sha256sum /etc/macvm-sidecar | cut -d' ' -f1)"
         previous="$(cat /var/lib/macvm/hardware-id 2>/dev/null || true)"
-        if [[ -n "$previous" && "$previous" != "$current" ]]; then
+        if [[ ( "$force_refresh" == 1 && ! -e "$refresh_complete" ) || ( -n "$previous" && "$previous" != "$current" ) ]]; then
           rm -f /etc/machine-id /var/lib/dbus/machine-id /var/lib/docker/engine-id
           touch /etc/machine-id
           systemd-machine-id-setup
@@ -511,6 +554,7 @@ struct DockerIgnitionBuilder {
           done
         fi
         printf '%s\n' "$current" > /var/lib/macvm/hardware-id
+        [[ "$force_refresh" == 1 ]] && touch "$refresh_complete"
         """
     }
 

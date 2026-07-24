@@ -117,10 +117,21 @@ supported across the VM boundary.
 This Docker-visible scoping is not containment against a compromised appliance
 root, which owns the restricted SSHFS credential.
 
+### Bind-mount file events
+
+Host-created and host-modified files become visible through the bind mount, but
+SSHFS does not carry macOS filesystem notifications into Linux. A process that
+depends only on `inotify` may therefore miss changes made from the macOS side;
+configure that process to poll the mounted tree. Container-originated changes
+still generate Linux filesystem events normally. This known compatibility gap
+is tracked by the `bind.inotify` entry in
+`Tests/DockerCompatibility/xfail.tsv`.
+
 Published IPv4 TCP and UDP ports are relayed inside the macOS guest and follow
-the running container lifecycle. IPv6-only publications and ambiguous
-same-port/multiple-address publications are rejected instead of being exposed
-incorrectly.
+the running container lifecycle. A successful container start is not returned
+to the Docker client until its macOS relay is installed. IPv6-only publications
+and ambiguous same-port/multiple-address publications are rejected instead of
+being exposed incorrectly.
 
 ## Access the macOS Guest from Containers
 
@@ -148,11 +159,13 @@ a long-lived default-bridge container if it retains an upstream-only
 
 ## Data Lifecycle and Cloning
 
-Cloning a Docker-enabled VM copies its complete appliance, including Fedora
-CoreOS state, Docker images and layers, containers, volumes, data disk, EFI
-state, and pairing configuration. MacVM refreshes the appliance's generic
-machine identity and NAT MAC address so the source and clone can run
-concurrently. APFS copy-on-write behavior applies to the Docker disks.
+Cloning a Docker-enabled VM creates a fresh Fedora CoreOS system disk and EFI
+state from the source appliance's verified image release, while copying its
+Docker images and layers, containers, volumes, data disk, and pairing
+configuration. MacVM refreshes the appliance's generic machine identity,
+standalone Moby engine identity, and NAT MAC address so the source and clone can
+run concurrently. APFS copy-on-write behavior applies to the Docker data disk
+and cached Fedora CoreOS image.
 
 The lifecycle commands have these data effects:
 

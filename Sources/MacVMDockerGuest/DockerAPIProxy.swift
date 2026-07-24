@@ -10,18 +10,21 @@ final class DockerAPIProxy: @unchecked Sendable {
     private let publicSocketPath: String
     private let privateSocketPath: String
     private let socketGroupName: String
+    private let publishedPortsDidChange: @Sendable () throws -> Void
     private var serverChannel: Channel?
 
     init(
         mapper: GuestFilesystemMapper,
         publicSocketPath: String = "/var/run/docker.sock",
         privateSocketPath: String = "/var/run/macvm-docker-forward.sock",
-        socketGroupName: String = "docker"
+        socketGroupName: String = "docker",
+        publishedPortsDidChange: @escaping @Sendable () throws -> Void = {}
     ) {
         self.mapper = mapper
         self.publicSocketPath = publicSocketPath
         self.privateSocketPath = privateSocketPath
         self.socketGroupName = socketGroupName
+        self.publishedPortsDidChange = publishedPortsDidChange
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
         self.threadPool = NIOThreadPool(numberOfThreads: max(2, System.coreCount / 2))
     }
@@ -32,6 +35,7 @@ final class DockerAPIProxy: @unchecked Sendable {
         let mapper = self.mapper
         let privateSocketPath = self.privateSocketPath
         let threadPool = self.threadPool
+        let publishedPortsDidChange = self.publishedPortsDidChange
         serverChannel = try ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 128)
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -40,7 +44,8 @@ final class DockerAPIProxy: @unchecked Sendable {
                 channel.pipeline.addHandler(RawDockerProxyHandler(
                     mapper: mapper,
                     privateSocketPath: privateSocketPath,
-                    threadPool: threadPool
+                    threadPool: threadPool,
+                    publishedPortsDidChange: publishedPortsDidChange
                 ))
             }
             .bind(unixDomainSocketPath: publicSocketPath)
@@ -248,6 +253,7 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
     private let mapper: GuestFilesystemMapper
     private let privateSocketPath: String
     private let threadPool: NIOThreadPool
+    private let publishedPortsDidChange: @Sendable () throws -> Void
     private let responseQueue = ResponseContextQueue()
     private var backend: Channel?
     private var pendingWrites: [ByteBuffer] = []
@@ -257,10 +263,16 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
     private var rewriteInProgress = false
     private var inputClosed = false
 
-    init(mapper: GuestFilesystemMapper, privateSocketPath: String, threadPool: NIOThreadPool) {
+    init(
+        mapper: GuestFilesystemMapper,
+        privateSocketPath: String,
+        threadPool: NIOThreadPool,
+        publishedPortsDidChange: @escaping @Sendable () throws -> Void
+    ) {
         self.mapper = mapper
         self.privateSocketPath = privateSocketPath
         self.threadPool = threadPool
+        self.publishedPortsDidChange = publishedPortsDidChange
     }
 
     func channelActive(context: ChannelHandlerContext) {
@@ -271,7 +283,9 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
                 channel.pipeline.addHandler(RawDockerBackendHandler(
                     client: client,
                     mapper: self.mapper,
-                    responseQueue: self.responseQueue
+                    responseQueue: self.responseQueue,
+                    threadPool: self.threadPool,
+                    publishedPortsDidChange: self.publishedPortsDidChange
                 ))
             }
             .connect(unixDomainSocketPath: privateSocketPath)
@@ -685,16 +699,27 @@ private final class RawDockerBackendHandler: ChannelInboundHandler, @unchecked S
     private let client: Channel
     private let mapper: GuestFilesystemMapper
     private let responseQueue: ResponseContextQueue
+    private let threadPool: NIOThreadPool
+    private let publishedPortsDidChange: @Sendable () throws -> Void
     private var input = Data()
     private var currentRequest: ProxyRequestContext?
     private var processingState = ResponseProcessingState.head
     private var tunnelMode = false
     private var inputFinished = false
+    private var reconciliationInProgress = false
 
-    init(client: Channel, mapper: GuestFilesystemMapper, responseQueue: ResponseContextQueue) {
+    init(
+        client: Channel,
+        mapper: GuestFilesystemMapper,
+        responseQueue: ResponseContextQueue,
+        threadPool: NIOThreadPool,
+        publishedPortsDidChange: @escaping @Sendable () throws -> Void
+    ) {
         self.client = client
         self.mapper = mapper
         self.responseQueue = responseQueue
+        self.threadPool = threadPool
+        self.publishedPortsDidChange = publishedPortsDidChange
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -725,6 +750,7 @@ private final class RawDockerBackendHandler: ChannelInboundHandler, @unchecked S
     }
 
     private func processInput() {
+        guard !reconciliationInProgress else { return }
         while !input.isEmpty {
             switch processingState {
             case .head:
@@ -767,6 +793,15 @@ private final class RawDockerBackendHandler: ChannelInboundHandler, @unchecked S
                     }
                     currentRequest = nil
                     tunnelMode = true
+                    return
+                }
+
+                if DockerAPIPathRewriter.affectsPublishedPorts(
+                    method: request.method,
+                    uri: request.uri,
+                    status: status
+                ) {
+                    reconcilePublishedPorts(beforeForwarding: encodedHead, head: head)
                     return
                 }
 
@@ -885,6 +920,37 @@ private final class RawDockerBackendHandler: ChannelInboundHandler, @unchecked S
                 processingState = .bufferedUntilClose(response)
                 return
             }
+        }
+    }
+
+    private func reconcilePublishedPorts(beforeForwarding encodedHead: Data, head: HTTPMessageHead) {
+        reconciliationInProgress = true
+        threadPool.runIfActive(eventLoop: client.eventLoop) {
+            try self.publishedPortsDidChange()
+        }.whenComplete { result in
+            self.reconciliationInProgress = false
+            guard case .success = result else {
+                self.client.close(promise: nil)
+                return
+            }
+            self.forward(encodedHead)
+            switch head.bodyMode {
+            case .none:
+                self.currentRequest = nil
+                self.processingState = .head
+            case .fixed, .chunked:
+                guard let bodyState = HTTPBodyStreamState.make(for: head.bodyMode) else {
+                    self.client.close(promise: nil)
+                    return
+                }
+                self.processingState = .rawBody(bodyState)
+            case .untilClose:
+                self.processingState = .rawUntilClose
+            case .invalid:
+                self.client.close(promise: nil)
+                return
+            }
+            self.processInput()
         }
     }
 

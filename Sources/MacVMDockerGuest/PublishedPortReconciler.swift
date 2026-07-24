@@ -83,6 +83,15 @@ final class PublishedPortReconciler: @unchecked Sendable {
         }
     }
 
+    func reconcileImmediately() throws {
+        let succeeded = queue.sync {
+            reconcile()
+        }
+        guard succeeded else {
+            throw GuestHelperError("Docker published-port reconciliation failed.")
+        }
+    }
+
     func stop() {
         queue.sync {
             timer?.cancel()
@@ -97,8 +106,16 @@ final class PublishedPortReconciler: @unchecked Sendable {
         try? group.syncShutdownGracefully()
     }
 
-    private func reconcile() {
-        guard let requested = try? fetchPublishedPorts() else { return }
+    @discardableResult
+    private func reconcile() -> Bool {
+        let requested: [DockerPublishedPort]
+        do {
+            requested = try fetchPublishedPorts()
+        } catch {
+            log("unable to inspect Docker published ports: \(error.localizedDescription)")
+            return false
+        }
+        var succeeded = true
         let ipv4 = requested.filter { binding in
             guard !binding.hostIP.contains(":") else {
                 reportUnsupported("IPv6 Docker publication \(binding.hostIP):\(binding.hostPort)/\(binding.kind.rawValue)")
@@ -124,6 +141,7 @@ final class PublishedPortReconciler: @unchecked Sendable {
                 try setSidecarPort(port, enabled: false)
                 configuredSidecarPorts.remove(port)
             } catch {
+                succeeded = false
                 log("unable to remove Linux loopback relay for \(port.port)/\(port.kind.rawValue): \(error.localizedDescription)")
             }
         }
@@ -132,6 +150,7 @@ final class PublishedPortReconciler: @unchecked Sendable {
                 try setSidecarPort(port, enabled: true)
                 configuredSidecarPorts.insert(port)
             } catch {
+                succeeded = false
                 log("unable to configure Linux loopback relay for \(port.port)/\(port.kind.rawValue): \(error.localizedDescription)")
             }
         }
@@ -140,11 +159,15 @@ final class PublishedPortReconciler: @unchecked Sendable {
             do {
                 listeners[binding] = try makeListener(for: binding)
             } catch {
+                succeeded = false
                 log(
                     "unable to relay \(binding.hostIP):\(binding.hostPort)/\(binding.kind.rawValue): \(error.localizedDescription)"
                 )
             }
         }
+        return succeeded
+            && configuredSidecarPorts == wantedSidecarPorts
+            && Set(listeners.keys) == wanted
     }
 
     private func fetchPublishedPorts() throws -> [DockerPublishedPort] {
