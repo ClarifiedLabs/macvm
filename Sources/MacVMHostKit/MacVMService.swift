@@ -1478,6 +1478,7 @@ public final class MacVMService: Sendable {
         setupOptions: SetupOptions? = nil,
         progress: VMOperationHandler? = nil
     ) async throws -> ManagedVM {
+        MemoryPressureCoordinator.activateSystemMonitoring()
         DebugLog.log("Create requested for '\(draft.name)' with cpu=\(draft.cpuCount) memoryGiB=\(draft.memoryGiB) diskGiB=\(draft.diskGiB) display=\(draft.displayDescription) points (\(draft.displayPixelDescription) pixels) restoreMode=\(String(describing: draft.restoreMode)) bootstrap=\(draft.createBootstrapShare)")
         try validate(draft)
         try storage.ensureRootDirectories()
@@ -1567,9 +1568,12 @@ public final class MacVMService: Sendable {
         try bundle.prepareSharedDirectory(includeBootstrapShare: metadata.bootstrapShareEnabled)
 
         progress?(.status("Validating VM configuration..."))
-        let configuration = try bundle.makeConfiguration(
-            metadata: metadata,
-            memoryBalloonEnabled: false
+        let configuration = try bundle.makeConfiguration(metadata: metadata)
+        OperationalLog.lifecycle(
+            "configuration-ready name=\(draft.name) role=installer "
+                + "cpuCount=\(configuration.cpuCount) configuredMemoryBytes=\(configuration.memorySize) "
+                + "balloonDeviceCount=\(configuration.memoryBalloonDevices.count) "
+                + "bundlePath=\(bundleURL.path)"
         )
         DebugLog.log("Configuration validated successfully for \(draft.name)")
         let virtualMachine = VZVirtualMachine(configuration: configuration)
@@ -1599,11 +1603,13 @@ public final class MacVMService: Sendable {
 
         progress?(.status("Installing macOS. This can take a while..."))
         DebugLog.log("Starting macOS installation for \(draft.name)")
+        OperationalLog.lifecycle("install-started name=\(draft.name)")
         do {
             try await VirtualizationAsync.install(installer)
         } catch {
             if installer.progress.isCancelled {
                 DebugLog.log("macOS installation cancelled for \(draft.name)")
+                OperationalLog.lifecycle("install-cancelled name=\(draft.name)")
                 throw MacVMError.installCancelled
             }
             let message = InstallationErrorDiagnostics.message(
@@ -1611,9 +1617,13 @@ public final class MacVMService: Sendable {
                 guestRelease: installedRelease
             )
             DebugLog.log("macOS installation failed for \(draft.name): \(message)")
+            OperationalLog.lifecycleError(
+                "install-failed name=\(draft.name) error=\(message)"
+            )
             throw MacVMError.message(message)
         }
         DebugLog.log("macOS installation finished for \(draft.name)")
+        OperationalLog.lifecycle("install-succeeded name=\(draft.name)")
         progress?(.status("Installation complete. Use `macvm run \(draft.name)` for first boot."))
 
         return ManagedVM(bundleURL: bundleURL, metadata: metadata)

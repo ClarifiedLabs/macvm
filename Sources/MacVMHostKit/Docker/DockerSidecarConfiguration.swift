@@ -22,7 +22,7 @@ struct DockerSidecarConfiguration {
         configuration.storageDevices = try makeStorageDevices()
         configuration.networkDevices = try makeNetworkDevices()
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
-        MemoryBalloonConfiguration.install(on: configuration)
+        MemoryBalloonConfiguration.installForDocker(on: configuration)
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
         configuration.serialPorts = [makeSerialPort()]
 

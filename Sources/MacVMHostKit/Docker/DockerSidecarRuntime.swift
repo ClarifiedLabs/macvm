@@ -57,6 +57,12 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
             pairNetwork: pairNetwork,
             serialLogHandle: serialLogHandle
         ).makeConfiguration()
+        let label = ownerBundle.url.deletingPathExtension().lastPathComponent
+        OperationalLog.docker(
+            "configuration-ready owner=\(label) cpuCount=\(configuration.cpuCount) "
+                + "configuredMemoryBytes=\(configuration.memorySize) "
+                + "balloonDeviceCount=\(configuration.memoryBalloonDevices.count)"
+        )
         let virtualMachine = VZVirtualMachine(configuration: configuration, queue: .main)
         virtualMachine.delegate = self
         try ignitionServer.install(on: virtualMachine)
@@ -69,13 +75,19 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
             MainActor.assumeIsolated {
                 if case .failure(let error) = result {
                     self.startupError = error
+                    OperationalLog.dockerError(
+                        "start-failed owner=\(label) error=\(error.localizedDescription)"
+                    )
                     self.publish(state: .degraded, error: error.localizedDescription)
                     self.finish()
                 } else {
+                    OperationalLog.docker(
+                        "start-succeeded owner=\(label) "
+                            + "balloonDeviceCount=\(virtualMachine.memoryBalloonDevices.count)"
+                    )
                     self.memoryBalloonRegistrationID = MemoryPressureCoordinator.shared.register(
                         virtualMachine: virtualMachine,
-                        label: "\(self.ownerBundle.url.deletingPathExtension().lastPathComponent) Docker sidecar",
-                        guestKind: .docker,
+                        label: "\(label) Docker sidecar",
                         configuredMemorySize: self.settings.memorySizeBytes
                     )
                 }
@@ -232,8 +244,20 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
         error: String? = nil,
         pid: Int32 = getpid()
     ) {
+        let previousState = currentState
+        let previousError = currentError
         currentState = state
         currentError = error
+        if previousState != state || previousError != error {
+            let owner = ownerBundle.url.deletingPathExtension().lastPathComponent
+            let message = "state-changed owner=\(owner) previous=\(previousState.rawValue) "
+                + "current=\(state.rawValue) error=\(error ?? "none")"
+            if error == nil {
+                OperationalLog.docker(message)
+            } else {
+                OperationalLog.dockerError(message)
+            }
+        }
         let descriptor = DockerSidecarRuntimeDescriptor(
             state: state,
             pid: pid,
@@ -261,6 +285,10 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
         ignitionServer.stop()
         try? serialLogHandle.close()
         virtualMachine = nil
+        OperationalLog.docker(
+            "teardown-complete owner=\(ownerBundle.url.deletingPathExtension().lastPathComponent) "
+                + "state=\(currentState.rawValue) error=\(currentError ?? "none")"
+        )
         onStop?()
     }
 

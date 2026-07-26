@@ -237,6 +237,11 @@ func dockerGuestUpgradeReusesKeysInstalledByInitialProvisioning() throws {
 }
 
 @Test
+func dockerGuestProvisioningVersionUpgradesCurlPollingHelpers() {
+    #expect(DockerSidecarSettings.currentGuestProvisioningVersion >= 14)
+}
+
+@Test
 func initialDockerGuestProvisioningRequiresBothPendingKeys() {
     #expect(throws: (any Error).self) {
         try DockerGuestPairingKeyPlan.make(

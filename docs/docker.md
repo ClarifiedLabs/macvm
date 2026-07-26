@@ -133,6 +133,14 @@ to the Docker client until its macOS relay is installed. IPv6-only publications
 and ambiguous same-port/multiple-address publications are rejected instead of
 being exposed incorrectly.
 
+The guest helper reads `/containers/json` through an in-process Unix-domain
+HTTP client. It reconciles every two seconds as a fallback and immediately
+after relevant Docker lifecycle requests, without launching a `curl` process
+for each poll. Structured logs record binding changes, first and periodic
+failures, and five-minute health summaries in
+`/var/log/macvm-docker-guest.log`. Existing Docker-enabled VMs install this
+helper revision automatically on their next normal start.
+
 ## Access the macOS Guest from Containers
 
 Containers can use `host.docker.internal` to reach the owning macOS guest over

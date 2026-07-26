@@ -25,6 +25,7 @@ private final class SSHForwardSupervisor: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.macvm.docker-guest.ssh-forward")
     private let forwardSocket = "/var/run/macvm-docker-forward.sock"
     private var process: Process?
+    private var stderrMonitor: DockerGuestSSHStderrMonitor?
     private var stopping = false
     private var restartAttempt = 0
     private var connectionGeneration = 0
@@ -49,14 +50,20 @@ private final class SSHForwardSupervisor: @unchecked Sendable {
     func stop() {
         queue.sync {
             stopping = true
-            guard let process else { return }
-            process.terminationHandler = nil
-            if process.isRunning {
-                process.terminate()
-                process.waitUntilExit()
+            if let process {
+                process.terminationHandler = nil
+                if process.isRunning {
+                    process.terminate()
+                    process.waitUntilExit()
+                }
             }
             self.process = nil
+            stderrMonitor?.stop()
+            stderrMonitor = nil
             try? FileManager.default.removeItem(atPath: forwardSocket)
+            DockerGuestLog.info(
+                "ssh-forward stopped generations=\(connectionGeneration)"
+            )
         }
     }
 
@@ -83,23 +90,39 @@ private final class SSHForwardSupervisor: @unchecked Sendable {
         ]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.standardError
+        let stderrMonitor = DockerGuestSSHStderrMonitor(label: "docker-forward")
+        process.standardError = stderrMonitor.pipe
+        stderrMonitor.start()
         process.terminationHandler = { [weak self, weak process] _ in
             guard let self, let process else { return }
             self.queue.async {
                 guard self.process === process, !self.stopping else { return }
                 self.process = nil
+                self.stderrMonitor?.stop()
+                self.stderrMonitor = nil
                 try? FileManager.default.removeItem(atPath: self.forwardSocket)
+                DockerGuestLog.error(
+                    "ssh-forward exited status=\(process.terminationStatus) "
+                        + "generation=\(self.connectionGeneration)"
+                )
                 self.scheduleRestart()
             }
         }
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            stderrMonitor.stop()
+            throw error
+        }
         self.process = process
+        self.stderrMonitor = stderrMonitor
 
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
             if !process.isRunning {
                 self.process = nil
+                self.stderrMonitor = nil
+                stderrMonitor.stop()
                 throw GuestHelperError("Docker SSH forward exited with status \(process.terminationStatus).")
             }
             if FileManager.default.fileExists(atPath: forwardSocket) {
@@ -109,6 +132,10 @@ private final class SSHForwardSupervisor: @unchecked Sendable {
                 if connectionGeneration > 1 {
                     reconnectHandler?()
                 }
+                DockerGuestLog.info(
+                    "ssh-forward connected generation=\(connectionGeneration) "
+                        + "linuxAddress=\(configuration.privateLinuxAddress)"
+                )
                 return
             }
             Thread.sleep(forTimeInterval: 0.1)
@@ -117,6 +144,8 @@ private final class SSHForwardSupervisor: @unchecked Sendable {
         process.terminate()
         process.waitUntilExit()
         self.process = nil
+        self.stderrMonitor = nil
+        stderrMonitor.stop()
         throw GuestHelperError("Timed out creating the private Docker SSH forward.")
     }
 
@@ -124,14 +153,18 @@ private final class SSHForwardSupervisor: @unchecked Sendable {
         guard !stopping else { return }
         restartAttempt += 1
         let delay = min(pow(2.0, Double(restartAttempt - 1)), 30)
+        DockerGuestLog.info(
+            "ssh-forward restart-scheduled attempt=\(restartAttempt) delaySeconds=\(Int(delay))"
+        )
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !self.stopping, self.process == nil else { return }
             do {
                 try self.launchForward()
             } catch {
-                FileHandle.standardError.write(Data(
-                    "macvm-docker-guest: Docker SSH forward restart failed: \(error.localizedDescription)\n".utf8
-                ))
+                DockerGuestLog.error(
+                    "ssh-forward restart-failed attempt=\(self.restartAttempt) "
+                        + "error=\(error.localizedDescription)"
+                )
                 self.scheduleRestart()
             }
         }
@@ -248,9 +281,14 @@ private func main() throws {
         throw GuestHelperError("macvm-docker-guest must run as root from its launch daemon.")
     }
     let configuration = try loadConfiguration()
+    DockerGuestLog.info(
+        "runtime-starting pid=\(getpid()) macOSAddress=\(configuration.privateMacOSAddress) "
+            + "linuxAddress=\(configuration.privateLinuxAddress)"
+    )
     try configurePrivateInterface(configuration)
     try pinSidecarHostKey(configuration)
     try installSidecarFilesystemKey(configuration)
+    DockerGuestLog.info("runtime-bootstrap-complete")
     let stateDirectory = URL(fileURLWithPath: configuration.stateDirectoryPath, isDirectory: true)
     let supervisor = SSHForwardSupervisor(configuration: configuration)
     try supervisor.start()
@@ -296,12 +334,14 @@ private func main() throws {
     let signalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
     signalSource.setEventHandler { proxy.shutdown() }
     signalSource.resume()
+    DockerGuestLog.info("runtime-ready")
     try proxy.run()
+    DockerGuestLog.info("runtime-stopping reason=proxy-returned")
 }
 
 do {
     try main()
 } catch {
-    FileHandle.standardError.write(Data("macvm-docker-guest: \(error.localizedDescription)\n".utf8))
+    DockerGuestLog.error("runtime-failed error=\(error.localizedDescription)")
     exit(1)
 }

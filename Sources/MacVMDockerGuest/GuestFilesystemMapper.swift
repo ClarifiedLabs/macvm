@@ -207,11 +207,13 @@ final class GuestFilesystemMapper: @unchecked Sendable {
             do {
                 persisted = try pruneMissingMappings()
             } catch {
-                FileHandle.standardError.write(Data(
-                    "macvm-docker-guest: unable to prune stale bind mappings: \(error.localizedDescription)\n".utf8
-                ))
+                DockerGuestLog.error(
+                    "bind-reconcile prune-failed error=\(error.localizedDescription)"
+                )
                 return
             }
+            var restoredCount = 0
+            var failureCount = 0
             for mapping in persisted {
                 do {
                     let mounted = try ensureSidecarMount(mapping)
@@ -221,12 +223,20 @@ final class GuestFilesystemMapper: @unchecked Sendable {
                             try persistMappings()
                         }
                     }
+                    restoredCount += 1
                 } catch {
-                    FileHandle.standardError.write(Data(
-                        "macvm-docker-guest: unable to restore Docker bind for \(mapping.macOSMountRoot) after sidecar reconnect: \(error.localizedDescription)\n".utf8
-                    ))
+                    failureCount += 1
+                    DockerGuestLog.error(
+                        "bind-reconcile restore-failed source=\(mapping.macOSMountRoot) "
+                            + "filesystemID=\(mapping.filesystemID) "
+                            + "error=\(error.localizedDescription)"
+                    )
                 }
             }
+            DockerGuestLog.info(
+                "bind-reconcile completed persisted=\(persisted.count) "
+                    + "restored=\(restoredCount) failures=\(failureCount)"
+            )
         }
     }
 
@@ -276,9 +286,10 @@ final class GuestFilesystemMapper: @unchecked Sendable {
             } else if mapping.remoteExportRoot != nil {
                 try? FileManager.default.removeItem(atPath: mapping.effectiveRemoteExportRoot)
             }
-            FileHandle.standardError.write(Data(
-                "macvm-docker-guest: pruned stale bind mapping for \(mapping.macOSMountRoot)\n".utf8
-            ))
+            DockerGuestLog.info(
+                "bind-mapping pruned source=\(mapping.macOSMountRoot) "
+                    + "filesystemID=\(mapping.filesystemID)"
+            )
         }
         return result.retained
     }

@@ -210,15 +210,23 @@ without rerunning Ignition against an already provisioned root filesystem.
 
 ## Memory Pressure Invariants
 
-Every macOS and Docker VM configuration includes one traditional virtio memory
-balloon. Register a VM with the process-local `MemoryPressureCoordinator` only
-after it starts successfully, and unregister it on every stop or failure path.
-The coordinator records requested targets because Virtualization.framework does
-not report the amount of memory actually returned by a guest.
+Every macOS VM configuration must contain zero memory-balloon devices. Do not
+register macOS guests with `MemoryPressureCoordinator`: changing a macOS
+balloon target under host pressure can deadlock the guest and its
+Virtualization.framework worker.
+
+Every Docker appliance configuration contains exactly one traditional virtio
+memory balloon. Register only the Docker appliance with the process-local
+`MemoryPressureCoordinator`, only after it starts successfully, and unregister
+it on every stop or failure path. The coordinator records requested targets
+because Virtualization.framework does not report the amount of memory actually
+returned by a guest.
 
 Keep target calculation independent from monitoring and timers so its pressure
-levels, guest floors, cooldown, and round-robin recovery remain deterministic in
-tests. The externally documented policy is in
+levels, Docker floor, cooldown, and round-robin recovery remain deterministic
+in tests. System-pressure monitoring is activated for every running macOS VM
+even when no Docker sidecar exists so incident logs retain pressure transitions.
+The externally documented policy and diagnostic predicates are in
 [Resource Management](resource-management.md); update that guide whenever these
 values or behaviors change.
 

@@ -8,7 +8,8 @@ import Foundation
 final class SocketRelaySupervisor: @unchecked Sendable {
     private struct RelayState {
         var macOSSocketPath: String
-        var process: Process?
+        var process: Process? = nil
+        var stderrMonitor: DockerGuestSSHStderrMonitor? = nil
         var restartAttempt = 0
     }
 
@@ -54,29 +55,37 @@ final class SocketRelaySupervisor: @unchecked Sendable {
 
     func removeRelay(filesystemID: String) {
         queue.sync {
-            if let process = relays.removeValue(forKey: filesystemID)?.process {
-                process.terminationHandler = nil
-                if process.isRunning {
-                    process.terminate()
-                    process.waitUntilExit()
+            if let relay = relays.removeValue(forKey: filesystemID) {
+                if let process = relay.process {
+                    process.terminationHandler = nil
+                    if process.isRunning {
+                        process.terminate()
+                        process.waitUntilExit()
+                    }
                 }
+                relay.stderrMonitor?.stop()
             }
             try? runBrokerCommand("remove-socket \(filesystemID)", timeout: 15)
+            DockerGuestLog.info("socket-relay removed filesystemID=\(filesystemID)")
         }
     }
 
     func stop() {
         queue.sync {
             stopping = true
-            let processes = relays.values.compactMap(\.process)
+            let states = Array(relays.values)
             relays.removeAll()
-            for process in processes {
-                process.terminationHandler = nil
-                if process.isRunning {
-                    process.terminate()
-                    process.waitUntilExit()
+            for state in states {
+                if let process = state.process {
+                    process.terminationHandler = nil
+                    if process.isRunning {
+                        process.terminate()
+                        process.waitUntilExit()
+                    }
                 }
+                state.stderrMonitor?.stop()
             }
+            DockerGuestLog.info("socket-relays stopped count=\(states.count)")
         }
     }
 
@@ -102,15 +111,23 @@ final class SocketRelaySupervisor: @unchecked Sendable {
         ]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.standardError
+        let stderrMonitor = DockerGuestSSHStderrMonitor(label: "socket-relay-\(filesystemID)")
+        process.standardError = stderrMonitor.pipe
+        stderrMonitor.start()
         process.terminationHandler = { [weak self, weak process] _ in
             guard let self, let process else { return }
             self.queue.async {
                 self.relayDidExit(filesystemID: filesystemID, process: process)
             }
         }
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            stderrMonitor.stop()
+            throw error
+        }
         relay.process = process
+        relay.stderrMonitor = stderrMonitor
         relays[filesystemID] = relay
 
         do {
@@ -122,6 +139,8 @@ final class SocketRelaySupervisor: @unchecked Sendable {
                 process.waitUntilExit()
             }
             relay.process = nil
+            relay.stderrMonitor = nil
+            stderrMonitor.stop()
             relays[filesystemID] = relay
             throw GuestHelperError(
                 "Unable to establish Docker socket relay for \(relay.macOSSocketPath): \(error.localizedDescription)"
@@ -130,13 +149,22 @@ final class SocketRelaySupervisor: @unchecked Sendable {
 
         relay.restartAttempt = 0
         relays[filesystemID] = relay
+        DockerGuestLog.info(
+            "socket-relay connected filesystemID=\(filesystemID) "
+                + "macOSSocketPath=\(relay.macOSSocketPath)"
+        )
     }
 
     private func relayDidExit(filesystemID: String, process: Process) {
         guard var relay = relays[filesystemID], relay.process === process else { return }
         relay.process = nil
+        relay.stderrMonitor?.stop()
+        relay.stderrMonitor = nil
         relays[filesystemID] = relay
         guard !stopping else { return }
+        DockerGuestLog.error(
+            "socket-relay exited filesystemID=\(filesystemID) status=\(process.terminationStatus)"
+        )
         scheduleRestart(filesystemID: filesystemID)
     }
 
@@ -146,6 +174,10 @@ final class SocketRelaySupervisor: @unchecked Sendable {
         let attempt = relay.restartAttempt
         relays[filesystemID] = relay
         let delay = min(pow(2.0, Double(attempt - 1)), 30)
+        DockerGuestLog.info(
+            "socket-relay restart-scheduled filesystemID=\(filesystemID) "
+                + "attempt=\(attempt) delaySeconds=\(Int(delay))"
+        )
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self,
                   !self.stopping,
@@ -155,9 +187,11 @@ final class SocketRelaySupervisor: @unchecked Sendable {
             do {
                 try self.launchRelay(filesystemID: filesystemID)
             } catch {
-                FileHandle.standardError.write(Data(
-                    "macvm-docker-guest: socket relay restart failed for \(current.macOSSocketPath): \(error.localizedDescription)\n".utf8
-                ))
+                DockerGuestLog.error(
+                    "socket-relay restart-failed filesystemID=\(filesystemID) "
+                        + "macOSSocketPath=\(current.macOSSocketPath) "
+                        + "error=\(error.localizedDescription)"
+                )
                 self.scheduleRestart(filesystemID: filesystemID)
             }
         }

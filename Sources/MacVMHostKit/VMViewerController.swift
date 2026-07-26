@@ -79,7 +79,6 @@ public final class VMViewerController:
     public private(set) var window: NSWindow?
     private var displayView: VZVirtualMachineView?
     private var virtualMachine: VZVirtualMachine?
-    private var memoryBalloonRegistrationID: UUID?
     private var dockerSidecarRuntime: DockerSidecarRuntime?
     /// Retains both datagram file handles for the complete joint lifetime.
     private var dockerPairNetwork: DockerPairNetwork?
@@ -189,6 +188,7 @@ public final class VMViewerController:
 
     /// Create the `VZVirtualMachine` and boot it into the existing window.
     public func start(startInRecovery: Bool = false) throws {
+        MemoryPressureCoordinator.activateSystemMonitoring()
         self.startInRecovery = startInRecovery
         startupFailureMessage = nil
         try createAndStartVirtualMachine()
@@ -323,7 +323,6 @@ public final class VMViewerController:
         recordWindowGeometry()
         removeWindowObservers()
         stopHeartbeat()
-        stopMemoryReclamation()
         deactivateClipboard()
         clipboardRuntime.stop()
         vncServer?.stop()
@@ -340,6 +339,7 @@ public final class VMViewerController:
 
     nonisolated public func guestDidStop(_ virtualMachine: VZVirtualMachine) {
         DebugLog.log("Guest requested stop for \(vmName)")
+        OperationalLog.lifecycle("guest-stop name=\(vmName) role=viewer")
         DispatchQueue.main.async {
             MainActor.assumeIsolated { self.finish() }
         }
@@ -347,6 +347,9 @@ public final class VMViewerController:
 
     nonisolated public func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
         DebugLog.log("VM stopped with error for \(vmName): \(error.localizedDescription)")
+        OperationalLog.lifecycleError(
+            "stopped-with-error name=\(vmName) role=viewer error=\(error.localizedDescription)"
+        )
         fputs("VM stopped with error: \(error.localizedDescription)\n", stderr)
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
@@ -362,6 +365,9 @@ public final class VMViewerController:
         attachmentWasDisconnectedWithError error: Error
     ) {
         DebugLog.log("Network attachment disconnected for \(vmName): \(error.localizedDescription)")
+        OperationalLog.lifecycleError(
+            "network-disconnected name=\(vmName) role=viewer error=\(error.localizedDescription)"
+        )
         fputs("VM network attachment disconnected: \(error.localizedDescription)\n", stderr)
     }
 
@@ -422,6 +428,7 @@ public final class VMViewerController:
         dockerSidecarRuntime = nil
         dockerStartupOperationLock = nil
         dockerPairNetwork = nil
+        OperationalLog.lifecycle("teardown-complete name=\(vmName) role=viewer")
         onStop?()
     }
 
@@ -807,6 +814,13 @@ public final class VMViewerController:
             throw error
         }
 
+        OperationalLog.lifecycle(
+            "configuration-ready name=\(vmName) role=viewer "
+                + "cpuCount=\(configuration.cpuCount) configuredMemoryBytes=\(configuration.memorySize) "
+                + "balloonDeviceCount=\(configuration.memoryBalloonDevices.count) "
+                + "dockerSidecar=\(dockerSidecarRuntime != nil) recovery=\(startInRecovery) "
+                + "bundlePath=\(managedVM.bundleURL.path)"
+        )
         DebugLog.log("Creating VZVirtualMachine for \(vmName) on main queue")
 
         let virtualMachine = VZVirtualMachine(configuration: configuration, queue: DispatchQueue.main)
@@ -925,10 +939,17 @@ public final class VMViewerController:
 
         let snapshot = snapshot(for: virtualMachine)
         DebugLog.log("Attempting VM start for \(vmName) recovery=\(startInRecovery) canStart=\(snapshot.canStart) state=\(describe(snapshot.state))")
+        OperationalLog.lifecycle(
+            "start-request name=\(vmName) role=viewer recovery=\(startInRecovery) "
+                + "canStart=\(snapshot.canStart) state=\(describe(snapshot.state))"
+        )
 
         let vmName = self.vmName
         let handleFailure: @Sendable (Error) -> Void = { error in
             DebugLog.log("Failed to start VM \(vmName): \(error.localizedDescription)")
+            OperationalLog.lifecycleError(
+                "start-failed name=\(vmName) role=viewer error=\(error.localizedDescription)"
+            )
             fputs("Failed to start VM: \(error.localizedDescription)\n", stderr)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -946,10 +967,13 @@ public final class VMViewerController:
                     handleFailure(error)
                 } else {
                     DebugLog.log("start(options:) completion returned success for \(vmName)")
+                    OperationalLog.lifecycle(
+                        "start-succeeded name=\(vmName) role=viewer recovery=true "
+                            + "balloonDeviceCount=\(virtualMachine.memoryBalloonDevices.count)"
+                    )
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
                             self.refreshPasteboardCommandState()
-                            self.startMemoryReclamation(for: virtualMachine)
                         }
                     }
                 }
@@ -960,32 +984,19 @@ public final class VMViewerController:
                     handleFailure(error)
                 } else {
                     DebugLog.log("start() completion returned success for \(vmName)")
+                    OperationalLog.lifecycle(
+                        "start-succeeded name=\(vmName) role=viewer recovery=false "
+                            + "balloonDeviceCount=\(virtualMachine.memoryBalloonDevices.count)"
+                    )
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
                             self.refreshPasteboardCommandState()
-                            self.startMemoryReclamation(for: virtualMachine)
                             self.provisionDockerGuestIntegrationIfNeeded()
                         }
                     }
                 }
             }
         }
-    }
-
-    private func startMemoryReclamation(for virtualMachine: VZVirtualMachine) {
-        guard memoryBalloonRegistrationID == nil else { return }
-        memoryBalloonRegistrationID = MemoryPressureCoordinator.shared.register(
-            virtualMachine: virtualMachine,
-            label: vmName,
-            guestKind: .macOS,
-            configuredMemorySize: managedVM.metadata.memorySizeBytes
-        )
-    }
-
-    private func stopMemoryReclamation() {
-        guard let memoryBalloonRegistrationID else { return }
-        MemoryPressureCoordinator.shared.unregister(memoryBalloonRegistrationID)
-        self.memoryBalloonRegistrationID = nil
     }
 
     private func provisionDockerGuestIntegrationIfNeeded() {

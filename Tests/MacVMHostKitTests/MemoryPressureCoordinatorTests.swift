@@ -4,45 +4,43 @@ import Virtualization
 @testable import MacVMHostKit
 
 @Test
-func memoryBalloonConfigurationInstallsOneVirtioDevice() {
+func macOSMemoryBalloonConfigurationRemovesEveryBalloonDevice() {
+    let configuration = VZVirtualMachineConfiguration()
+    configuration.memoryBalloonDevices = [
+        VZVirtioTraditionalMemoryBalloonDeviceConfiguration(),
+    ]
+
+    MemoryBalloonConfiguration.disableForMacOS(on: configuration)
+
+    #expect(configuration.memoryBalloonDevices.isEmpty)
+}
+
+@Test
+func dockerMemoryBalloonConfigurationInstallsOneVirtioDevice() {
     let configuration = VZVirtualMachineConfiguration()
 
-    MemoryBalloonConfiguration.install(on: configuration)
+    MemoryBalloonConfiguration.installForDocker(on: configuration)
 
     #expect(configuration.memoryBalloonDevices.count == 1)
     #expect(configuration.memoryBalloonDevices.first is VZVirtioTraditionalMemoryBalloonDeviceConfiguration)
 }
 
 @Test
-func memoryBalloonPolicyUsesConservativeTargetsAndGuestFloors() {
+func memoryBalloonPolicyUsesConservativeTargetsAndDockerFloor() {
     #expect(MemoryBalloonPolicy.targetMemorySize(
-        configuredMemorySize: 8 * oneGiB,
-        guestKind: .macOS,
+        configuredMemorySize: 4 * oneGiB,
         pressure: .normal
-    ) == 8 * oneGiB)
-    #expect(MemoryBalloonPolicy.targetMemorySize(
-        configuredMemorySize: 8 * oneGiB,
-        guestKind: .macOS,
-        pressure: .warning
-    ) == 6 * oneGiB)
-    #expect(MemoryBalloonPolicy.targetMemorySize(
-        configuredMemorySize: 8 * oneGiB,
-        guestKind: .macOS,
-        pressure: .critical
     ) == 4 * oneGiB)
     #expect(MemoryBalloonPolicy.targetMemorySize(
         configuredMemorySize: 4 * oneGiB,
-        guestKind: .macOS,
-        pressure: .critical
-    ) == 4 * oneGiB)
-    #expect(MemoryBalloonPolicy.targetMemorySize(
-        configuredMemorySize: 4 * oneGiB,
-        guestKind: .docker,
         pressure: .warning
     ) == 3 * oneGiB)
     #expect(MemoryBalloonPolicy.targetMemorySize(
         configuredMemorySize: 4 * oneGiB,
-        guestKind: .docker,
+        pressure: .critical
+    ) == 2 * oneGiB)
+    #expect(MemoryBalloonPolicy.targetMemorySize(
+        configuredMemorySize: 2 * oneGiB,
         pressure: .critical
     ) == 2 * oneGiB)
 }
@@ -53,7 +51,6 @@ func memoryBalloonPolicyAlignsTargetsDownToOneMiB() {
     let configuredMemory = 8 * oneGiB + halfMiB
     let target = MemoryBalloonPolicy.targetMemorySize(
         configuredMemorySize: configuredMemory,
-        guestKind: .docker,
         pressure: .warning
     )
 
@@ -66,8 +63,7 @@ func memoryPressureCoordinatorShrinksWithoutInflatingWhilePressureIsElevated() {
     let coordinator = MemoryPressureCoordinator()
     var targets: [UInt64] = []
     let id = coordinator.register(
-        label: "dev",
-        guestKind: .macOS,
+        label: "dev Docker sidecar",
         configuredMemorySize: 8 * oneGiB
     ) { targets.append($0) }
 
@@ -82,18 +78,16 @@ func memoryPressureCoordinatorShrinksWithoutInflatingWhilePressureIsElevated() {
 @Test @MainActor
 func memoryPressureCoordinatorRestoresOneGiBAtATimeRoundRobin() {
     let coordinator = MemoryPressureCoordinator()
-    var macOSTargets: [UInt64] = []
-    var dockerTargets: [UInt64] = []
-    let macOSID = coordinator.register(
-        label: "dev",
-        guestKind: .macOS,
-        configuredMemorySize: 8 * oneGiB
-    ) { macOSTargets.append($0) }
-    let dockerID = coordinator.register(
+    var firstTargets: [UInt64] = []
+    var secondTargets: [UInt64] = []
+    let firstID = coordinator.register(
         label: "dev Docker sidecar",
-        guestKind: .docker,
         configuredMemorySize: 8 * oneGiB
-    ) { dockerTargets.append($0) }
+    ) { firstTargets.append($0) }
+    let secondID = coordinator.register(
+        label: "test Docker sidecar",
+        configuredMemorySize: 8 * oneGiB
+    ) { secondTargets.append($0) }
 
     coordinator.handleMemoryPressure(.critical)
     coordinator.handleMemoryPressure(.normal)
@@ -101,10 +95,10 @@ func memoryPressureCoordinatorRestoresOneGiBAtATimeRoundRobin() {
     coordinator.performRecoveryStep()
     coordinator.performRecoveryStep()
 
-    #expect(macOSTargets == [4 * oneGiB, 5 * oneGiB, 6 * oneGiB])
-    #expect(dockerTargets == [4 * oneGiB, 5 * oneGiB])
-    #expect(coordinator.requestedMemorySize(for: macOSID) == 6 * oneGiB)
-    #expect(coordinator.requestedMemorySize(for: dockerID) == 5 * oneGiB)
+    #expect(firstTargets == [4 * oneGiB, 5 * oneGiB, 6 * oneGiB])
+    #expect(secondTargets == [4 * oneGiB, 5 * oneGiB])
+    #expect(coordinator.requestedMemorySize(for: firstID) == 6 * oneGiB)
+    #expect(coordinator.requestedMemorySize(for: secondID) == 5 * oneGiB)
 }
 
 @Test @MainActor
@@ -112,8 +106,7 @@ func memoryPressureCoordinatorCancelsRecoveryWhenPressureReturns() {
     let coordinator = MemoryPressureCoordinator(schedulesRecoveryAutomatically: true)
     var targets: [UInt64] = []
     let id = coordinator.register(
-        label: "dev",
-        guestKind: .macOS,
+        label: "dev Docker sidecar",
         configuredMemorySize: 8 * oneGiB
     ) { targets.append($0) }
 
@@ -136,7 +129,6 @@ func memoryPressureCoordinatorAppliesExistingPressureAndUnregistersCleanly() {
     var targets: [UInt64] = []
     let id = coordinator.register(
         label: "dev Docker sidecar",
-        guestKind: .docker,
         configuredMemorySize: 4 * oneGiB
     ) { targets.append($0) }
 

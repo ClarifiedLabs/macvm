@@ -30,7 +30,6 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
 
     private var virtualMachine: VZVirtualMachine?
     private let clipboardRuntime: ClipboardRuntime
-    private var memoryBalloonRegistrationID: UUID?
     private var vncServer: MacVMVNCServer?
     private var stopContinuation: CheckedContinuation<Void, Error>?
     private var signalSources: [DispatchSourceSignal] = []
@@ -85,7 +84,14 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     /// VM. Returns once the VM has begun running.
     @discardableResult
     public func start() throws -> VNCSession {
+        MemoryPressureCoordinator.activateSystemMonitoring()
         let configuration = try bundle.makeConfiguration(metadata: managedVM.metadata, forceSharedDirectory: forceSharedDirectory)
+        OperationalLog.lifecycle(
+            "configuration-ready name=\(managedVM.metadata.name) role=headless "
+                + "cpuCount=\(configuration.cpuCount) configuredMemoryBytes=\(configuration.memorySize) "
+                + "balloonDeviceCount=\(configuration.memoryBalloonDevices.count) "
+                + "bundlePath=\(managedVM.bundleURL.path)"
+        )
         let virtualMachine = VZVirtualMachine(configuration: configuration, queue: DispatchQueue.main)
         virtualMachine.delegate = self
         self.virtualMachine = virtualMachine
@@ -138,15 +144,16 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         let completion: (Error?) -> Void = { [weak self] error in
             if let error {
                 DebugLog.log("Headless VM start failed for \(self?.managedVM.metadata.name ?? "?"): \(error.localizedDescription)")
+                OperationalLog.lifecycleError(
+                    "start-failed name=\(self?.managedVM.metadata.name ?? "unknown") "
+                        + "role=headless error=\(error.localizedDescription)"
+                )
                 self?.finish(error: error)
             } else {
                 DebugLog.log("Headless VM started")
-                guard let self else { return }
-                self.memoryBalloonRegistrationID = MemoryPressureCoordinator.shared.register(
-                    virtualMachine: virtualMachine,
-                    label: self.managedVM.metadata.name,
-                    guestKind: .macOS,
-                    configuredMemorySize: self.managedVM.metadata.memorySizeBytes
+                OperationalLog.lifecycle(
+                    "start-succeeded name=\(self?.managedVM.metadata.name ?? "unknown") "
+                        + "role=headless balloonDeviceCount=\(virtualMachine.memoryBalloonDevices.count)"
                 )
             }
         }
@@ -214,6 +221,9 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     nonisolated public func guestDidStop(_ virtualMachine: VZVirtualMachine) {
         MainActor.assumeIsolated {
             DebugLog.log("Headless guest requested stop")
+            OperationalLog.lifecycle(
+                "guest-stop name=\(managedVM.metadata.name) role=headless"
+            )
             finish(error: nil)
         }
     }
@@ -221,6 +231,10 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     nonisolated public func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
         MainActor.assumeIsolated {
             DebugLog.log("Headless guest stopped with error: \(error.localizedDescription)")
+            OperationalLog.lifecycleError(
+                "stopped-with-error name=\(managedVM.metadata.name) role=headless "
+                    + "error=\(error.localizedDescription)"
+            )
             finish(error: error)
         }
     }
@@ -239,10 +253,6 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         clipboardRuntime.stop()
         vncServer?.stop()
         vncServer = nil
-        if let memoryBalloonRegistrationID {
-            MemoryPressureCoordinator.shared.unregister(memoryBalloonRegistrationID)
-            self.memoryBalloonRegistrationID = nil
-        }
         virtualMachine = nil
         if processRuntimeRole != nil {
             bundle.clearVMProcessRuntimeState()
@@ -250,6 +260,10 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         bundle.clearSetupRuntimeState()
         bundle.clearVNCSession()
         bundle.clearDisplayRuntimeState()
+        OperationalLog.lifecycle(
+            "teardown-complete name=\(managedVM.metadata.name) role=headless "
+                + "error=\(error?.localizedDescription ?? "none")"
+        )
 
         onStop?()
 

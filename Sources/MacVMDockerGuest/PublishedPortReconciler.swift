@@ -36,12 +36,22 @@ final class PublishedPortReconciler: @unchecked Sendable {
     private let linuxAddress: String
     private let brokerKeyURL: URL
     private let brokerKnownHostsURL: URL
+    private let dockerClient: DockerSocketHTTPClient
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
     private let queue = DispatchQueue(label: "dev.macvm.docker-guest.ports", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var listeners: [DockerPublishedPort: Channel] = [:]
     private var configuredSidecarPorts: Set<SidecarPublishedPort> = []
     private var reportedUnsupportedBindings: Set<String> = []
+    private var lastWantedBindings: Set<DockerPublishedPort>?
+    private var lastReconciliationSucceeded: Bool?
+    private var lastSummaryAt = Date.distantPast
+    private var reconciliationCount: UInt64 = 0
+    private var failedReconciliationCount: UInt64 = 0
+    private var consecutiveFailures: UInt64 = 0
+
+    private static let reconciliationInterval: TimeInterval = 2
+    private static let healthSummaryInterval: TimeInterval = 5 * 60
 
     init(
         dockerSocketPath: String,
@@ -53,6 +63,7 @@ final class PublishedPortReconciler: @unchecked Sendable {
         self.linuxAddress = linuxAddress
         self.brokerKeyURL = brokerKeyURL
         self.brokerKnownHostsURL = brokerKnownHostsURL
+        self.dockerClient = DockerSocketHTTPClient(socketPath: dockerSocketPath)
     }
 
     func start() {
@@ -61,11 +72,17 @@ final class PublishedPortReconciler: @unchecked Sendable {
                 try resetSidecarPorts()
                 configuredSidecarPorts.removeAll()
             } catch {
-                log("unable to clear stale Linux port relays: \(error.localizedDescription)")
+                DockerGuestLog.error(
+                    "published-ports reset-failed phase=start error=\(error.localizedDescription)"
+                )
             }
         }
+        DockerGuestLog.info(
+            "published-ports started intervalSeconds=\(Int(Self.reconciliationInterval)) "
+                + "transport=in-process-unix-http socket=\(dockerSocketPath)"
+        )
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now(), repeating: 2)
+        timer.schedule(deadline: .now(), repeating: Self.reconciliationInterval)
         timer.setEventHandler { [weak self] in self?.reconcile() }
         timer.resume()
         self.timer = timer
@@ -73,11 +90,14 @@ final class PublishedPortReconciler: @unchecked Sendable {
 
     func sidecarDidReconnect() {
         queue.async {
+            DockerGuestLog.info("published-ports sidecar-reconnected")
             self.configuredSidecarPorts.removeAll()
             do {
                 try self.resetSidecarPorts()
             } catch {
-                self.log("unable to reset Linux port relays after reconnect: \(error.localizedDescription)")
+                DockerGuestLog.error(
+                    "published-ports reset-failed phase=reconnect error=\(error.localizedDescription)"
+                )
             }
             self.reconcile()
         }
@@ -102,20 +122,33 @@ final class PublishedPortReconciler: @unchecked Sendable {
                 try? resetSidecarPorts()
             }
             configuredSidecarPorts.removeAll()
+            DockerGuestLog.info(
+                "published-ports stopped reconciliations=\(reconciliationCount) "
+                    + "failures=\(failedReconciliationCount)"
+            )
         }
         try? group.syncShutdownGracefully()
     }
 
     @discardableResult
     private func reconcile() -> Bool {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        reconciliationCount += 1
         let requested: [DockerPublishedPort]
         do {
             requested = try fetchPublishedPorts()
         } catch {
-            log("unable to inspect Docker published ports: \(error.localizedDescription)")
+            recordReconciliation(
+                requestedCount: nil,
+                wanted: lastWantedBindings ?? [],
+                succeeded: false,
+                details: ["inspect Docker ports: \(error.localizedDescription)"],
+                startedAt: startedAt
+            )
             return false
         }
         var succeeded = true
+        var failureDetails: [String] = []
         let ipv4 = requested.filter { binding in
             guard !binding.hostIP.contains(":") else {
                 reportUnsupported("IPv6 Docker publication \(binding.hostIP):\(binding.hostPort)/\(binding.kind.rawValue)")
@@ -142,7 +175,9 @@ final class PublishedPortReconciler: @unchecked Sendable {
                 configuredSidecarPorts.remove(port)
             } catch {
                 succeeded = false
-                log("unable to remove Linux loopback relay for \(port.port)/\(port.kind.rawValue): \(error.localizedDescription)")
+                failureDetails.append(
+                    "remove Linux relay \(port.port)/\(port.kind.rawValue): \(error.localizedDescription)"
+                )
             }
         }
         for port in wantedSidecarPorts.subtracting(configuredSidecarPorts) {
@@ -151,7 +186,9 @@ final class PublishedPortReconciler: @unchecked Sendable {
                 configuredSidecarPorts.insert(port)
             } catch {
                 succeeded = false
-                log("unable to configure Linux loopback relay for \(port.port)/\(port.kind.rawValue): \(error.localizedDescription)")
+                failureDetails.append(
+                    "configure Linux relay \(port.port)/\(port.kind.rawValue): \(error.localizedDescription)"
+                )
             }
         }
         for binding in wanted where listeners[binding] == nil
@@ -160,37 +197,27 @@ final class PublishedPortReconciler: @unchecked Sendable {
                 listeners[binding] = try makeListener(for: binding)
             } catch {
                 succeeded = false
-                log(
-                    "unable to relay \(binding.hostIP):\(binding.hostPort)/\(binding.kind.rawValue): \(error.localizedDescription)"
+                failureDetails.append(
+                    "create macOS relay \(binding.hostIP):\(binding.hostPort)/\(binding.kind.rawValue): "
+                        + error.localizedDescription
                 )
             }
         }
-        return succeeded
+        let reconciled = succeeded
             && configuredSidecarPorts == wantedSidecarPorts
             && Set(listeners.keys) == wanted
+        recordReconciliation(
+            requestedCount: requested.count,
+            wanted: wanted,
+            succeeded: reconciled,
+            details: failureDetails,
+            startedAt: startedAt
+        )
+        return reconciled
     }
 
     private func fetchPublishedPorts() throws -> [DockerPublishedPort] {
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        process.arguments = [
-            "--silent", "--show-error", "--fail", "--max-time", "2",
-            "--max-filesize", "16777216",
-            "--unix-socket", dockerSocketPath,
-            "http://localhost/containers/json",
-        ]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw GuestHelperError("Docker container list failed.")
-        }
-        guard data.count <= 16 * 1024 * 1024 else {
-            throw GuestHelperError("Docker container list exceeded 16 MiB.")
-        }
+        let data = try dockerClient.get(path: "/containers/json")
         let object = try JSONSerialization.jsonObject(with: data)
         guard let containers = object as? [[String: Any]] else { return [] }
         return containers.flatMap { container -> [DockerPublishedPort] in
@@ -289,11 +316,56 @@ final class PublishedPortReconciler: @unchecked Sendable {
 
     private func reportUnsupported(_ binding: String) {
         guard reportedUnsupportedBindings.insert(binding).inserted else { return }
-        log("unsupported published-port configuration: \(binding)")
+        DockerGuestLog.error(
+            "published-ports unsupported-binding detail=\(binding)"
+        )
     }
 
-    private func log(_ message: String) {
-        FileHandle.standardError.write(Data("macvm-docker-guest: \(message)\n".utf8))
+    private func recordReconciliation(
+        requestedCount: Int?,
+        wanted: Set<DockerPublishedPort>,
+        succeeded: Bool,
+        details: [String],
+        startedAt: UInt64
+    ) {
+        if succeeded {
+            consecutiveFailures = 0
+        } else {
+            failedReconciliationCount += 1
+            consecutiveFailures += 1
+        }
+
+        let now = Date()
+        let bindingsChanged = lastWantedBindings != wanted
+        let outcomeChanged = lastReconciliationSucceeded != succeeded
+        let periodicSummary = now.timeIntervalSince(lastSummaryAt) >= Self.healthSummaryInterval
+        let failureSummary = !succeeded
+            && (consecutiveFailures == 1 || consecutiveFailures.isMultiple(of: 30))
+        defer {
+            lastWantedBindings = wanted
+            lastReconciliationSucceeded = succeeded
+        }
+        guard bindingsChanged || outcomeChanged || periodicSummary || failureSummary else {
+            return
+        }
+
+        let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - startedAt
+        let elapsedMilliseconds = Double(elapsedNanoseconds) / 1_000_000
+        var message = "published-ports reconcile success=\(succeeded) "
+            + "requested=\(requestedCount.map { String($0) } ?? "unknown") "
+            + "wanted=\(wanted.count) linuxRelays=\(configuredSidecarPorts.count) "
+            + "macOSRelays=\(listeners.count) elapsedMs=\(String(format: "%.2f", elapsedMilliseconds)) "
+            + "reconciliations=\(reconciliationCount) failures=\(failedReconciliationCount) "
+            + "consecutiveFailures=\(consecutiveFailures)"
+        if !details.isEmpty {
+            message += " details=\(details.joined(separator: "; "))"
+        }
+        if succeeded {
+            DockerGuestLog.info(message)
+        } else {
+            DockerGuestLog.error(message)
+        }
+        lastSummaryAt = now
     }
 }
 
