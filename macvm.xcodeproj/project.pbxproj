@@ -40,6 +40,7 @@
 		A000000000000000000000E5 /* DockerAPIPathRewriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000000000000000000000E4 /* DockerAPIPathRewriter.swift */; };
 		A000000000000000000000E7 /* DockerGuestFileUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = A000000000000000000000E6 /* DockerGuestFileUtilities.swift */; };
 		A00000000000000000000121 /* DockerSocketHTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000120 /* DockerSocketHTTPClient.swift */; };
+		A00000000000000000000123 /* DockerGuestProcessRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000122 /* DockerGuestProcessRunner.swift */; };
 		A00000000000000000000110 /* libMacVMClipboardProtocol.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A000000000000000000000F0 /* libMacVMClipboardProtocol.a */; };
 		A00000000000000000000111 /* libMacVMClipboardProtocol.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A000000000000000000000F0 /* libMacVMClipboardProtocol.a */; };
 		A00000000000000000000112 /* libMacVMClipboardProtocol.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A000000000000000000000F0 /* libMacVMClipboardProtocol.a */; };
@@ -236,6 +237,7 @@
 		A000000000000000000000E4 /* DockerAPIPathRewriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/MacVMHostKit/Docker/DockerAPIPathRewriter.swift; sourceTree = "<group>"; };
 		A000000000000000000000E6 /* DockerGuestFileUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/MacVMHostKit/Docker/DockerGuestFileUtilities.swift; sourceTree = "<group>"; };
 		A00000000000000000000120 /* DockerSocketHTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/MacVMHostKit/Docker/DockerSocketHTTPClient.swift; sourceTree = "<group>"; };
+		A00000000000000000000122 /* DockerGuestProcessRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/MacVMHostKit/Docker/DockerGuestProcessRunner.swift; sourceTree = "<group>"; };
 		A000000000000000000000F0 /* libMacVMClipboardProtocol.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libMacVMClipboardProtocol.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		A000000000000000000000F1 /* macvm-clipboard-guest */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "macvm-clipboard-guest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000082 /* Makefile */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.make; path = Makefile; sourceTree = "<group>"; };
@@ -397,6 +399,7 @@
 				A000000000000000000000E4 /* DockerAPIPathRewriter.swift */,
 				A000000000000000000000E6 /* DockerGuestFileUtilities.swift */,
 				A00000000000000000000120 /* DockerSocketHTTPClient.swift */,
+				A00000000000000000000122 /* DockerGuestProcessRunner.swift */,
 				A00000000000000000000003 /* Products */,
 				A00000000000000000000082 /* Makefile */,
 				A00000000000000000000083 /* README.md */,
@@ -853,6 +856,7 @@
 				A000000000000000000000E5 /* DockerAPIPathRewriter.swift in Sources */,
 				A000000000000000000000E7 /* DockerGuestFileUtilities.swift in Sources */,
 				A00000000000000000000121 /* DockerSocketHTTPClient.swift in Sources */,
+				A00000000000000000000123 /* DockerGuestProcessRunner.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

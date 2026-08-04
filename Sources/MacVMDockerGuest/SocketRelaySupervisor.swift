@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 /// Maintains remote OpenSSH stream-local forwards from sidecar socket paths to
@@ -198,39 +197,29 @@ final class SocketRelaySupervisor: @unchecked Sendable {
     }
 
     private func runBrokerCommand(_ command: String, timeout: TimeInterval) throws {
-        let process = Process()
-        let errorPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = [
-            "-o", "BatchMode=yes",
-            "-o", "IdentitiesOnly=yes",
-            "-o", "StrictHostKeyChecking=yes",
-            "-o", sshKnownHostsOption(brokerKnownHostsURL),
-            "-o", "ConnectTimeout=5",
-            "-o", "ServerAliveInterval=5",
-            "-o", "ServerAliveCountMax=3",
-            "-i", brokerKeyURL.path,
-            "macvm-mount@\(privateLinuxAddress)",
-            command,
-        ]
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errorPipe
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        try process.run()
-        if exited.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            if exited.wait(timeout: .now() + 5) == .timedOut {
-                _ = kill(process.processIdentifier, SIGKILL)
-                _ = exited.wait(timeout: .now() + 1)
-            }
+        let result = try DockerGuestProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments: [
+                "-o", "BatchMode=yes",
+                "-o", "IdentitiesOnly=yes",
+                "-o", "StrictHostKeyChecking=yes",
+                "-o", sshKnownHostsOption(brokerKnownHostsURL),
+                "-o", "ConnectTimeout=5",
+                "-o", "ServerAliveInterval=5",
+                "-o", "ServerAliveCountMax=3",
+                "-i", brokerKeyURL.path,
+                "macvm-mount@\(privateLinuxAddress)",
+                command,
+            ],
+            standardOutput: .discard,
+            timeout: timeout
+        )
+        guard !result.didTimeOut else {
             throw GuestHelperError("Sidecar socket broker timed out.")
         }
-        process.terminationHandler = nil
-        guard process.terminationStatus == 0 else {
+        guard result.terminationStatus == 0 else {
             let detail = String(
-                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+                data: result.standardError.data,
                 encoding: .utf8
             )?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw GuestHelperError(

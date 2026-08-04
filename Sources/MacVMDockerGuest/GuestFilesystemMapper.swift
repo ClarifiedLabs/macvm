@@ -414,31 +414,22 @@ final class GuestFilesystemMapper: @unchecked Sendable {
     }
 
     private static func run(_ executable: String, _ arguments: [String]) throws {
-        let process = Process()
-        let errorPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errorPipe
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        try process.run()
-        if exited.wait(timeout: .now() + 45) == .timedOut {
-            process.terminate()
-            if exited.wait(timeout: .now() + 5) == .timedOut {
-                _ = kill(process.processIdentifier, SIGKILL)
-                _ = exited.wait(timeout: .now() + 1)
-            }
+        let result = try DockerGuestProcessRunner.run(
+            executableURL: URL(fileURLWithPath: executable),
+            arguments: arguments,
+            standardOutput: .discard,
+            timeout: 45
+        )
+        guard !result.didTimeOut else {
             throw GuestHelperError("\(executable) timed out.")
         }
-        process.terminationHandler = nil
-        guard process.terminationStatus == 0 else {
+        guard result.terminationStatus == 0 else {
             let detail = String(
-                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+                data: result.standardError.data,
                 encoding: .utf8
             )?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw GuestHelperError(
-                "\(executable) failed (\(process.terminationStatus)): \(detail ?? "unknown error")"
+                "\(executable) failed (\(result.terminationStatus)): \(detail ?? "unknown error")"
             )
         }
     }

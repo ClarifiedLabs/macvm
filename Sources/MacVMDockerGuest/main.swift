@@ -172,20 +172,16 @@ private final class SSHForwardSupervisor: @unchecked Sendable {
 }
 
 private func run(_ executable: String, _ arguments: [String]) throws -> String {
-    let process = Process()
-    let output = Pipe()
-    let error = Pipe()
-    process.executableURL = URL(fileURLWithPath: executable)
-    process.arguments = arguments
-    process.standardOutput = output
-    process.standardError = error
-    try process.run()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-        let detail = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let result = try DockerGuestProcessRunner.run(
+        executableURL: URL(fileURLWithPath: executable),
+        arguments: arguments,
+        standardOutput: .capture
+    )
+    guard result.terminationStatus == 0 else {
+        let detail = String(data: result.standardError.data, encoding: .utf8) ?? ""
         throw GuestHelperError("\(executable) failed: \(detail)")
     }
-    return String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    return String(data: result.standardOutput?.data ?? Data(), encoding: .utf8) ?? ""
 }
 
 private func configurePrivateInterface(_ configuration: GuestHelperConfiguration) throws {

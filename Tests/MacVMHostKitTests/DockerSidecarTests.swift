@@ -237,8 +237,8 @@ func dockerGuestUpgradeReusesKeysInstalledByInitialProvisioning() throws {
 }
 
 @Test
-func dockerGuestProvisioningVersionUpgradesCurlPollingHelpers() {
-    #expect(DockerSidecarSettings.currentGuestProvisioningVersion >= 14)
+func dockerGuestProvisioningVersionUpgradesFiniteProcessRunner() {
+    #expect(DockerSidecarSettings.currentGuestProvisioningVersion >= 15)
 }
 
 @Test

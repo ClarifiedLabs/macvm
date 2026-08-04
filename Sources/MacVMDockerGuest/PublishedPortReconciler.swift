@@ -249,36 +249,29 @@ final class PublishedPortReconciler: @unchecked Sendable {
     }
 
     private func runSidecarBrokerCommand(_ command: String) throws {
-        let process = Process()
-        let errorPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = [
-            "-o", "BatchMode=yes",
-            "-o", "IdentitiesOnly=yes",
-            "-o", "StrictHostKeyChecking=yes",
-            "-o", sshKnownHostsOption(brokerKnownHostsURL),
-            "-o", "ConnectTimeout=5",
-            "-o", "ServerAliveInterval=5",
-            "-o", "ServerAliveCountMax=3",
-            "-i", brokerKeyURL.path,
-            "macvm-mount@\(linuxAddress)",
-            command,
-        ]
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errorPipe
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        try process.run()
-        if exited.wait(timeout: .now() + 30) == .timedOut {
-            process.terminate()
-            _ = exited.wait(timeout: .now() + 5)
+        let result = try DockerGuestProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments: [
+                "-o", "BatchMode=yes",
+                "-o", "IdentitiesOnly=yes",
+                "-o", "StrictHostKeyChecking=yes",
+                "-o", sshKnownHostsOption(brokerKnownHostsURL),
+                "-o", "ConnectTimeout=5",
+                "-o", "ServerAliveInterval=5",
+                "-o", "ServerAliveCountMax=3",
+                "-i", brokerKeyURL.path,
+                "macvm-mount@\(linuxAddress)",
+                command,
+            ],
+            standardOutput: .discard,
+            timeout: 30
+        )
+        guard !result.didTimeOut else {
             throw GuestHelperError("sidecar port broker timed out")
         }
-        process.terminationHandler = nil
-        guard process.terminationStatus == 0 else {
+        guard result.terminationStatus == 0 else {
             let detail = String(
-                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+                data: result.standardError.data,
                 encoding: .utf8
             )?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw GuestHelperError(detail?.isEmpty == false ? detail! : "sidecar port broker failed")
