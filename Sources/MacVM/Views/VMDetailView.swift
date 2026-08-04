@@ -233,29 +233,39 @@ struct DockerSectionView: View {
                                 label: "Docker CPU count",
                                 value: dockerBinding(\.cpuCount, fallback: resources.cpuCount),
                                 unit: "CPU",
-                                fieldWidth: 44
+                                fieldWidth: 44,
+                                isEditing: isEditing
                             )
-                            .disabled(!isEditing)
                             ResourceValueField(
                                 label: "Docker memory",
                                 value: dockerBinding(\.memoryGiB, fallback: resources.memoryGiB),
                                 unit: "GiB",
-                                fieldWidth: 44
+                                fieldWidth: 44,
+                                isEditing: isEditing
                             )
-                            .disabled(!isEditing)
                             ResourceValueField(
                                 label: "Docker disk",
                                 value: dockerBinding(\.diskGiB, fallback: resources.diskGiB),
                                 unit: "GiB disk",
-                                fieldWidth: 52
+                                fieldWidth: 52,
+                                isEditing: isEditing
                             )
-                            .disabled(!isEditing)
-                            Toggle(
-                                "linux/amd64",
-                                isOn: dockerBinding(\.amd64Enabled, fallback: resources.amd64Enabled)
-                            )
-                            .toggleStyle(.checkbox)
-                            .disabled(!isEditing)
+                            if isEditing {
+                                Toggle(
+                                    "linux/amd64",
+                                    isOn: dockerBinding(\.amd64Enabled, fallback: resources.amd64Enabled)
+                                )
+                                .toggleStyle(.checkbox)
+                            } else {
+                                HStack(spacing: 5) {
+                                    Text(resources.amd64Enabled ? "On" : "Off")
+                                        .fontWeight(.semibold)
+                                    Text("linux/amd64")
+                                }
+                                .accessibilityElement(children: .combine)
+                                .accessibilityLabel("linux/amd64")
+                                .accessibilityValue(resources.amd64Enabled ? "On" : "Off")
+                            }
                         }
                         .controlSize(.small)
                     }

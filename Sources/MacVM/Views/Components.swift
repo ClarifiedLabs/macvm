@@ -25,21 +25,33 @@ struct SectionHeader: View {
     }
 }
 
-/// Editable integer resource value with a persistent unit label.
+/// Integer resource value with a persistent unit label. While `isEditing` it
+/// shows a bordered entry field; otherwise it renders plain, non-dimmed text so
+/// read-only resources match the macOS spec cards instead of looking like a
+/// disabled text box.
 struct ResourceValueField: View {
     let label: String
     @Binding var value: Int
     let unit: String
     var fieldWidth: CGFloat = 56
+    var isEditing = true
 
     var body: some View {
         HStack(spacing: 5) {
-            TextField(label, value: $value, format: .number)
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
-                .monospacedDigit()
-                .frame(width: fieldWidth)
-                .accessibilityLabel(label)
+            if isEditing {
+                TextField(label, value: $value, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                    .frame(width: fieldWidth)
+                    .accessibilityLabel(label)
+            } else {
+                Text("\(value)")
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+                    .accessibilityLabel(label)
+                    .accessibilityValue("\(value)")
+            }
             Text(unit)
         }
     }
