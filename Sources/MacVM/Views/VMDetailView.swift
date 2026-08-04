@@ -194,9 +194,24 @@ struct DockerSectionView: View {
                     if vm.metadata.dockerSidecar != nil {
                         Divider().overlay(Theme.hairline)
                         HStack(spacing: 12) {
-                            Stepper("\(resources.cpuCount) CPU", value: $resources.cpuCount, in: 1...12)
-                            Stepper("\(resources.memoryGiB) GiB", value: $resources.memoryGiB, in: 2...32, step: 2)
-                            Stepper("\(resources.diskGiB) GiB disk", value: $resources.diskGiB, in: max(1, Int((vm.metadata.dockerSidecar?.dataDiskSizeBytes ?? 0) / (1024 * 1024 * 1024)))...512, step: 16)
+                            ResourceValueField(
+                                label: "Docker CPU count",
+                                value: $resources.cpuCount,
+                                unit: "CPU",
+                                fieldWidth: 44
+                            )
+                            ResourceValueField(
+                                label: "Docker memory",
+                                value: $resources.memoryGiB,
+                                unit: "GiB",
+                                fieldWidth: 44
+                            )
+                            ResourceValueField(
+                                label: "Docker disk",
+                                value: $resources.diskGiB,
+                                unit: "GiB disk",
+                                fieldWidth: 52
+                            )
                             Toggle("linux/amd64", isOn: $resources.amd64Enabled).toggleStyle(.checkbox)
                             Button("Apply") {
                                 store.configureDocker(

@@ -84,6 +84,7 @@ private struct AppRuntimeError: LocalizedError {
 @Observable
 final class AppStore {
     private static let maxSetupLogMessages = 10
+    private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     let service: MacVMService
     private let triggerLocalNetworkPrivacyAlert: () -> Void
@@ -842,12 +843,19 @@ final class AppStore {
         diskGiB: Int,
         amd64Enabled: Bool
     ) {
+        guard cpuCount > 0,
+              let memorySizeBytes = Self.byteCount(forGiB: memoryGiB),
+              let dataDiskSizeBytes = Self.byteCount(forGiB: diskGiB) else {
+            alertMessage = "Docker CPU, memory, and disk values must be positive and within the supported size."
+            return
+        }
+
         do {
             _ = try service.configureDockerSidecar(
                 for: vm,
                 cpuCount: cpuCount,
-                memorySizeBytes: UInt64(memoryGiB) * 1024 * 1024 * 1024,
-                dataDiskSizeBytes: UInt64(diskGiB) * 1024 * 1024 * 1024,
+                memorySizeBytes: memorySizeBytes,
+                dataDiskSizeBytes: dataDiskSizeBytes,
                 amd64Enabled: amd64Enabled
             )
             lastCommand = "macvm docker configure \(vm.metadata.name) --cpu \(cpuCount) --memory-gi-b \(memoryGiB) --disk-gi-b \(diskGiB) \(amd64Enabled ? "--amd64" : "--no-amd64")"
@@ -1262,6 +1270,12 @@ final class AppStore {
         }
     }
 
+    private static func byteCount(forGiB value: Int) -> UInt64? {
+        guard value > 0, let unsignedValue = UInt64(exactly: value) else { return nil }
+        let result = unsignedValue.multipliedReportingOverflow(by: bytesPerGiB)
+        return result.overflow ? nil : result.partialValue
+    }
+
     // MARK: - Create
 
     func openCreateSheet(prefillIPSW url: URL? = nil, prefillXcode xcodeURL: URL? = nil) {
@@ -1301,6 +1315,25 @@ final class AppStore {
         let draft = self.draft
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
+
+        let pendingDockerConfiguration: DockerSidecarResourceConfiguration?
+        if draft.dockerEnabled {
+            guard draft.dockerCPUCount > 0,
+                  let memorySizeBytes = Self.byteCount(forGiB: draft.dockerMemoryGiB),
+                  let dataDiskSizeBytes = Self.byteCount(forGiB: draft.dockerDiskGiB) else {
+                alertMessage = "Docker CPU, memory, and disk values must be positive and within the supported size."
+                return
+            }
+            pendingDockerConfiguration = DockerSidecarResourceConfiguration(
+                cpuCount: draft.dockerCPUCount,
+                memorySizeBytes: memorySizeBytes,
+                dataDiskSizeBytes: dataDiskSizeBytes,
+                amd64Enabled: draft.dockerAMD64Enabled
+            )
+        } else {
+            pendingDockerConfiguration = nil
+        }
+
         let shouldSetup = setupAfterInstall || draft.dockerEnabled || !selectedProfileIDs.isEmpty
         if shouldSetup, let selectedXcodeXIPURL {
             var isDirectory: ObjCBool = false
@@ -1351,13 +1384,8 @@ final class AppStore {
         let setupXcodeXIPURL = shouldSetup ? selectedXcodeXIPURL : nil
         let setupInstallHomebrew = installHomebrewAfterSetup
         let setupInstallClipboardHelper = installClipboardHelperAfterSetup
-        if draft.dockerEnabled {
-            pendingDockerEnables[name] = DockerSidecarResourceConfiguration(
-                cpuCount: draft.dockerCPUCount,
-                memorySizeBytes: UInt64(draft.dockerMemoryGiB) * 1024 * 1024 * 1024,
-                dataDiskSizeBytes: UInt64(draft.dockerDiskGiB) * 1024 * 1024 * 1024,
-                amd64Enabled: draft.dockerAMD64Enabled
-            )
+        if let pendingDockerConfiguration {
+            pendingDockerEnables[name] = pendingDockerConfiguration
         }
         let setupSelection = provisioningSelection
         let bundleExistedBeforeCreation = (try? service.resolveRemovalTarget(identifier: name)) != nil

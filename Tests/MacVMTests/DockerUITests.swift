@@ -4,7 +4,7 @@ import Testing
 @testable import MacVM
 
 @Test
-func createCommandRendersDockerResourcesAndSetupImplication() {
+func createCommandRendersCustomDockerResourcesAndSetupImplication() {
     let defaults = VMCreationDraft(
         name: "",
         cpuCount: 6,
@@ -18,14 +18,14 @@ func createCommandRendersDockerResourcesAndSetupImplication() {
     var draft = defaults
     draft.name = "docker-dev"
     draft.dockerEnabled = true
-    draft.dockerCPUCount = 4
-    draft.dockerMemoryGiB = 8
-    draft.dockerDiskGiB = 128
+    draft.dockerCPUCount = 3
+    draft.dockerMemoryGiB = 5
+    draft.dockerDiskGiB = 70
     draft.dockerAMD64Enabled = false
 
     #expect(
         CLIEquivalent.create(draft, defaults: defaults, setupAfter: true)
-            == "macvm create --name docker-dev --setup --docker --docker-cpu 4 --docker-memory-gi-b 8 --docker-disk-gi-b 128 --no-docker-amd64"
+            == "macvm create --name docker-dev --setup --docker --docker-cpu 3 --docker-memory-gi-b 5 --docker-disk-gi-b 70 --no-docker-amd64"
     )
 }
 

@@ -25,6 +25,26 @@ struct SectionHeader: View {
     }
 }
 
+/// Editable integer resource value with a persistent unit label.
+struct ResourceValueField: View {
+    let label: String
+    @Binding var value: Int
+    let unit: String
+    var fieldWidth: CGFloat = 56
+
+    var body: some View {
+        HStack(spacing: 5) {
+            TextField(label, value: $value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .frame(width: fieldWidth)
+                .accessibilityLabel(label)
+            Text(unit)
+        }
+    }
+}
+
 /// Table-style row: fixed 120pt label column, mono value, trailing accessory.
 struct InfoRow<Trailing: View>: View {
     let label: String

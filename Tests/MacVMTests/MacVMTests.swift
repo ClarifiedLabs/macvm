@@ -567,19 +567,19 @@ func createCommandOmitsFlagsAtDefaultValues() {
 }
 
 @Test
-func createCommandIncludesOverridesInCLIOrder() {
+func createCommandIncludesCustomResourceOverridesInCLIOrder() {
     let defaults = makeDraft(name: "")
     var draft = makeDraft(name: "ci")
-    draft.cpuCount = 8
-    draft.memoryGiB = 16
-    draft.diskGiB = 100
+    draft.cpuCount = 7
+    draft.memoryGiB = 10
+    draft.diskGiB = 95
     draft.displayWidth = 1440
     draft.displayHeight = 900
     draft.createBootstrapShare = false
 
     #expect(
         CLIEquivalent.create(draft, defaults: defaults, setupAfter: true)
-            == "macvm create --name ci --cpu 8 --memory-gi-b 16 --disk-gi-b 100 --display 1440x900 --no-bootstrap --setup"
+            == "macvm create --name ci --cpu 7 --memory-gi-b 10 --disk-gi-b 95 --display 1440x900 --no-bootstrap --setup"
     )
 }
 

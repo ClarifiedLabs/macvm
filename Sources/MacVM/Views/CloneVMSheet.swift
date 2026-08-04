@@ -10,10 +10,10 @@ struct CloneVMSheet: View {
         @Bindable var store = store
         let sourceName = store.cloneSheetSourceName ?? ""
         let sourceMetadata = store.vm(named: sourceName)?.metadata
-        let sourceCPUCount = sourceMetadata?.cpuCount ?? Self.cpuRange.lowerBound
+        let sourceCPUCount = sourceMetadata?.cpuCount ?? Self.minimumCPUCount
         let sourceMemoryGiB = sourceMetadata.map {
             max(1, Int(($0.memorySizeBytes + Self.bytesPerGiB - 1) / Self.bytesPerGiB))
-        } ?? Self.memoryGiBRange.lowerBound
+        } ?? Self.minimumMemoryGiB
 
         VStack(alignment: .leading, spacing: 16) {
             Text("Clone Virtual Machine")
@@ -35,27 +35,20 @@ struct CloneVMSheet: View {
                 GridRow {
                     Text("CPU:")
                         .foregroundStyle(.secondary)
-                    Stepper(
+                    ResourceValueField(
+                        label: "CPU count",
                         value: cpuCountBinding(sourceCPUCount: sourceCPUCount),
-                        in: Self.cpuRange
-                    ) {
-                        Text("\(store.cloneCPUCountOverride ?? sourceCPUCount) cores")
-                            .frame(minWidth: 72, alignment: .leading)
-                    }
+                        unit: "cores"
+                    )
                 }
                 GridRow {
                     Text("Memory:")
                         .foregroundStyle(.secondary)
-                    Stepper(
-                        value: memoryGiBBinding(
-                            sourceMemoryGiB: sourceMemoryGiB,
-                            sourceMemorySizeBytes: sourceMetadata?.memorySizeBytes
-                        ),
-                        in: Self.memoryGiBRange
-                    ) {
-                        Text("\(store.cloneMemoryGiBOverride ?? sourceMemoryGiB) GiB")
-                            .frame(minWidth: 72, alignment: .leading)
-                    }
+                    ResourceValueField(
+                        label: "Memory",
+                        value: memoryGiBBinding(sourceMemoryGiB: sourceMemoryGiB),
+                        unit: "GiB"
+                    )
                 }
             }
 
@@ -89,15 +82,13 @@ struct CloneVMSheet: View {
         .frame(width: 500)
     }
 
-    private static var cpuRange: ClosedRange<Int> {
-        Int(VZVirtualMachineConfiguration.minimumAllowedCPUCount)...Int(VZVirtualMachineConfiguration.maximumAllowedCPUCount)
+    private static var minimumCPUCount: Int {
+        Int(VZVirtualMachineConfiguration.minimumAllowedCPUCount)
     }
 
-    private static var memoryGiBRange: ClosedRange<Int> {
+    private static var minimumMemoryGiB: Int {
         let minimumBytes = VZVirtualMachineConfiguration.minimumAllowedMemorySize
-        let maximumBytes = VZVirtualMachineConfiguration.maximumAllowedMemorySize
-        let minimumGiB = max(1, Int((minimumBytes + bytesPerGiB - 1) / bytesPerGiB))
-        return minimumGiB...Int(maximumBytes / bytesPerGiB)
+        return max(1, Int((minimumBytes + bytesPerGiB - 1) / bytesPerGiB))
     }
 
     private func cpuCountBinding(sourceCPUCount: Int) -> Binding<Int> {
@@ -109,15 +100,11 @@ struct CloneVMSheet: View {
         )
     }
 
-    private func memoryGiBBinding(
-        sourceMemoryGiB: Int,
-        sourceMemorySizeBytes: UInt64?
-    ) -> Binding<Int> {
+    private func memoryGiBBinding(sourceMemoryGiB: Int) -> Binding<Int> {
         Binding(
             get: { store.cloneMemoryGiBOverride ?? sourceMemoryGiB },
             set: { value in
-                let requestedBytes = UInt64(value) * Self.bytesPerGiB
-                store.cloneMemoryGiBOverride = requestedBytes == sourceMemorySizeBytes ? nil : value
+                store.cloneMemoryGiBOverride = value == sourceMemoryGiB ? nil : value
             }
         )
     }

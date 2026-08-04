@@ -62,28 +62,22 @@ struct CreateVMSheet: View {
                             }
                         }
 
-                        stepperRow(
+                        resourceRow(
                             label: "CPU:",
                             value: $store.draft.cpuCount,
-                            range: 2...12,
-                            step: 1,
-                            display: "\(store.draft.cpuCount)",
+                            unit: "cores",
                             hint: "host has \(ProcessInfo.processInfo.processorCount) cores"
                         )
-                        stepperRow(
+                        resourceRow(
                             label: "Memory:",
                             value: $store.draft.memoryGiB,
-                            range: 4...64,
-                            step: 4,
-                            display: "\(store.draft.memoryGiB) GiB",
+                            unit: "GiB",
                             hint: Self.hostMemoryHint()
                         )
-                        stepperRow(
+                        resourceRow(
                             label: "Disk:",
                             value: $store.draft.diskGiB,
-                            range: 40...500,
-                            step: 20,
-                            display: "\(store.draft.diskGiB) GiB",
+                            unit: "GiB",
                             hint: "fixed after create"
                         )
 
@@ -115,9 +109,24 @@ struct CreateVMSheet: View {
                                 if store.draft.dockerEnabled {
                                     HStack(spacing: 10) {
                                         Text("Docker:").foregroundStyle(.secondary)
-                                        Stepper("\(store.draft.dockerCPUCount) CPU", value: $store.draft.dockerCPUCount, in: 1...12)
-                                        Stepper("\(store.draft.dockerMemoryGiB) GiB", value: $store.draft.dockerMemoryGiB, in: 2...32, step: 2)
-                                        Stepper("\(store.draft.dockerDiskGiB) GiB disk", value: $store.draft.dockerDiskGiB, in: 16...512, step: 16)
+                                        ResourceValueField(
+                                            label: "Docker CPU count",
+                                            value: $store.draft.dockerCPUCount,
+                                            unit: "CPU",
+                                            fieldWidth: 44
+                                        )
+                                        ResourceValueField(
+                                            label: "Docker memory",
+                                            value: $store.draft.dockerMemoryGiB,
+                                            unit: "GiB",
+                                            fieldWidth: 44
+                                        )
+                                        ResourceValueField(
+                                            label: "Docker disk",
+                                            value: $store.draft.dockerDiskGiB,
+                                            unit: "GiB disk",
+                                            fieldWidth: 52
+                                        )
                                     }
                                     Toggle("Enable linux/amd64 containers with Rosetta", isOn: $store.draft.dockerAMD64Enabled)
                                 }
@@ -293,22 +302,20 @@ struct CreateVMSheet: View {
             .frame(width: 110, alignment: .trailing)
     }
 
-    private func stepperRow(
+    private func resourceRow(
         label: String,
         value: Binding<Int>,
-        range: ClosedRange<Int>,
-        step: Int,
-        display: String,
+        unit: String,
         hint: String
     ) -> some View {
         GridRow {
             fieldLabel(label)
             HStack(spacing: 8) {
-                Stepper(value: value, in: range, step: step) {
-                    Text(display)
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(minWidth: 52, alignment: .center)
-                }
+                ResourceValueField(
+                    label: String(label.dropLast()),
+                    value: value,
+                    unit: unit
+                )
                 Text(hint)
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
