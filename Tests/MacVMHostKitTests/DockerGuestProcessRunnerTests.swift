@@ -194,12 +194,10 @@ struct DockerGuestProcessRunnerTests {
         let processIdentifierURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("macvm-escaped-pid-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: processIdentifierURL) }
-        let python = "import os,time; os.setsid(); "
-            + "open(\"\(processIdentifierURL.path)\", \"w\").write(str(os.getpid())); "
-            + "time.sleep(4)"
-        let command = "/usr/bin/python3 -c '\(python)' & "
-            + "while [ ! -s '\(processIdentifierURL.path)' ]; do /bin/sleep 0.01; done; "
-            + "exit 0"
+        // Job control gives the background process its own group, while the shell
+        // builtin records its PID without a cold interpreter launch in the timeout.
+        let command = "set -m; /bin/sleep 4 & "
+            + "printf '%s' \"$!\" > '\(processIdentifierURL.path)'; exit 0"
         let startedAt = Date()
         let result = try run(
             "/bin/sh",
