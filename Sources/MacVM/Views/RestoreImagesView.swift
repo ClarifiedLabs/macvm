@@ -33,15 +33,16 @@ struct RestoreImagesView: View {
                         }
                         .buttonStyle(.bordered)
                         .buttonBorderShape(.capsule)
-                        .disabled(store.restoreImageImportInProgress)
+                        .disabled(store.restoreImageOperationInProgress)
 
                         Button {
-                            store.checkForLatest()
+                            Task { await store.checkForLatest() }
                         } label: {
                             Label("Check for Latest", systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.bordered)
                         .buttonBorderShape(.capsule)
+                        .disabled(store.restoreImageOperationInProgress)
                     }
                 }
 
@@ -161,6 +162,7 @@ private struct RestoreImageRow: View {
             .buttonStyle(.bordered)
             .buttonBorderShape(.capsule)
             .controlSize(.small)
+            .disabled(store.restoreImageOperationInProgress)
 
             Button("Delete…", role: .destructive) {
                 onDelete()
@@ -168,6 +170,7 @@ private struct RestoreImageRow: View {
             .buttonStyle(.bordered)
             .buttonBorderShape(.capsule)
             .controlSize(.small)
+            .disabled(store.restoreImageOperationInProgress)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

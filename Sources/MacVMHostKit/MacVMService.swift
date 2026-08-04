@@ -1700,12 +1700,20 @@ public final class MacVMService: Sendable {
         case .latestSupported:
             progress?(.status("Fetching Apple's latest restore image supported by this host..."))
             let restoreImage = try await VirtualizationAsync.fetchLatestSupportedRestoreImage()
+            let latestSupportedCheckedAt = Date()
             let restoreImageName = restoreImage.url.lastPathComponent.isEmpty ? "latest-supported.ipsw" : restoreImage.url.lastPathComponent
             let cachedRestoreImageURL = storage.restoreCacheDirectory.appendingPathComponent(restoreImageName)
             DebugLog.log("Latest supported restore image URL is \(restoreImage.url.absoluteString)")
 
-            if FileManager.default.fileExists(atPath: cachedRestoreImageURL.path) {
-                recordLatestSupportedRestoreImage(restoreImage, imageName: restoreImageName)
+            if try await RestoreImageCache.cachedImageURL(
+                named: restoreImageName,
+                in: storage.restoreCacheDirectory
+            ) != nil {
+                recordLatestSupportedRestoreImage(
+                    restoreImage,
+                    imageName: restoreImageName,
+                    checkedAt: latestSupportedCheckedAt
+                )
                 progress?(.status("Using cached restore image at \(cachedRestoreImageURL.path)"))
                 DebugLog.log("Restore image cache hit at \(cachedRestoreImageURL.path)")
                 return cachedRestoreImageURL
@@ -1713,16 +1721,26 @@ public final class MacVMService: Sendable {
 
             progress?(.status("Downloading \(restoreImageName) from Apple..."))
             DebugLog.log("Downloading restore image to \(cachedRestoreImageURL.path)")
-            let (temporaryURL, _) = try await URLSession.shared.download(from: restoreImage.url)
-            try? FileManager.default.removeItem(at: cachedRestoreImageURL)
-            try FileManager.default.moveItem(at: temporaryURL, to: cachedRestoreImageURL)
-            recordLatestSupportedRestoreImage(restoreImage, imageName: restoreImageName)
-            DebugLog.log("Restore image download complete: \(cachedRestoreImageURL.path)")
-            return cachedRestoreImageURL
+            let result = try await RestoreImageCache.downloadImage(
+                from: restoreImage.url,
+                named: restoreImageName,
+                in: storage.restoreCacheDirectory
+            )
+            recordLatestSupportedRestoreImage(
+                restoreImage,
+                imageName: restoreImageName,
+                checkedAt: latestSupportedCheckedAt
+            )
+            DebugLog.log("Restore image download complete: \(result.url.path)")
+            return result.url
         }
     }
 
-    private func recordLatestSupportedRestoreImage(_ restoreImage: VZMacOSRestoreImage, imageName: String) {
+    private func recordLatestSupportedRestoreImage(
+        _ restoreImage: VZMacOSRestoreImage,
+        imageName: String,
+        checkedAt: Date
+    ) {
         let version = restoreImage.operatingSystemVersion
         let metadata = LatestSupportedRestoreImageMetadata(
             imageName: imageName,
@@ -1730,7 +1748,8 @@ public final class MacVMService: Sendable {
             buildVersion: restoreImage.buildVersion,
             majorVersion: version.majorVersion,
             minorVersion: version.minorVersion,
-            patchVersion: version.patchVersion
+            patchVersion: version.patchVersion,
+            checkedAt: checkedAt
         )
         do {
             try RestoreImageCacheMetadata.writeLatestSupported(metadata, in: storage.restoreCacheDirectory)

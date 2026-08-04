@@ -1030,6 +1030,57 @@ func managerKeepsLiveRuntimeAheadOfInactiveManagerSetupMarker() throws {
 
 // MARK: - RestoreImageCatalog
 
+private struct StubRestoreImageDownloader: RestoreImageDownloading {
+    let temporaryURL: URL
+
+    func download(from url: URL) async throws -> URL {
+        temporaryURL
+    }
+}
+
+private struct StubRestoreImageValidator: RestoreImageValidating {
+    func validateRestoreImage(at url: URL) async throws {}
+}
+
+@Test
+@MainActor
+func checkForLatestDownloadsMissingRestoreImageImmediately() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let downloadDirectory = root.appendingPathComponent("Downloads", isDirectory: true)
+    let imageName = "UniversalMac_27.0.1_26A123_Restore.ipsw"
+    let temporaryDownload = downloadDirectory.appendingPathComponent(imageName)
+    try FileManager.default.createDirectory(at: downloadDirectory, withIntermediateDirectories: true)
+    let payload = Data("downloaded ipsw".utf8)
+    try payload.write(to: temporaryDownload)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let latestImage = LatestRestoreImageDescriptor(
+        sourceURL: URL(string: "https://example.invalid/\(imageName)")!,
+        imageName: imageName,
+        buildVersion: "26A123",
+        majorVersion: 27,
+        minorVersion: 0,
+        patchVersion: 1
+    )
+    let store = AppStore(
+        service: MacVMService(rootDirectory: root),
+        latestRestoreImageProvider: { latestImage },
+        restoreImageDownloader: StubRestoreImageDownloader(temporaryURL: temporaryDownload),
+        restoreImageValidator: StubRestoreImageValidator()
+    )
+
+    await store.checkForLatest()
+
+    let cachedURL = RestoreImageCatalog.cacheDirectory(root: root)
+        .appendingPathComponent(imageName)
+    #expect(try Data(contentsOf: cachedURL) == payload)
+    #expect(store.restoreImages.count == 1)
+    #expect(store.restoreImages[0].isLatest)
+    #expect(store.latestCheckStatus == "Latest supported: macOS 27.0.1 (26A123) — downloaded")
+    #expect(!store.restoreImageOperationInProgress)
+}
+
 @Test
 func restoreImageCatalogListsIPSWsNewestFirstWithoutGuessingLatest() throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory())

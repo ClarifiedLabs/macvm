@@ -53,7 +53,7 @@ struct CreateVMSheet: View {
 
                                     Button("Choose…") { chooseIPSW() }
                                         .controlSize(.small)
-                                        .disabled(store.restoreImageImportInProgress)
+                                        .disabled(store.restoreImageOperationInProgress)
                                         .help("Import a local IPSW into the restore image cache")
                                 }
                                 Text(restoreImageSelectionDetail)
@@ -238,7 +238,7 @@ struct CreateVMSheet: View {
         if store.draft.restoreMode == .localFile && store.draft.localRestoreImageURL == nil {
             return false
         }
-        if store.restoreImageImportInProgress {
+        if store.restoreImageOperationInProgress {
             return false
         }
         if store.xcodeImportInProgress {
@@ -400,7 +400,7 @@ struct CreateVMSheet: View {
     }
 
     private var restoreImageSelectionDetail: String {
-        if store.restoreImageImportInProgress, let status = store.latestCheckStatus {
+        if store.restoreImageOperationInProgress, let status = store.latestCheckStatus {
             return status
         }
         guard store.draft.restoreMode == .localFile,

@@ -13,6 +13,52 @@ struct RestoreImageEntry: Identifiable, Equatable, Sendable {
     var id: String { url.path }
 }
 
+struct LatestRestoreImageDescriptor: Equatable, Sendable {
+    let sourceURL: URL
+    let imageName: String
+    let buildVersion: String
+    let majorVersion: Int
+    let minorVersion: Int
+    let patchVersion: Int
+    let checkedAt: Date
+
+    init(
+        sourceURL: URL,
+        imageName: String,
+        buildVersion: String,
+        majorVersion: Int,
+        minorVersion: Int,
+        patchVersion: Int,
+        checkedAt: Date = Date()
+    ) {
+        self.sourceURL = sourceURL
+        self.imageName = imageName
+        self.buildVersion = buildVersion
+        self.majorVersion = majorVersion
+        self.minorVersion = minorVersion
+        self.patchVersion = patchVersion
+        self.checkedAt = checkedAt
+    }
+
+    var metadata: LatestSupportedRestoreImageMetadata {
+        LatestSupportedRestoreImageMetadata(
+            imageName: imageName,
+            sourceURLString: sourceURL.absoluteString,
+            buildVersion: buildVersion,
+            majorVersion: majorVersion,
+            minorVersion: minorVersion,
+            patchVersion: patchVersion,
+            checkedAt: checkedAt
+        )
+    }
+
+    var versionDescription: String {
+        "macOS \(majorVersion).\(minorVersion).\(patchVersion) (\(buildVersion))"
+    }
+}
+
+typealias LatestRestoreImageProvider = @MainActor @Sendable () async throws -> LatestRestoreImageDescriptor
+
 enum RestoreImageCatalogError: LocalizedError {
     case invalidExtension(URL)
     case missingImage(URL)

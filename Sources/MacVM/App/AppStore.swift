@@ -87,6 +87,9 @@ final class AppStore {
     private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     let service: MacVMService
+    private let latestRestoreImageProvider: LatestRestoreImageProvider
+    private let restoreImageDownloader: any RestoreImageDownloading
+    private let restoreImageValidator: any RestoreImageValidating
     private let triggerLocalNetworkPrivacyAlert: () -> Void
 
     private(set) var vms: [ManagedVM] = []
@@ -129,7 +132,12 @@ final class AppStore {
     private(set) var restoreImages: [RestoreImageEntry] = []
     private(set) var restoreImageLabels: [String: String] = [:]
     private(set) var latestCheckStatus: String?
+    private(set) var latestCheckInProgress = false
     private(set) var restoreImageImportInProgress = false
+
+    var restoreImageOperationInProgress: Bool {
+        latestCheckInProgress || restoreImageImportInProgress
+    }
     private(set) var xcodeArchives: [XcodeArchiveEntry] = []
     private(set) var profileCatalog: ProvisioningCatalog
     private(set) var provisioningStates: [String: ProvisioningState] = [:]
@@ -154,10 +162,27 @@ final class AppStore {
             rootDirectory: MacVMSettings.shared.configuredVMRootDirectory
         ),
         controlQueue: MacVMAppControlQueue? = nil,
+        latestRestoreImageProvider: @escaping LatestRestoreImageProvider = {
+            let image = try await VZMacOSRestoreImage.latestSupported
+            let version = image.operatingSystemVersion
+            return LatestRestoreImageDescriptor(
+                sourceURL: image.url,
+                imageName: image.url.lastPathComponent.isEmpty ? "latest-supported.ipsw" : image.url.lastPathComponent,
+                buildVersion: image.buildVersion,
+                majorVersion: version.majorVersion,
+                minorVersion: version.minorVersion,
+                patchVersion: version.patchVersion
+            )
+        },
+        restoreImageDownloader: any RestoreImageDownloading = URLSessionRestoreImageDownloader(),
+        restoreImageValidator: any RestoreImageValidating = VirtualizationRestoreImageValidator(),
         triggerLocalNetworkPrivacyAlert: @escaping () -> Void = LocalNetworkPrivacy.triggerAlert
     ) {
         self.service = service
         self.controlQueue = controlQueue
+        self.latestRestoreImageProvider = latestRestoreImageProvider
+        self.restoreImageDownloader = restoreImageDownloader
+        self.restoreImageValidator = restoreImageValidator
         self.triggerLocalNetworkPrivacyAlert = triggerLocalNetworkPrivacyAlert
         self.draft = service.defaultDraft()
         self.profileCatalog = service.provisioningCatalog()
@@ -1798,7 +1823,7 @@ final class AppStore {
     // MARK: - Restore images
 
     func importRestoreImage(from sourceURL: URL, selectForCreate: Bool = false) {
-        guard !restoreImageImportInProgress else { return }
+        guard !restoreImageOperationInProgress else { return }
 
         let root = service.rootDirectory
         restoreImageImportInProgress = true
@@ -1909,31 +1934,42 @@ final class AppStore {
         }
     }
 
-    func checkForLatest() {
+    func checkForLatest() async {
+        guard !restoreImageOperationInProgress else { return }
+
+        latestCheckInProgress = true
         latestCheckStatus = "Checking…"
-        Task { @MainActor in
-            do {
-                let image = try await VZMacOSRestoreImage.latestSupported
-                let version = image.operatingSystemVersion
-                let name = image.url.lastPathComponent.isEmpty ? "latest-supported.ipsw" : image.url.lastPathComponent
-                let metadata = LatestSupportedRestoreImageMetadata(
-                    imageName: name,
-                    sourceURLString: image.url.absoluteString,
-                    buildVersion: image.buildVersion,
-                    majorVersion: version.majorVersion,
-                    minorVersion: version.minorVersion,
-                    patchVersion: version.patchVersion
-                )
-                try RestoreImageCacheMetadata.writeLatestSupported(
-                    metadata,
-                    in: RestoreImageCatalog.cacheDirectory(root: service.rootDirectory)
-                )
-                refresh()
-                let cached = restoreImages.contains { $0.name == name }
-                latestCheckStatus = "Latest supported: macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion) (\(image.buildVersion)) — \(cached ? "already cached" : "downloads on first use")"
-            } catch {
-                latestCheckStatus = "Check failed: \(error.localizedDescription)"
+        defer { latestCheckInProgress = false }
+
+        do {
+            let image = try await latestRestoreImageProvider()
+            let cacheDirectory = RestoreImageCatalog.cacheDirectory(root: service.rootDirectory)
+            try RestoreImageCacheMetadata.writeLatestSupported(image.metadata, in: cacheDirectory)
+            refresh()
+
+            if try await RestoreImageCache.cachedImageURL(
+                named: image.imageName,
+                in: cacheDirectory,
+                validator: restoreImageValidator
+            ) != nil {
+                latestCheckStatus = "Latest supported: \(image.versionDescription) — already cached"
+                return
             }
+
+            latestCheckStatus = "Latest supported: \(image.versionDescription) — downloading \(image.imageName)…"
+            let result = try await RestoreImageCache.downloadImage(
+                from: image.sourceURL,
+                named: image.imageName,
+                in: cacheDirectory,
+                downloader: restoreImageDownloader,
+                validator: restoreImageValidator
+            )
+            restoreImageLabels[image.imageName] = nil
+            refresh()
+            let disposition = result.wasDownloaded ? "downloaded" : "already cached"
+            latestCheckStatus = "Latest supported: \(image.versionDescription) — \(disposition)"
+        } catch {
+            latestCheckStatus = "Check or download failed: \(error.localizedDescription)"
         }
     }
 }
