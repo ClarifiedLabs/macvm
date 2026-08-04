@@ -309,9 +309,155 @@ func dockerSidecarBundleValidatesRequiredFilesAndSparseAccounting() throws {
     #expect(metadata.image == dockerTestImage)
     #expect(sidecar.logicalDataDiskSize() == 2 * oneGiB)
     #expect(sidecar.allocatedSizeBytes() < 2 * oneGiB)
+    try sidecar.growDataDisk(to: 3 * oneGiB)
+    try sidecar.restoreDataDiskSizeAfterFailedGrowth(to: 2 * oneGiB)
+    #expect(sidecar.logicalDataDiskSize() == 2 * oneGiB)
 
     try FileManager.default.removeItem(at: sidecar.initialIgnitionURL)
     #expect(throws: (any Error).self) { try sidecar.validateIntegrity() }
+}
+
+@Test
+func virtualMachineResourceConfigurationPersistsGuestAndDockerValuesTogether() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("resources.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    var settings = dockerTestSettings()
+    settings.cpuCount = 2
+    settings.memorySizeBytes = 2 * oneGiB
+    settings.dataDiskSizeBytes = 2 * oneGiB
+    let metadata = VMMetadata(
+        name: "resources",
+        cpuCount: 3,
+        memorySizeBytes: 5 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        minimumCPUCount: 3,
+        minimumMemorySizeBytes: 5 * oneGiB,
+        dockerSidecar: settings
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(metadata)
+
+    let sidecar = bundle.dockerSidecarBundle
+    try sidecar.createDirectories()
+    try Data("fcos".utf8).write(to: sidecar.systemDiskURL)
+    try sidecar.createSparseDataDisk(sizeBytes: settings.dataDiskSizeBytes)
+    let identifier = try sidecar.createGenericMachineIdentifier()
+    try sidecar.createEFIVariableStore()
+    try "ssh-ed25519 AAAA docker".write(to: sidecar.dockerAuthorizedKeyURL, atomically: true, encoding: .utf8)
+    try "ssh-ed25519 AAAA mount".write(to: sidecar.mountBrokerAuthorizedKeyURL, atomically: true, encoding: .utf8)
+    try "PRIVATE HOST KEY".write(to: sidecar.linuxHostPrivateKeyURL, atomically: true, encoding: .utf8)
+    try "ssh-ed25519 AAAA host".write(to: sidecar.linuxHostPublicKeyURL, atomically: true, encoding: .utf8)
+    try Data("{}".utf8).write(to: sidecar.initialIgnitionURL)
+    try sidecar.writeMetadata(DockerSidecarMetadata(
+        image: dockerTestImage,
+        genericMachineIdentifierDigest: DockerSidecarBundle.sha256Hex(identifier.dataRepresentation)
+    ))
+
+    let updated = try MacVMService(rootDirectory: root).configureVirtualMachineResources(
+        for: ManagedVM(bundleURL: bundleURL, metadata: metadata),
+        cpuCount: 4,
+        memorySizeBytes: 6 * oneGiB,
+        dockerConfiguration: DockerSidecarResourceConfiguration(
+            cpuCount: 3,
+            memorySizeBytes: 3 * oneGiB,
+            dataDiskSizeBytes: 3 * oneGiB,
+            amd64Enabled: false
+        )
+    )
+
+    #expect(updated.metadata.cpuCount == 4)
+    #expect(updated.metadata.memorySizeBytes == 6 * oneGiB)
+    #expect(updated.metadata.minimumCPUCount == 3)
+    #expect(updated.metadata.minimumMemorySizeBytes == 5 * oneGiB)
+    let docker = try #require(updated.metadata.dockerSidecar)
+    #expect(docker.cpuCount == 3)
+    #expect(docker.memorySizeBytes == 3 * oneGiB)
+    #expect(docker.dataDiskSizeBytes == 3 * oneGiB)
+    #expect(!docker.amd64Enabled)
+    #expect(sidecar.logicalDataDiskSize() == 3 * oneGiB)
+    #expect(try bundle.readMetadata() == updated.metadata)
+}
+
+@Test
+func virtualMachineResourceConfigurationEnforcesGuestMinimums() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("minimums.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let metadata = VMMetadata(
+        name: "minimums",
+        cpuCount: 4,
+        memorySizeBytes: 8 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        minimumCPUCount: 4,
+        minimumMemorySizeBytes: 6 * oneGiB
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(metadata)
+    let persistedBefore = try bundle.readMetadata()
+    let service = MacVMService(rootDirectory: root)
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+
+    #expect(throws: (any Error).self) {
+        try service.configureVirtualMachineResources(
+            for: vm,
+            cpuCount: 3,
+            memorySizeBytes: 8 * oneGiB
+        )
+    }
+    #expect(throws: (any Error).self) {
+        try service.configureVirtualMachineResources(
+            for: vm,
+            cpuCount: 4,
+            memorySizeBytes: 5 * oneGiB
+        )
+    }
+    #expect(try bundle.readMetadata() == persistedBefore)
+}
+
+@Test
+func virtualMachineResourceConfigurationRejectsLiveVMWithoutChangingMetadata() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = root.appendingPathComponent("running.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let metadata = VMMetadata(
+        name: "running",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(metadata)
+    let persistedBefore = try bundle.readMetadata()
+    try bundle.writeVMProcessRuntimeState(VMProcessRuntimeState(
+        role: .manager,
+        pid: getpid(),
+        startedAt: Date()
+    ))
+
+    #expect(throws: (any Error).self) {
+        try MacVMService(rootDirectory: root).configureVirtualMachineResources(
+            for: ManagedVM(bundleURL: bundleURL, metadata: metadata),
+            cpuCount: 4,
+            memorySizeBytes: 6 * oneGiB
+        )
+    }
+    #expect(try bundle.readMetadata() == persistedBefore)
 }
 
 @Test

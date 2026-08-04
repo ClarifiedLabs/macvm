@@ -46,13 +46,8 @@ func dockerSidecarStatusIsCodableForCLIAndUIRefresh() throws {
 }
 
 @Test
-func dockerResourceFormSynchronizesWhenSidecarAppearsAfterSetup() {
-    var values = DockerResourceFormValues(settings: nil)
-    #expect(values.cpuCount == DockerSidecarSettings.defaultCPUCount)
-    #expect(values.memoryGiB == DockerSidecarSettings.defaultMemoryGiB)
-    #expect(values.diskGiB == DockerSidecarSettings.defaultDiskGiB)
-
-    values.synchronize(with: DockerSidecarSettings(
+func resourceEditFormLoadsGuestAndDockerValuesAndCanBeDiscarded() throws {
+    let sidecar = DockerSidecarSettings(
         amd64Enabled: false,
         cpuCount: 6,
         memorySizeBytes: 12 * 1024 * 1024 * 1024,
@@ -60,10 +55,65 @@ func dockerResourceFormSynchronizesWhenSidecarAppearsAfterSetup() {
         macOSMACAddress: "02:00:00:00:00:01",
         linuxPrivateMACAddress: "02:00:00:00:00:02",
         linuxNATMACAddress: "02:00:00:00:00:03"
-    ))
+    )
+    let metadata = VMMetadata(
+        name: "docker-dev",
+        cpuCount: 8,
+        memorySizeBytes: 16 * 1024 * 1024 * 1024,
+        diskSizeBytes: 80 * 1024 * 1024 * 1024,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: true,
+        dockerSidecar: sidecar
+    )
 
-    #expect(values.cpuCount == 6)
-    #expect(values.memoryGiB == 12)
-    #expect(values.diskGiB == 96)
-    #expect(!values.amd64Enabled)
+    let original = VMResourceFormValues(metadata: metadata)
+    #expect(original.cpuCount == 8)
+    #expect(original.memoryGiB == 16)
+    let docker = try #require(original.docker)
+    #expect(docker.cpuCount == 6)
+    #expect(docker.memoryGiB == 12)
+    #expect(docker.diskGiB == 96)
+    #expect(!docker.amd64Enabled)
+
+    var edited = original
+    edited.cpuCount = 10
+    edited.memoryGiB = 20
+    edited.docker?.diskGiB = 128
+    #expect(edited != original)
+
+    let afterCancel = VMResourceFormValues(metadata: metadata)
+    #expect(afterCancel == original)
+}
+
+@Test
+func resourceEditFormRoundsPartialGiBValuesUp() throws {
+    let oneGiB: UInt64 = 1024 * 1024 * 1024
+    let guestMemory = 4 * oneGiB + 1
+    let guestDisk = 80 * oneGiB
+    let dockerMemory = 2 * oneGiB + 1
+    let dockerDisk = 20 * oneGiB + 1
+    let dockerSettings = DockerSidecarSettings(
+        memorySizeBytes: dockerMemory,
+        dataDiskSizeBytes: dockerDisk,
+        macOSMACAddress: "02:00:00:00:00:01",
+        linuxPrivateMACAddress: "02:00:00:00:00:02",
+        linuxNATMACAddress: "02:00:00:00:00:03"
+    )
+    let metadata = VMMetadata(
+        name: "partial-resources",
+        cpuCount: 4,
+        memorySizeBytes: guestMemory,
+        diskSizeBytes: guestDisk,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false,
+        dockerSidecar: dockerSettings
+    )
+
+    let values = VMResourceFormValues(metadata: metadata)
+    let docker = try #require(values.docker)
+    #expect(values.memoryGiB == 5)
+    #expect(docker.memoryGiB == 3)
+    #expect(docker.diskGiB == 21)
 }

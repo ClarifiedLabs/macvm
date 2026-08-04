@@ -193,6 +193,10 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
     public var displayWidth: Int
     public var displayHeight: Int
     public var bootstrapShareEnabled: Bool
+    /// Guest resource floors reported by the restore image used for installation.
+    /// Optional for bundles created before resource editing support.
+    public var minimumCPUCount: Int?
+    public var minimumMemorySizeBytes: UInt64?
     public var installedRestoreImageName: String?
     /// Release identity recorded from the restore image at installation time.
     /// Bundles created before this field was introduced remain manually usable,
@@ -228,6 +232,8 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         displayWidth: Int,
         displayHeight: Int,
         bootstrapShareEnabled: Bool,
+        minimumCPUCount: Int? = nil,
+        minimumMemorySizeBytes: UInt64? = nil,
         installedRestoreImageName: String? = nil,
         installedMacOSRelease: MacOSRelease? = nil,
         macAddress: String? = nil,
@@ -247,6 +253,8 @@ public struct VMMetadata: Codable, Identifiable, Equatable, Sendable {
         self.displayWidth = displayWidth
         self.displayHeight = displayHeight
         self.bootstrapShareEnabled = bootstrapShareEnabled
+        self.minimumCPUCount = minimumCPUCount
+        self.minimumMemorySizeBytes = minimumMemorySizeBytes
         self.installedRestoreImageName = installedRestoreImageName
         self.installedMacOSRelease = installedMacOSRelease
         self.macAddress = macAddress

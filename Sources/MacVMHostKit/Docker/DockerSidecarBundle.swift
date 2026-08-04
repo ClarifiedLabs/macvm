@@ -149,6 +149,14 @@ struct DockerSidecarBundle {
         return (attributes?[.size] as? NSNumber)?.uint64Value
     }
 
+    func restoreDataDiskSizeAfterFailedGrowth(to sizeBytes: UInt64) throws {
+        guard let currentSize = logicalDataDiskSize(), sizeBytes <= currentSize else {
+            throw MacVMError.message("Couldn't restore the Docker data disk after a failed resource update.")
+        }
+        guard sizeBytes < currentSize else { return }
+        try truncateFile(at: dataDiskURL, sizeBytes: sizeBytes)
+    }
+
     func allocatedSizeBytes() -> UInt64 {
         guard let enumerator = FileManager.default.enumerator(
             at: url,

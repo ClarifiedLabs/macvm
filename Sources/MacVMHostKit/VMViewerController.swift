@@ -71,7 +71,7 @@ public final class VMViewerController:
         let pixelHeight: Int
     }
 
-    private let managedVM: ManagedVM
+    private var managedVM: ManagedVM
     private let bundle: VMBundle
     private let vmName: String
     private let requestedVNCPort: UInt
@@ -802,12 +802,14 @@ public final class VMViewerController:
     // MARK: - VM lifecycle
 
     private func createAndStartVirtualMachine() throws {
-        let additionalNetworkDevices = try prepareDockerSidecarIfNeeded()
+        let startupResources = try prepareDockerSidecarIfNeeded()
+        defer { dockerStartupOperationLock = nil }
+        managedVM = ManagedVM(bundleURL: managedVM.bundleURL, metadata: startupResources.metadata)
         let configuration: VZVirtualMachineConfiguration
         do {
             configuration = try bundle.makeConfiguration(
-                metadata: managedVM.metadata,
-                additionalNetworkDevices: additionalNetworkDevices
+                metadata: startupResources.metadata,
+                additionalNetworkDevices: startupResources.additionalNetworkDevices
             )
         } catch {
             abortDockerSidecar()
@@ -861,10 +863,10 @@ public final class VMViewerController:
             }
             if displayView == nil {
                 try bundle.writeDisplayRuntimeState(VMDisplayRuntimeState(
-                    width: managedVM.metadata.displayWidth,
-                    height: managedVM.metadata.displayHeight,
-                    pixelWidth: managedVM.metadata.displayPixelWidth,
-                    pixelHeight: managedVM.metadata.displayPixelHeight,
+                    width: startupResources.metadata.displayWidth,
+                    height: startupResources.metadata.displayHeight,
+                    pixelWidth: startupResources.metadata.displayPixelWidth,
+                    pixelHeight: startupResources.metadata.displayPixelHeight,
                     source: .headless,
                     pid: getpid(),
                     updatedAt: Date()
@@ -888,15 +890,18 @@ public final class VMViewerController:
         try startVirtualMachine()
     }
 
-    private func prepareDockerSidecarIfNeeded() throws -> [VZNetworkDeviceConfiguration] {
-        guard !startInRecovery else { return [] }
+    private func prepareDockerSidecarIfNeeded() throws -> (
+        metadata: VMMetadata,
+        additionalNetworkDevices: [VZNetworkDeviceConfiguration]
+    ) {
         let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "start the VM")
         dockerStartupOperationLock = operationLock
         do {
             let currentMetadata = try bundle.recoverDockerSidecarReplacementIfNeeded()
-            guard let settings = currentMetadata.dockerSidecar, settings.enabled else {
-                dockerStartupOperationLock = nil
-                return []
+            guard !startInRecovery,
+                  let settings = currentMetadata.dockerSidecar,
+                  settings.enabled else {
+                return (currentMetadata, [])
             }
             _ = try bundle.dockerSidecarBundle.validateIntegrity()
             let pairNetwork = try DockerPairNetwork()
@@ -908,8 +913,10 @@ public final class VMViewerController:
             try runtime.start()
             self.dockerPairNetwork = pairNetwork
             self.dockerSidecarRuntime = runtime
-            dockerStartupOperationLock = nil
-            return [try pairNetwork.makeMacOSNetworkDevice(macAddress: settings.macOSMACAddress)]
+            return (
+                currentMetadata,
+                [try pairNetwork.makeMacOSNetworkDevice(macAddress: settings.macOSMACAddress)]
+            )
         } catch {
             dockerStartupOperationLock = nil
             abortDockerSidecar()

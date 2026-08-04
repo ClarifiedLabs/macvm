@@ -4,6 +4,7 @@ import SwiftUI
 struct VMDetailView: View {
     @Environment(AppStore.self) private var store
     let name: String
+    @State private var editedResources: VMResourceFormValues?
 
     var body: some View {
         let vm = store.vm(named: name)
@@ -26,8 +27,8 @@ struct VMDetailView: View {
                 }
 
                 if let vm {
-                    SpecCardsView(vm: vm, status: status)
-                    DockerSectionView(vm: vm, vmStatus: status)
+                    SpecCardsView(vm: vm, status: status, editedResources: $editedResources)
+                    DockerSectionView(vm: vm, vmStatus: status, editedResources: $editedResources)
                     AccessSectionView(vm: vm, status: status)
                     ClipboardSectionView(vm: vm, vmStatus: status)
                     AutomationSectionView(vm: vm)
@@ -37,6 +38,9 @@ struct VMDetailView: View {
             }
             .padding(EdgeInsets(top: 24, leading: 28, bottom: 24, trailing: 28))
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onChange(of: name) {
+            editedResources = nil
         }
     }
 
@@ -54,7 +58,9 @@ struct VMDetailView: View {
             }
             Spacer()
             if let vm {
+                resourceEditingButtons(vm: vm, status: status)
                 actionButtons(vm: vm, status: status)
+                    .disabled(editedResources != nil)
             }
         }
     }
@@ -65,6 +71,39 @@ struct VMDetailView: View {
             return status.headerLabel
         }
         return "Setting up — \(phase.title)"
+    }
+
+    @ViewBuilder
+    private func resourceEditingButtons(vm: ManagedVM, status: VMStatus) -> some View {
+        let dockerBusy = store.dockerOperationMessages[vm.metadata.name] != nil
+        HStack(spacing: 6) {
+            if editedResources != nil {
+                Button("Cancel", role: .cancel) {
+                    editedResources = nil
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+
+                Button("Save") {
+                    guard let editedResources else { return }
+                    if store.configureResources(for: vm, values: editedResources) {
+                        self.editedResources = nil
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .disabled(status != .stopped || dockerBusy)
+            } else {
+                Button("Edit") {
+                    editedResources = VMResourceFormValues(metadata: vm.metadata)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .disabled(status != .stopped || dockerBusy)
+                .help(status == .stopped ? "Edit macOS and Docker resources" : "Stop the VM to edit resources")
+            }
+        }
+        .controlSize(.regular)
     }
 
     @ViewBuilder
@@ -159,18 +198,14 @@ struct DockerSectionView: View {
     @Environment(AppStore.self) private var store
     let vm: ManagedVM
     let vmStatus: VMStatus
-    @State private var resources: DockerResourceFormValues
-
-    init(vm: ManagedVM, vmStatus: VMStatus) {
-        self.vm = vm
-        self.vmStatus = vmStatus
-        _resources = State(initialValue: DockerResourceFormValues(settings: vm.metadata.dockerSidecar))
-    }
+    @Binding var editedResources: VMResourceFormValues?
 
     var body: some View {
         let name = vm.metadata.name
         let dockerStatus = store.dockerStatuses[name] ?? store.service.dockerStatus(for: vm)
         let busy = store.dockerOperationMessages[name] != nil
+        let resources = DockerResourceFormValues(settings: vm.metadata.dockerSidecar)
+        let isEditing = editedResources != nil
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader(title: "Docker")
             Card {
@@ -185,7 +220,7 @@ struct DockerSectionView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        dockerActions(status: dockerStatus, busy: busy)
+                        dockerActions(status: dockerStatus, busy: busy, isEditing: isEditing)
                     }
                     if let operation = store.dockerOperationMessages[name] {
                         ProgressView().controlSize(.small)
@@ -196,33 +231,31 @@ struct DockerSectionView: View {
                         HStack(spacing: 12) {
                             ResourceValueField(
                                 label: "Docker CPU count",
-                                value: $resources.cpuCount,
+                                value: dockerBinding(\.cpuCount, fallback: resources.cpuCount),
                                 unit: "CPU",
                                 fieldWidth: 44
                             )
+                            .disabled(!isEditing)
                             ResourceValueField(
                                 label: "Docker memory",
-                                value: $resources.memoryGiB,
+                                value: dockerBinding(\.memoryGiB, fallback: resources.memoryGiB),
                                 unit: "GiB",
                                 fieldWidth: 44
                             )
+                            .disabled(!isEditing)
                             ResourceValueField(
                                 label: "Docker disk",
-                                value: $resources.diskGiB,
+                                value: dockerBinding(\.diskGiB, fallback: resources.diskGiB),
                                 unit: "GiB disk",
                                 fieldWidth: 52
                             )
-                            Toggle("linux/amd64", isOn: $resources.amd64Enabled).toggleStyle(.checkbox)
-                            Button("Apply") {
-                                store.configureDocker(
-                                    for: vm,
-                                    cpuCount: resources.cpuCount,
-                                    memoryGiB: resources.memoryGiB,
-                                    diskGiB: resources.diskGiB,
-                                    amd64Enabled: resources.amd64Enabled
-                                )
-                            }
-                            .disabled(vmStatus != .stopped || busy)
+                            .disabled(!isEditing)
+                            Toggle(
+                                "linux/amd64",
+                                isOn: dockerBinding(\.amd64Enabled, fallback: resources.amd64Enabled)
+                            )
+                            .toggleStyle(.checkbox)
+                            .disabled(!isEditing)
                         }
                         .controlSize(.small)
                     }
@@ -233,13 +266,10 @@ struct DockerSectionView: View {
                 .padding(14)
             }
         }
-        .onChange(of: vm.metadata.dockerSidecar) { _, settings in
-            resources.synchronize(with: settings)
-        }
     }
 
     @ViewBuilder
-    private func dockerActions(status: DockerSidecarStatus, busy: Bool) -> some View {
+    private func dockerActions(status: DockerSidecarStatus, busy: Bool, isEditing: Bool) -> some View {
         HStack(spacing: 6) {
             if status.state == .disabled {
                 Button("Enable") { store.enableDocker(for: vm) }
@@ -256,7 +286,42 @@ struct DockerSectionView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(vmStatus != .stopped || busy || vm.metadata.setupCompletedAt == nil)
+        .disabled(vmStatus != .stopped || busy || isEditing || vm.metadata.setupCompletedAt == nil)
+    }
+
+    private func dockerBinding<Value>(
+        _ keyPath: WritableKeyPath<DockerResourceFormValues, Value>,
+        fallback: Value
+    ) -> Binding<Value> {
+        Binding(
+            get: { editedResources?.docker?[keyPath: keyPath] ?? fallback },
+            set: { newValue in
+                guard var values = editedResources, var docker = values.docker else { return }
+                docker[keyPath: keyPath] = newValue
+                values.docker = docker
+                editedResources = values
+            }
+        )
+    }
+}
+
+struct VMResourceFormValues: Equatable {
+    private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
+
+    var cpuCount: Int
+    var memoryGiB: Int
+    var docker: DockerResourceFormValues?
+
+    init(metadata: VMMetadata) {
+        cpuCount = metadata.cpuCount
+        memoryGiB = Self.roundedUpGiB(metadata.memorySizeBytes)
+        docker = metadata.dockerSidecar.map { DockerResourceFormValues(settings: $0) }
+    }
+
+    private static func roundedUpGiB(_ bytes: UInt64) -> Int {
+        let wholeGiB = bytes / Self.bytesPerGiB
+        let roundedGiB = wholeGiB + (bytes.isMultiple(of: Self.bytesPerGiB) ? 0 : 1)
+        return Int(clamping: roundedGiB)
     }
 }
 
@@ -270,21 +335,21 @@ struct DockerResourceFormValues: Equatable {
 
     init(settings: DockerSidecarSettings?) {
         cpuCount = settings?.cpuCount ?? DockerSidecarSettings.defaultCPUCount
-        memoryGiB = Int(
-            (settings?.memorySizeBytes
-                ?? UInt64(DockerSidecarSettings.defaultMemoryGiB) * Self.bytesPerGiB)
-                / Self.bytesPerGiB
+        memoryGiB = Self.roundedUpGiB(
+            settings?.memorySizeBytes
+                ?? UInt64(DockerSidecarSettings.defaultMemoryGiB) * Self.bytesPerGiB
         )
-        diskGiB = Int(
-            (settings?.dataDiskSizeBytes
-                ?? UInt64(DockerSidecarSettings.defaultDiskGiB) * Self.bytesPerGiB)
-                / Self.bytesPerGiB
+        diskGiB = Self.roundedUpGiB(
+            settings?.dataDiskSizeBytes
+                ?? UInt64(DockerSidecarSettings.defaultDiskGiB) * Self.bytesPerGiB
         )
         amd64Enabled = settings?.amd64Enabled ?? true
     }
 
-    mutating func synchronize(with settings: DockerSidecarSettings?) {
-        self = DockerResourceFormValues(settings: settings)
+    private static func roundedUpGiB(_ bytes: UInt64) -> Int {
+        let wholeGiB = bytes / Self.bytesPerGiB
+        let roundedGiB = wholeGiB + (bytes.isMultiple(of: Self.bytesPerGiB) ? 0 : 1)
+        return Int(clamping: roundedGiB)
     }
 }
 
@@ -390,13 +455,27 @@ struct SpecCardsView: View {
     @Environment(AppStore.self) private var store
     let vm: ManagedVM
     let status: VMStatus
+    @Binding var editedResources: VMResourceFormValues?
 
     var body: some View {
         let metadata = vm.metadata
         let gib: (UInt64) -> String = { "\($0 / (1024 * 1024 * 1024))" }
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
-            SpecCard(label: "CPU", value: "\(metadata.cpuCount)", unit: "cores")
-            SpecCard(label: "Memory", value: gib(metadata.memorySizeBytes), unit: "GiB")
+            SpecCard(
+                label: "CPU",
+                value: "\(metadata.cpuCount)",
+                unit: "cores",
+                editableValue: resourceBinding(\.cpuCount, fallback: metadata.cpuCount)
+            )
+            SpecCard(
+                label: "Memory",
+                value: gib(metadata.memorySizeBytes),
+                unit: "GiB",
+                editableValue: resourceBinding(
+                    \.memoryGiB,
+                    fallback: Int(metadata.memorySizeBytes / (1024 * 1024 * 1024))
+                )
+            )
             SpecCard(label: "Disk", value: gib(metadata.diskSizeBytes), unit: "GiB")
             SpecCard(
                 label: "Display",
@@ -408,6 +487,21 @@ struct SpecCardsView: View {
                 unit: "points"
             )
         }
+    }
+
+    private func resourceBinding(
+        _ keyPath: WritableKeyPath<VMResourceFormValues, Int>,
+        fallback: Int
+    ) -> Binding<Int>? {
+        guard editedResources != nil else { return nil }
+        return Binding(
+            get: { editedResources?[keyPath: keyPath] ?? fallback },
+            set: { newValue in
+                guard var values = editedResources else { return }
+                values[keyPath: keyPath] = newValue
+                editedResources = values
+            }
+        )
     }
 
     nonisolated static func displayResolutionText(
@@ -433,6 +527,7 @@ private struct SpecCard: View {
     let value: String
     var unit: String?
     var detailLines: [String] = []
+    var editableValue: Binding<Int>? = nil
 
     var body: some View {
         Card {
@@ -442,10 +537,20 @@ private struct SpecCard: View {
                     .tracking(0.4)
                     .foregroundStyle(.secondary)
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(value)
-                        .font(.system(size: 19, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.55)
+                    if let editableValue {
+                        TextField(label, value: editableValue, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.trailing)
+                            .monospacedDigit()
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 62)
+                            .accessibilityLabel("macOS \(label)")
+                    } else {
+                        Text(value)
+                            .font(.system(size: 19, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.55)
+                    }
                     if let unit {
                         Text(unit)
                             .font(.system(size: 11))

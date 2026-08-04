@@ -178,6 +178,88 @@ extension MacVMService {
         )
     }
 
+    public func configureVirtualMachineResources(
+        for vm: ManagedVM,
+        cpuCount: Int,
+        memorySizeBytes: UInt64,
+        dockerConfiguration: DockerSidecarResourceConfiguration? = nil
+    ) throws -> ManagedVM {
+        let bundle = VMBundle(url: vm.bundleURL)
+        let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "configure resources")
+        defer { withExtendedLifetime(operationLock) {} }
+        let currentVM = ManagedVM(
+            bundleURL: vm.bundleURL,
+            metadata: try bundle.recoverDockerSidecarReplacementIfNeeded()
+        )
+        try requireStopped(currentVM, operation: "configure resources")
+        try validateVirtualMachineResources(
+            cpuCount: cpuCount,
+            memorySizeBytes: memorySizeBytes,
+            metadata: currentVM.metadata
+        )
+
+        var updatedDockerSettings: DockerSidecarSettings?
+        var originalDockerDataDiskSize: UInt64?
+        if let dockerConfiguration {
+            guard var settings = currentVM.metadata.dockerSidecar else {
+                throw MacVMError.message("Docker is not enabled for '\(currentVM.metadata.name)'.")
+            }
+            try validateDockerResources(
+                dockerConfiguration,
+                ownerMemorySizeBytes: memorySizeBytes
+            )
+            _ = try bundle.dockerSidecarBundle.validateIntegrity()
+            if dockerConfiguration.dataDiskSizeBytes < settings.dataDiskSizeBytes {
+                throw MacVMError.message("Docker data disk shrinking requires `macvm docker reset --force`.")
+            }
+            originalDockerDataDiskSize = bundle.dockerSidecarBundle.logicalDataDiskSize()
+            try bundle.dockerSidecarBundle.growDataDisk(to: dockerConfiguration.dataDiskSizeBytes)
+            settings.cpuCount = dockerConfiguration.cpuCount
+            settings.memorySizeBytes = dockerConfiguration.memorySizeBytes
+            settings.dataDiskSizeBytes = dockerConfiguration.dataDiskSizeBytes
+            settings.amd64Enabled = dockerConfiguration.amd64Enabled
+            updatedDockerSettings = settings
+        } else if let settings = currentVM.metadata.dockerSidecar {
+            try validateDockerResources(
+                DockerSidecarResourceConfiguration(
+                    cpuCount: settings.cpuCount,
+                    memorySizeBytes: settings.memorySizeBytes,
+                    dataDiskSizeBytes: settings.dataDiskSizeBytes,
+                    amd64Enabled: settings.amd64Enabled
+                ),
+                ownerMemorySizeBytes: memorySizeBytes
+            )
+        }
+
+        do {
+            let metadata = try bundle.updateMetadata { metadata in
+                metadata.cpuCount = cpuCount
+                metadata.memorySizeBytes = memorySizeBytes
+                if let updatedDockerSettings {
+                    metadata.dockerSidecar = updatedDockerSettings
+                }
+            }
+            return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
+        } catch {
+            let persistenceError = error
+            if let originalDockerDataDiskSize,
+               let dockerConfiguration,
+               dockerConfiguration.dataDiskSizeBytes > originalDockerDataDiskSize {
+                do {
+                    try bundle.dockerSidecarBundle.restoreDataDiskSizeAfterFailedGrowth(
+                        to: originalDockerDataDiskSize
+                    )
+                } catch let rollbackError {
+                    throw MacVMError.message(
+                        "Couldn't save resource settings (\(persistenceError.localizedDescription)); "
+                            + "the Docker data disk also couldn't be restored (\(rollbackError.localizedDescription))."
+                    )
+                }
+            }
+            throw persistenceError
+        }
+    }
+
     public func configureDockerSidecar(
         for vm: ManagedVM,
         cpuCount: Int? = nil,
@@ -522,6 +604,31 @@ extension MacVMService {
         guard !hasLiveRuntime(for: vm),
               VMBundle(url: vm.bundleURL).liveDockerSidecarRuntimeDescriptor() == nil else {
             throw MacVMError.message("Stop '\(vm.metadata.name)' before attempting to \(operation).")
+        }
+    }
+
+    private func validateVirtualMachineResources(
+        cpuCount: Int,
+        memorySizeBytes: UInt64,
+        metadata: VMMetadata
+    ) throws {
+        let minCPU = max(
+            Int(VZVirtualMachineConfiguration.minimumAllowedCPUCount),
+            metadata.minimumCPUCount ?? 0
+        )
+        let maxCPU = Int(VZVirtualMachineConfiguration.maximumAllowedCPUCount)
+        guard minCPU <= maxCPU, (minCPU...maxCPU).contains(cpuCount) else {
+            throw MacVMError.message("macOS CPU count must be between \(minCPU) and \(maxCPU).")
+        }
+        let minMemory = max(
+            VZVirtualMachineConfiguration.minimumAllowedMemorySize,
+            metadata.minimumMemorySizeBytes ?? 0
+        )
+        let maxMemory = VZVirtualMachineConfiguration.maximumAllowedMemorySize
+        guard minMemory <= maxMemory, (minMemory...maxMemory).contains(memorySizeBytes) else {
+            throw MacVMError.message(
+                "macOS memory must be between \(VMText.gibLabel(for: minMemory)) and \(VMText.gibLabel(for: maxMemory))."
+            )
         }
     }
 

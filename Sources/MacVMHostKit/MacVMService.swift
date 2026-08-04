@@ -1510,6 +1510,14 @@ public final class MacVMService: Sendable {
             throw MacVMError.unsupportedHardwareModel
         }
         DebugLog.log("Restore image requirements: minCPU=\(requirements.minimumSupportedCPUCount) minMemoryBytes=\(requirements.minimumSupportedMemorySize) hardwareModelSupported=\(requirements.hardwareModel.isSupported)")
+        let minimumCPUCount = max(
+            Int(requirements.minimumSupportedCPUCount),
+            Int(VZVirtualMachineConfiguration.minimumAllowedCPUCount)
+        )
+        let minimumMemoryBytes = max(
+            requirements.minimumSupportedMemorySize,
+            VZVirtualMachineConfiguration.minimumAllowedMemorySize
+        )
 
         var metadata = VMMetadata(
             name: draft.name,
@@ -1519,13 +1527,15 @@ public final class MacVMService: Sendable {
             displayWidth: draft.displayWidth,
             displayHeight: draft.displayHeight,
             bootstrapShareEnabled: draft.createBootstrapShare,
+            minimumCPUCount: minimumCPUCount,
+            minimumMemorySizeBytes: minimumMemoryBytes,
             installedRestoreImageName: restoreImageURL.lastPathComponent,
             installedMacOSRelease: installedRelease,
             macAddress: VZMACAddress.randomLocallyAdministered().string
         )
 
         let adjustedCPUCount = max(
-            Int(requirements.minimumSupportedCPUCount),
+            minimumCPUCount,
             min(metadata.cpuCount, Int(VZVirtualMachineConfiguration.maximumAllowedCPUCount))
         )
         if adjustedCPUCount != metadata.cpuCount {
@@ -1533,10 +1543,6 @@ public final class MacVMService: Sendable {
             metadata.cpuCount = adjustedCPUCount
         }
 
-        let minimumMemoryBytes = max(
-            requirements.minimumSupportedMemorySize,
-            VZVirtualMachineConfiguration.minimumAllowedMemorySize
-        )
         let adjustedMemoryBytes = max(
             minimumMemoryBytes,
             min(metadata.memorySizeBytes, VZVirtualMachineConfiguration.maximumAllowedMemorySize)

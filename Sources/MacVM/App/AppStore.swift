@@ -836,32 +836,43 @@ final class AppStore {
         }
     }
 
-    func configureDocker(
-        for vm: ManagedVM,
-        cpuCount: Int,
-        memoryGiB: Int,
-        diskGiB: Int,
-        amd64Enabled: Bool
-    ) {
-        guard cpuCount > 0,
-              let memorySizeBytes = Self.byteCount(forGiB: memoryGiB),
-              let dataDiskSizeBytes = Self.byteCount(forGiB: diskGiB) else {
-            alertMessage = "Docker CPU, memory, and disk values must be positive and within the supported size."
-            return
+    @discardableResult
+    func configureResources(for vm: ManagedVM, values: VMResourceFormValues) -> Bool {
+        guard let memorySizeBytes = Self.byteCount(forGiB: values.memoryGiB) else {
+            alertMessage = "macOS memory must be positive and within the supported size."
+            return false
+        }
+
+        let dockerConfiguration: DockerSidecarResourceConfiguration?
+        if let docker = values.docker {
+            guard let dockerMemorySizeBytes = Self.byteCount(forGiB: docker.memoryGiB),
+                  let dockerDataDiskSizeBytes = Self.byteCount(forGiB: docker.diskGiB) else {
+                alertMessage = "Docker memory and disk values must be positive and within the supported size."
+                return false
+            }
+            dockerConfiguration = DockerSidecarResourceConfiguration(
+                cpuCount: docker.cpuCount,
+                memorySizeBytes: dockerMemorySizeBytes,
+                dataDiskSizeBytes: dockerDataDiskSizeBytes,
+                amd64Enabled: docker.amd64Enabled
+            )
+        } else {
+            dockerConfiguration = nil
         }
 
         do {
-            _ = try service.configureDockerSidecar(
+            _ = try service.configureVirtualMachineResources(
                 for: vm,
-                cpuCount: cpuCount,
+                cpuCount: values.cpuCount,
                 memorySizeBytes: memorySizeBytes,
-                dataDiskSizeBytes: dataDiskSizeBytes,
-                amd64Enabled: amd64Enabled
+                dockerConfiguration: dockerConfiguration
             )
-            lastCommand = "macvm docker configure \(vm.metadata.name) --cpu \(cpuCount) --memory-gi-b \(memoryGiB) --disk-gi-b \(diskGiB) \(amd64Enabled ? "--amd64" : "--no-amd64")"
             refresh()
+            return true
         } catch {
-            alertMessage = "Failed to configure Docker for \(vm.metadata.name): \(error.localizedDescription)"
+            alertMessage = "Failed to update resources for \(vm.metadata.name): \(error.localizedDescription)"
+            refresh()
+            return false
         }
     }
 
