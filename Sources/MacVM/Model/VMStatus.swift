@@ -7,11 +7,13 @@ import MacVMHostKit
 enum VMStatus: Equatable {
     case cloning
     case installing
+    case resizingDisk
     case settingUp
     case running
     case stopped
 
     static func derive(
+        resizingDisk: Bool = false,
         cloning: Bool,
         installing: Bool,
         settingUp: Bool,
@@ -21,6 +23,9 @@ enum VMStatus: Equatable {
         liveDisplay: VMDisplayRuntimeState?,
         liveSession: VNCSession?
     ) -> VMStatus {
+        if resizingDisk {
+            return .resizingDisk
+        }
         if cloning {
             return .cloning
         }
@@ -48,6 +53,7 @@ enum VMStatus: Equatable {
         switch self {
         case .cloning: "Cloning VM…"
         case .installing: "Installing macOS…"
+        case .resizingDisk: "Growing disk…"
         case .settingUp: "Setting up — driving Setup Assistant"
         case .running: "Running"
         case .stopped: "Stopped"
@@ -59,6 +65,7 @@ enum VMStatus: Equatable {
         switch self {
         case .cloning: "Cloning…"
         case .installing: "Installing…"
+        case .resizingDisk: "Growing disk…"
         case .settingUp: "Setting up…"
         case .running: "Running"
         case .stopped: "Stopped"
@@ -67,6 +74,6 @@ enum VMStatus: Equatable {
 
     /// Whether the status dot pulses (in-flight states).
     var pulses: Bool {
-        self == .cloning || self == .installing || self == .settingUp
+        self == .cloning || self == .installing || self == .resizingDisk || self == .settingUp
     }
 }

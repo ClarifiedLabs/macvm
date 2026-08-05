@@ -111,8 +111,7 @@ struct VMStorage {
         return try contents
             .filter { $0.pathExtension == Self.bundleExtension }
             .map { bundleURL in
-                let bundle = VMBundle(url: bundleURL)
-                return ManagedVM(bundleURL: bundleURL, metadata: try bundle.readMetadata())
+                try managedVMRecoveringDiskResize(bundleURL: bundleURL)
             }
             .sorted { $0.metadata.name.localizedCaseInsensitiveCompare($1.metadata.name) == .orderedAscending }
     }
@@ -123,8 +122,7 @@ struct VMStorage {
 
         if FileManager.default.fileExists(atPath: directURL.path) {
             let resolvedURL = directURL.resolvingSymlinksInPath().standardizedFileURL
-            let bundle = VMBundle(url: resolvedURL)
-            return ManagedVM(bundleURL: resolvedURL, metadata: try bundle.readMetadata())
+            return try managedVMRecoveringDiskResize(bundleURL: resolvedURL)
         }
 
         let candidates = try loadManagedVMs().filter { managedVM in
@@ -166,6 +164,21 @@ struct VMStorage {
         }
 
         return candidates[0]
+    }
+
+    /// A listing should complete a previously committed exchange when it can
+    /// acquire the lifecycle lock, but it must not block behind a live grower.
+    /// In that case the existing metadata is still a coherent view of the VM.
+    private func managedVMRecoveringDiskResize(bundleURL: URL) throws -> ManagedVM {
+        let bundle = VMBundle(url: bundleURL)
+        if let lifecycleLock = try bundle.tryAcquireDiskLifecycleLock(operation: "inspect the VM") {
+            defer { withExtendedLifetime(lifecycleLock) {} }
+            return ManagedVM(
+                bundleURL: bundleURL,
+                metadata: try bundle.recoverDiskResizeWhileHoldingLifecycleLock()
+            )
+        }
+        return ManagedVM(bundleURL: bundleURL, metadata: try bundle.readMetadata())
     }
 
     private func removalTargets(matching identifier: String) throws -> [VMRemovalTarget] {

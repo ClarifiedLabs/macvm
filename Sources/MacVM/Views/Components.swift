@@ -149,6 +149,7 @@ struct StatusDot: View {
         case .settingUp: Color(nsColor: .systemOrange)
         case .cloning: Color.accentColor
         case .installing: Color.accentColor
+        case .resizingDisk: Color.accentColor
         case .stopped: Theme.statusStopped
         }
     }

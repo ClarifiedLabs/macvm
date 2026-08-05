@@ -367,21 +367,29 @@ public final class MacVMService: Sendable {
 
     public func removeVM(_ vm: ManagedVM) throws {
         let bundle = VMBundle(url: vm.bundleURL)
+        // Disk first, Docker second: this matches every other whole-bundle
+        // operation and keeps a resize from swapping Disk.img during removal.
+        let diskLifecycleLock = try bundle.acquireDiskLifecycleLock(operation: "remove the VM")
+        defer { withExtendedLifetime(diskLifecycleLock) {} }
         let dockerOperationLock = try removalDockerOperationLock(bundle: bundle, metadata: vm.metadata)
         defer { withExtendedLifetime(dockerOperationLock) {} }
         try requireStoppedForRemoval(bundle: bundle, name: vm.metadata.name)
+        try bundle.discardDiskResizeWhileHoldingLifecycleLock()
         launchOnBoot.removeLaunchAgent(for: VMRemovalTarget(bundleURL: vm.bundleURL, metadata: vm.metadata))
         try bundle.removeFromDisk()
     }
 
     public func removeVM(_ target: VMRemovalTarget) throws {
         let bundle = VMBundle(url: target.bundleURL)
+        let diskLifecycleLock = try bundle.acquireDiskLifecycleLock(operation: "remove the VM")
+        defer { withExtendedLifetime(diskLifecycleLock) {} }
         let dockerOperationLock = try removalDockerOperationLock(bundle: bundle, metadata: target.metadata)
         defer { withExtendedLifetime(dockerOperationLock) {} }
         try requireStoppedForRemoval(
             bundle: bundle,
             name: target.metadata?.name ?? target.bundleURL.deletingPathExtension().lastPathComponent
         )
+        try bundle.discardDiskResizeWhileHoldingLifecycleLock()
         launchOnBoot.removeLaunchAgent(for: target)
         try bundle.removeFromDisk()
     }
@@ -452,16 +460,28 @@ public final class MacVMService: Sendable {
 
         try storage.ensureRootDirectories()
         let destinationURL = storage.bundleURL(for: name)
+        let destinationBundle = VMBundle(url: destinationURL)
+        let destinationDiskLock = try destinationBundle.acquireDiskLifecycleLock(operation: "create a cloned VM")
+        defer { withExtendedLifetime(destinationDiskLock) {} }
         guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
             throw MacVMError.bundleAlreadyExists(destinationURL)
         }
 
         let sourceBundle = VMBundle(url: source.bundleURL)
+        // Disk first, Docker second. Recover while the disk is exclusively held,
+        // then recheck stopped state below before copy-on-write cloning begins.
+        let sourceDiskLock = try sourceBundle.acquireDiskLifecycleLock(operation: "clone the VM")
+        defer { withExtendedLifetime(sourceDiskLock) {} }
+        let diskRecoveredMetadata = try sourceBundle.recoverDiskResizeWhileHoldingLifecycleLock()
         // Lock before inspecting Docker state so a first enable cannot be cloned
         // while only its hidden staging directory exists.
         let dockerOperationLock = try sourceBundle.acquireDockerSidecarOperationLock(operation: "clone the VM")
         defer { withExtendedLifetime(dockerOperationLock) {} }
-        let sourceMetadata = try sourceBundle.recoverDockerSidecarReplacementIfNeeded()
+        let recoveredDockerMetadata = try sourceBundle.recoverDockerSidecarReplacementIfNeeded()
+        guard recoveredDockerMetadata.id == diskRecoveredMetadata.id else {
+            throw MacVMError.message("The VM metadata changed while recovering its clone source.")
+        }
+        let sourceMetadata = recoveredDockerMetadata
         let metadataHasDocker = sourceMetadata.dockerSidecar != nil
         let bundleHasDocker = sourceBundle.dockerSidecarBundle.isPresent
         guard metadataHasDocker == bundleHasDocker else {
@@ -1484,10 +1504,12 @@ public final class MacVMService: Sendable {
         try storage.ensureRootDirectories()
 
         let bundleURL = storage.bundleURL(for: draft.name)
+        let bundle = VMBundle(url: bundleURL)
+        let diskLifecycleLock = try bundle.acquireDiskLifecycleLock(operation: "create the VM")
+        defer { withExtendedLifetime(diskLifecycleLock) {} }
         guard !FileManager.default.fileExists(atPath: bundleURL.path) else {
             throw MacVMError.bundleAlreadyExists(bundleURL)
         }
-        let bundle = VMBundle(url: bundleURL)
 
         progress?(.status("Resolving restore image..."))
         let restoreImageURL = try await resolveRestoreImage(for: draft, progress: progress)

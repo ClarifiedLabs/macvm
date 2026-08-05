@@ -26,6 +26,12 @@ struct CloneProgress {
     var command: String
 }
 
+struct DiskResizeProgress {
+    var targetGiB: Int
+    var status: String
+    var command: String
+}
+
 /// Live setup progress for a VM this app is driving through Setup Assistant.
 struct SetupProgress {
     /// True while automation is still driving the guest. A retained failure or
@@ -84,7 +90,7 @@ private struct AppRuntimeError: LocalizedError {
 @Observable
 final class AppStore {
     private static let maxSetupLogMessages = 10
-    private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
+    private nonisolated static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     let service: MacVMService
     private let latestRestoreImageProvider: LatestRestoreImageProvider
@@ -109,6 +115,8 @@ final class AppStore {
     var cloneName = ""
     var cloneCPUCountOverride: Int?
     var cloneMemoryGiBOverride: Int?
+    var diskResizeSheetVMName: String?
+    var diskResizeTargetGiB = 0
     private(set) var lastCommand = CLIEquivalent.list()
     private(set) var copiedKey: String?
     var alertMessage: String?
@@ -117,6 +125,7 @@ final class AppStore {
 
     private(set) var installs: [String: InstallProgress] = [:]
     private(set) var clones: [String: CloneProgress] = [:]
+    private(set) var diskResizes: [String: DiskResizeProgress] = [:]
     private(set) var setups: [String: SetupProgress] = [:]
     private(set) var liveProcesses: [String: VMProcessRuntimeState] = [:]
     private(set) var liveSessions: [String: VNCSession] = [:]
@@ -222,6 +231,7 @@ final class AppStore {
 
     func status(forName name: String) -> VMStatus {
         VMStatus.derive(
+            resizingDisk: diskResizes[name] != nil,
             cloning: clones[name] != nil,
             installing: installs[name] != nil,
             settingUp: setups[name] != nil,
@@ -1306,10 +1316,125 @@ final class AppStore {
         }
     }
 
-    private static func byteCount(forGiB value: Int) -> UInt64? {
+    // MARK: - Grow disk
+
+    nonisolated static func suggestedDiskResizeTargetGiB(currentSizeBytes: UInt64) -> Int? {
+        let currentGiB = currentSizeBytes / bytesPerGiB
+        let nextGiB = currentGiB.addingReportingOverflow(1)
+        guard !nextGiB.overflow,
+              let targetGiB = Int(exactly: nextGiB.partialValue),
+              byteCount(forGiB: targetGiB) != nil else {
+            return nil
+        }
+        return targetGiB
+    }
+
+    nonisolated static func diskResizeTargetBytes(
+        targetGiB: Int,
+        currentSizeBytes: UInt64
+    ) -> UInt64? {
+        guard let targetSizeBytes = byteCount(forGiB: targetGiB),
+              targetSizeBytes > currentSizeBytes else {
+            return nil
+        }
+        return targetSizeBytes
+    }
+
+    func requestDiskResize(_ vm: ManagedVM) {
+        let name = vm.metadata.name
+        guard status(forName: name) == .stopped,
+              dockerOperationMessages[name] == nil else {
+            alertMessage = "Stop \(name) and wait for its current operation to finish before growing its disk."
+            return
+        }
+        guard let targetGiB = Self.suggestedDiskResizeTargetGiB(
+            currentSizeBytes: vm.metadata.diskSizeBytes
+        ) else {
+            alertMessage = "The disk for \(name) cannot be represented by a larger whole-GiB capacity."
+            return
+        }
+        diskResizeTargetGiB = targetGiB
+        diskResizeSheetVMName = name
+    }
+
+    var diskResizeCommandPreview: String {
+        CLIEquivalent.diskResize(
+            diskResizeSheetVMName ?? "<vm>",
+            sizeGiB: diskResizeTargetGiB
+        )
+    }
+
+    var canSubmitDiskResize: Bool {
+        guard let name = diskResizeSheetVMName,
+              let vm = vm(named: name) else {
+            return false
+        }
+        return Self.diskResizeTargetBytes(
+            targetGiB: diskResizeTargetGiB,
+            currentSizeBytes: vm.metadata.diskSizeBytes
+        ) != nil
+    }
+
+    func submitDiskResize() {
+        guard let name = diskResizeSheetVMName,
+              let vm = vm(named: name),
+              status(forName: name) == .stopped else {
+            diskResizeSheetVMName = nil
+            alertMessage = "The VM must remain stopped before its disk can be grown."
+            return
+        }
+        guard let targetSizeBytes = Self.diskResizeTargetBytes(
+            targetGiB: diskResizeTargetGiB,
+            currentSizeBytes: vm.metadata.diskSizeBytes
+        ) else {
+            alertMessage = "Enter a whole-GiB capacity larger than the current disk capacity."
+            return
+        }
+
+        let targetGiB = diskResizeTargetGiB
+        let command = CLIEquivalent.diskResize(name, sizeGiB: targetGiB)
+        diskResizeSheetVMName = nil
+        diskResizes[name] = DiskResizeProgress(
+            targetGiB: targetGiB,
+            status: "Validating disk…",
+            command: command
+        )
+        lastCommand = command
+
+        let service = self.service
+        let progress: VMOperationHandler = { [weak self] event in
+            guard case .status(let phase) = event else { return }
+            DispatchQueue.main.async {
+                self?.diskResizes[name]?.status = phase
+            }
+        }
+        Task { @MainActor in
+            do {
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try await service.resizeDisk(
+                        vm,
+                        toSizeBytes: targetSizeBytes,
+                        progress: progress
+                    )
+                }.value
+                diskResizes[name] = nil
+                refresh()
+                lastCommand = command
+            } catch {
+                diskResizes[name] = nil
+                refresh()
+                alertMessage = "Failed to grow the disk for \(name): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private nonisolated static func byteCount(forGiB value: Int) -> UInt64? {
         guard value > 0, let unsignedValue = UInt64(exactly: value) else { return nil }
         let result = unsignedValue.multipliedReportingOverflow(by: bytesPerGiB)
-        return result.overflow ? nil : result.partialValue
+        guard !result.overflow, result.partialValue <= UInt64(Int64.max) else {
+            return nil
+        }
+        return result.partialValue
     }
 
     // MARK: - Create

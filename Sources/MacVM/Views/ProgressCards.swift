@@ -490,6 +490,31 @@ struct InstallingCard: View {
     }
 }
 
+struct DiskResizeProgressCard: View {
+    let progress: DiskResizeProgress
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Growing Disk to \(progress.targetGiB) GiB")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(progress.status)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                ProgressView()
+                    .progressViewStyle(.linear)
+                Text("Keep MacVM open. The VM will remain stopped until this operation finishes.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                CLICommandStrip(command: progress.command)
+                    .padding(.top, 2)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 struct CloningCard: View {
     let clone: CloneProgress
 

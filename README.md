@@ -123,6 +123,26 @@ copy-on-write clones, while other filesystems use ordinary copies. Leave enough
 free space for the VMs to diverge, and expect Apple Account services to require
 reauthentication in a clone.
 
+## Grow a VM Disk
+
+To increase the capacity of an installed VM, cleanly shut it down and wait for
+it to stop, then provide the new total capacity in whole GiB:
+
+```bash
+macvm shutdown dev-01 --wait
+macvm disk resize dev-01 --size-gi-b 200
+```
+
+The target must be larger than the current disk; shrinking is not supported and
+a rejected equal-or-smaller request does not change files. MacVM stages and
+verifies a candidate (copy-on-write where the host filesystem supports it),
+moves RecoveryOS to the new end of the disk, grows the main APFS container, and
+only then commits the new image and
+metadata. The additional logical capacity remains sparse until the guest writes
+to it. The **Grow Disk…** button in the app exposes the same stopped-VM flow.
+Do not attach or modify `Disk.img` with disk utilities while the operation is
+running.
+
 ## Docker Inside the macOS Guest
 
 Add Docker support while creating a VM:

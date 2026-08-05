@@ -100,6 +100,9 @@ public final class VMViewerController:
     private var lastPublishedDisplaySize: DisplayRuntimeSize?
     private var lastPersistedWindowFrame: NSRect?
     private var dockerProvisioningTask: Task<Void, Never>?
+    /// Held from before the boot disk is attached until all VZ storage resources
+    /// have been torn down. Disk lock order is always disk first, Docker second.
+    private var diskLifecycleLock: VMDiskLifecycleLock?
     private var dockerStartupOperationLock: DockerSidecarOperationLock?
     private var finishError: Error?
     private var finishing = false
@@ -188,10 +191,25 @@ public final class VMViewerController:
 
     /// Create the `VZVirtualMachine` and boot it into the existing window.
     public func start(startInRecovery: Bool = false) throws {
-        MemoryPressureCoordinator.activateSystemMonitoring()
-        self.startInRecovery = startInRecovery
-        startupFailureMessage = nil
-        try createAndStartVirtualMachine()
+        guard diskLifecycleLock == nil else {
+            throw MacVMError.message("The boot disk for '\(vmName)' is already held by this viewer.")
+        }
+        let lifecycleLock = try bundle.acquireDiskLifecycleLock(operation: "start the VM")
+        diskLifecycleLock = lifecycleLock
+        do {
+            let recoveredMetadata = try bundle.recoverDiskResizeWhileHoldingLifecycleLock()
+            guard recoveredMetadata.id == managedVM.metadata.id else {
+                throw MacVMError.message("The VM metadata changed while recovering its disk resize.")
+            }
+            managedVM = ManagedVM(bundleURL: managedVM.bundleURL, metadata: recoveredMetadata)
+            MemoryPressureCoordinator.activateSystemMonitoring()
+            self.startInRecovery = startInRecovery
+            startupFailureMessage = nil
+            try createAndStartVirtualMachine()
+        } catch {
+            diskLifecycleLock = nil
+            throw error
+        }
     }
 
     /// Wait until Virtualization.framework reports that the VM is running, so
@@ -428,6 +446,7 @@ public final class VMViewerController:
         dockerSidecarRuntime = nil
         dockerStartupOperationLock = nil
         dockerPairNetwork = nil
+        diskLifecycleLock = nil
         OperationalLog.lifecycle("teardown-complete name=\(vmName) role=viewer")
         onStop?()
     }

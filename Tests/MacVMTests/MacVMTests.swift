@@ -167,10 +167,24 @@ func cliEquivalentRendersFixedActionCommands() {
     #expect(CLIEquivalent.vnc("dev") == "macvm vnc dev")
     #expect(CLIEquivalent.vnc("dev", open: true) == "macvm vnc dev --open")
     #expect(CLIEquivalent.rm("dev") == "macvm rm dev")
+    #expect(CLIEquivalent.diskResize("dev", sizeGiB: 200) == "macvm disk resize dev --size-gi-b 200")
     #expect(CLIEquivalent.clone("dev", name: "dev-copy") == "macvm clone dev --name dev-copy")
     #expect(CLIEquivalent.autostartStatus("dev") == "macvm autostart status dev")
     #expect(CLIEquivalent.autostartEnable("dev") == "macvm autostart enable dev")
     #expect(CLIEquivalent.autostartDisable("dev") == "macvm autostart disable dev")
+}
+
+@Test
+func diskResizeSizingUsesStrictGrowthAndHostFileLimits() {
+    let giB: UInt64 = 1024 * 1024 * 1024
+    let currentSize = 80 * giB
+
+    #expect(AppStore.suggestedDiskResizeTargetGiB(currentSizeBytes: currentSize) == 81)
+    #expect(AppStore.diskResizeTargetBytes(targetGiB: 80, currentSizeBytes: currentSize) == nil)
+    #expect(AppStore.diskResizeTargetBytes(targetGiB: 81, currentSizeBytes: currentSize) == 81 * giB)
+
+    let oversizedGiB = Int(UInt64(Int64.max) / giB + 1)
+    #expect(AppStore.diskResizeTargetBytes(targetGiB: oversizedGiB, currentSizeBytes: 0) == nil)
 }
 
 @Test

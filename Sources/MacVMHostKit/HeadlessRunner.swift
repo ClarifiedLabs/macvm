@@ -19,7 +19,7 @@ import Virtualization
 /// ```
 @MainActor
 public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
-    private let managedVM: ManagedVM
+    private var managedVM: ManagedVM
     private let bundle: VMBundle
     private let requestedPort: UInt
     private let forceSharedDirectory: Bool
@@ -29,6 +29,9 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     private let processLogPath: String?
 
     private var virtualMachine: VZVirtualMachine?
+    /// Held from before configuration creates a storage attachment until final
+    /// VZ/runtime teardown. Disk lock order is always disk first, Docker second.
+    private var diskLifecycleLock: VMDiskLifecycleLock?
     private let clipboardRuntime: ClipboardRuntime
     private var vncServer: MacVMVNCServer?
     private var stopContinuation: CheckedContinuation<Void, Error>?
@@ -84,6 +87,24 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
     /// VM. Returns once the VM has begun running.
     @discardableResult
     public func start() throws -> VNCSession {
+        guard diskLifecycleLock == nil else {
+            throw MacVMError.message("The boot disk for '\(managedVM.metadata.name)' is already held by this runner.")
+        }
+        diskLifecycleLock = try bundle.acquireDiskLifecycleLock(operation: "start the VM")
+        do {
+            return try startWhileHoldingDiskLifecycleLock()
+        } catch {
+            diskLifecycleLock = nil
+            throw error
+        }
+    }
+
+    private func startWhileHoldingDiskLifecycleLock() throws -> VNCSession {
+        let recoveredMetadata = try bundle.recoverDiskResizeWhileHoldingLifecycleLock()
+        guard recoveredMetadata.id == managedVM.metadata.id else {
+            throw MacVMError.message("The VM metadata changed while recovering its disk resize.")
+        }
+        managedVM = ManagedVM(bundleURL: managedVM.bundleURL, metadata: recoveredMetadata)
         MemoryPressureCoordinator.activateSystemMonitoring()
         let configuration = try bundle.makeConfiguration(metadata: managedVM.metadata, forceSharedDirectory: forceSharedDirectory)
         OperationalLog.lifecycle(
@@ -260,6 +281,7 @@ public final class HeadlessRunner: NSObject, VZVirtualMachineDelegate {
         bundle.clearSetupRuntimeState()
         bundle.clearVNCSession()
         bundle.clearDisplayRuntimeState()
+        diskLifecycleLock = nil
         OperationalLog.lifecycle(
             "teardown-complete name=\(managedVM.metadata.name) role=headless "
                 + "error=\(error?.localizedDescription ?? "none")"

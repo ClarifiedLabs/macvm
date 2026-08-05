@@ -206,6 +206,7 @@ struct MacVMCommand: AsyncParsableCommand {
             Remove.self,
             Create.self,
             Clone.self,
+            Disk.self,
             Run.self,
             Attach.self,
             Stop.self,
@@ -593,6 +594,62 @@ extension MacVMCommand {
 
             print("Cloned \(sourceVM.metadata.name) to \(clonedVM.metadata.name) at \(clonedVM.bundleURL.path)")
             print("Run it with: macvm run \(clonedVM.metadata.name)")
+        }
+    }
+
+    struct Disk: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Manage a VM's disk.",
+            subcommands: [Resize.self]
+        )
+
+        struct Resize: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                abstract: "Grow a stopped VM's disk."
+            )
+
+            @OptionGroup var storage: StorageOptions
+
+            @Argument(help: "VM name, bundle basename, or full bundle path.")
+            var identifier: String
+
+            @Option(name: .long, help: "New disk size in GiB.")
+            var sizeGiB: Int
+
+            func run() async throws {
+                let bytes = try Self.bytes(fromGiB: sizeGiB)
+                let service = MacVMService(rootDirectory: storage.resolvedURL)
+                let virtualMachine = try service.resolveVM(identifier: identifier)
+                let oldSizeBytes = virtualMachine.metadata.diskSizeBytes
+                let reporter = CLIReporter()
+
+                _ = try await service.resizeDisk(
+                    virtualMachine,
+                    toSizeBytes: bytes,
+                    progress: reporter.handle
+                )
+
+                let resizedVM = try service.resolveVM(identifier: virtualMachine.bundleURL.path)
+                print(
+                    "Resized disk for \(resizedVM.metadata.name) from "
+                        + "\(VMText.gibLabel(for: oldSizeBytes)) to \(resizedVM.metadata.diskDescription)."
+                )
+            }
+
+            private static func bytes(fromGiB sizeGiB: Int) throws -> UInt64 {
+                guard sizeGiB > 0 else {
+                    throw ValidationError("--size-gi-b must be greater than zero.")
+                }
+
+                let (bytes, overflow) = UInt64(sizeGiB).multipliedReportingOverflow(
+                    by: 1024 * 1024 * 1024
+                )
+                guard !overflow, bytes <= UInt64(Int64.max) else {
+                    throw ValidationError("Disk size \(sizeGiB) GiB exceeds the supported file size.")
+                }
+
+                return bytes
+            }
         }
     }
 

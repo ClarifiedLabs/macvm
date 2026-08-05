@@ -49,6 +49,10 @@ enum CLIEquivalent {
         "macvm rm \(name)"
     }
 
+    static func diskResize(_ name: String, sizeGiB: Int) -> String {
+        "macvm disk resize \(name) --size-gi-b \(sizeGiB)"
+    }
+
     static func clone(
         _ source: String,
         name: String,

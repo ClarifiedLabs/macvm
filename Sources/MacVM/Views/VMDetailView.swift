@@ -25,6 +25,9 @@ struct VMDetailView: View {
                 if status == .cloning, let clone = store.clones[name] {
                     CloningCard(clone: clone)
                 }
+                if status == .resizingDisk, let resize = store.diskResizes[name] {
+                    DiskResizeProgressCard(progress: resize)
+                }
 
                 if let vm {
                     SpecCardsView(vm: vm, status: status, editedResources: $editedResources)
@@ -94,6 +97,14 @@ struct VMDetailView: View {
                 .buttonBorderShape(.capsule)
                 .disabled(status != .stopped || dockerBusy)
             } else {
+                Button("Grow Disk…") {
+                    store.requestDiskResize(vm)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .disabled(status != .stopped || dockerBusy)
+                .help(status == .stopped ? "Increase the virtual disk capacity" : "Stop the VM to grow its disk")
+
                 Button("Edit") {
                     editedResources = VMResourceFormValues(metadata: vm.metadata)
                 }
@@ -186,7 +197,7 @@ struct VMDetailView: View {
                 .buttonBorderShape(.capsule)
                 .tint(Theme.stopRed)
 
-            case .cloning, .installing:
+            case .cloning, .installing, .resizingDisk:
                 EmptyView()
             }
         }
@@ -705,7 +716,7 @@ struct AccessSectionView: View {
                 showsInventory: hasIP && sshReady,
                 showsVNC: hasVNC
             )
-        case .stopped, .cloning, .installing:
+        case .stopped, .cloning, .installing, .resizingDisk:
             Capabilities(showsIP: false, showsSSH: false, showsInventory: false, showsVNC: false)
         }
     }
@@ -725,6 +736,8 @@ struct AccessSectionView: View {
             "Start the VM to obtain an IP. For iCloud sign-in, run with the viewer window."
         case .cloning:
             "Access remains unavailable while the stopped VM is being cloned."
+        case .resizingDisk:
+            "Access remains unavailable while the stopped VM disk is being grown."
         case .settingUp:
             "Waiting for live access information…"
         case .installing:
