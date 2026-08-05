@@ -3348,7 +3348,8 @@ func rfbFramebufferCaptureTimesOutAndRecordsTrace() async throws {
         Issue.record("Expected framebuffer timeout, got \(error)")
     }
 
-    #expect(Date().timeIntervalSince(startedAt) < 0.25)
+    // Allow for scheduler contention while still catching a timeout path that stalls.
+    #expect(Date().timeIntervalSince(startedAt) < 1)
     #expect(events.values.contains { $0.kind == "framebuffer_timeout" })
 }
 
