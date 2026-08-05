@@ -70,6 +70,8 @@ func resourceEditFormLoadsGuestAndDockerValuesAndCanBeDiscarded() throws {
     let original = VMResourceFormValues(metadata: metadata)
     #expect(original.cpuCount == 8)
     #expect(original.memoryGiB == 16)
+    #expect(original.diskGiB == 80)
+    #expect(original.originalDiskSizeBytes == metadata.diskSizeBytes)
     let docker = try #require(original.docker)
     #expect(docker.cpuCount == 6)
     #expect(docker.memoryGiB == 12)
@@ -79,6 +81,7 @@ func resourceEditFormLoadsGuestAndDockerValuesAndCanBeDiscarded() throws {
     var edited = original
     edited.cpuCount = 10
     edited.memoryGiB = 20
+    edited.diskGiB = 120
     edited.docker?.diskGiB = 128
     #expect(edited != original)
 
@@ -90,7 +93,7 @@ func resourceEditFormLoadsGuestAndDockerValuesAndCanBeDiscarded() throws {
 func resourceEditFormRoundsPartialGiBValuesUp() throws {
     let oneGiB: UInt64 = 1024 * 1024 * 1024
     let guestMemory = 4 * oneGiB + 1
-    let guestDisk = 80 * oneGiB
+    let guestDisk = 80 * oneGiB + 1
     let dockerMemory = 2 * oneGiB + 1
     let dockerDisk = 20 * oneGiB + 1
     let dockerSettings = DockerSidecarSettings(
@@ -114,6 +117,19 @@ func resourceEditFormRoundsPartialGiBValuesUp() throws {
     let values = VMResourceFormValues(metadata: metadata)
     let docker = try #require(values.docker)
     #expect(values.memoryGiB == 5)
+    #expect(values.diskGiB == 81)
+    #expect(values.originalDiskSizeBytes == guestDisk)
+    #expect(values.diskEditDecision == .unchanged)
     #expect(docker.memoryGiB == 3)
     #expect(docker.diskGiB == 21)
+
+    var diskInput = values
+    diskInput.setDiskInput("")
+    #expect(diskInput.diskEditDecision == .invalidTarget)
+    diskInput.setDiskInput("not a number")
+    #expect(diskInput.diskEditDecision == .invalidTarget)
+    diskInput.setDiskInput(String(UInt64.max))
+    #expect(diskInput.diskEditDecision == .invalidTarget)
+    diskInput.setDiskInput("82")
+    #expect(diskInput.diskEditDecision == .growth(targetGiB: 82, targetSizeBytes: 82 * oneGiB))
 }

@@ -191,6 +191,11 @@ extension MacVMService {
             bundleURL: vm.bundleURL,
             metadata: try bundle.recoverDockerSidecarReplacementIfNeeded()
         )
+        guard currentVM.metadata.id == vm.metadata.id else {
+            throw MacVMError.message(
+                "The VM at \(vm.bundleURL.path) no longer matches the resource configuration request. Refresh and try again."
+            )
+        }
         try requireStopped(currentVM, operation: "configure resources")
         try validateVirtualMachineResources(
             cpuCount: cpuCount,

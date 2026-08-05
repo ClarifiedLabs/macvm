@@ -139,9 +139,10 @@ verifies a candidate (copy-on-write where the host filesystem supports it),
 moves RecoveryOS to the new end of the disk, grows the main APFS container, and
 only then commits the new image and
 metadata. The additional logical capacity remains sparse until the guest writes
-to it. The **Grow Disk…** button in the app exposes the same stopped-VM flow.
-Do not attach or modify `Disk.img` with disk utilities while the operation is
-running.
+to it. In the app, stop the VM, choose **Edit**, and increase the **Disk**
+capacity; saving a larger value asks for confirmation before the same stopped-VM
+growth operation starts. Do not attach or modify `Disk.img` with disk utilities
+while the operation is running.
 
 ## Docker Inside the macOS Guest
 

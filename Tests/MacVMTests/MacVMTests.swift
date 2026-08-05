@@ -175,16 +175,35 @@ func cliEquivalentRendersFixedActionCommands() {
 }
 
 @Test
-func diskResizeSizingUsesStrictGrowthAndHostFileLimits() {
+func diskEditPlanningEnforcesGrowOnlyWholeGiBTargets() {
     let giB: UInt64 = 1024 * 1024 * 1024
     let currentSize = 80 * giB
 
-    #expect(AppStore.suggestedDiskResizeTargetGiB(currentSizeBytes: currentSize) == 81)
-    #expect(AppStore.diskResizeTargetBytes(targetGiB: 80, currentSizeBytes: currentSize) == nil)
-    #expect(AppStore.diskResizeTargetBytes(targetGiB: 81, currentSizeBytes: currentSize) == 81 * giB)
+    #expect(DiskEditDecision.plan(targetGiB: 80, originalDiskSizeBytes: currentSize) == .unchanged)
+    #expect(
+        DiskEditDecision.plan(targetGiB: 81, originalDiskSizeBytes: currentSize)
+            == .growth(targetGiB: 81, targetSizeBytes: 81 * giB)
+    )
+    #expect(DiskEditDecision.plan(targetGiB: 79, originalDiskSizeBytes: currentSize) == .invalidDecrease)
+    #expect(DiskEditDecision.plan(targetGiB: 0, originalDiskSizeBytes: currentSize) == .invalidTarget)
+    #expect(DiskEditDecision.plan(targetGiB: -1, originalDiskSizeBytes: currentSize) == .invalidTarget)
 
     let oversizedGiB = Int(UInt64(Int64.max) / giB + 1)
-    #expect(AppStore.diskResizeTargetBytes(targetGiB: oversizedGiB, currentSizeBytes: 0) == nil)
+    #expect(DiskEditDecision.plan(targetGiB: oversizedGiB, originalDiskSizeBytes: currentSize) == .invalidTarget)
+    #expect(DiskEditDecision.plan(targetGiB: .max, originalDiskSizeBytes: currentSize) == .invalidTarget)
+    #expect(
+        DiskEditDecision.plan(
+            targetGiB: oversizedGiB,
+            originalDiskSizeBytes: UInt64(Int64.max)
+        ) == .unchanged
+    )
+
+    let partialGiBDisk = 80 * giB + 1
+    #expect(DiskEditDecision.plan(targetGiB: 81, originalDiskSizeBytes: partialGiBDisk) == .unchanged)
+    #expect(
+        DiskEditDecision.plan(targetGiB: 82, originalDiskSizeBytes: partialGiBDisk)
+            == .growth(targetGiB: 82, targetSizeBytes: 82 * giB)
+    )
 }
 
 @Test

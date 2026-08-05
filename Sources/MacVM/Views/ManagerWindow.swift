@@ -44,14 +44,6 @@ struct ManagerWindow: View {
         }
         .sheet(
             isPresented: Binding(
-                get: { store.diskResizeSheetVMName != nil },
-                set: { if !$0 { store.diskResizeSheetVMName = nil } }
-            )
-        ) {
-            DiskResizeSheet()
-        }
-        .sheet(
-            isPresented: Binding(
                 get: { store.provisionSheetVMName != nil },
                 set: { if !$0 { store.provisionSheetVMName = nil } }
             )

@@ -115,8 +115,6 @@ final class AppStore {
     var cloneName = ""
     var cloneCPUCountOverride: Int?
     var cloneMemoryGiBOverride: Int?
-    var diskResizeSheetVMName: String?
-    var diskResizeTargetGiB = 0
     private(set) var lastCommand = CLIEquivalent.list()
     private(set) var copiedKey: String?
     var alertMessage: String?
@@ -777,6 +775,11 @@ final class AppStore {
         requestedVNCPort: UInt
     ) throws -> VMViewerController {
         let key = runtimeKey(for: vm)
+        guard diskResizes[vm.metadata.name] == nil else {
+            throw AppRuntimeError(message:
+                "The disk for '\(vm.metadata.name)' is being resized. Wait for the operation to finish before starting the VM."
+            )
+        }
         guard runtimes[key] == nil, !service.hasLiveRuntime(for: vm) else {
             throw AppRuntimeError(message:
                 "'\(vm.metadata.name)' is already running. Stop it first with: macvm stop \(vm.metadata.name)"
@@ -872,16 +875,51 @@ final class AppStore {
     }
 
     @discardableResult
-    func configureResources(for vm: ManagedVM, values: VMResourceFormValues) -> Bool {
-        guard let memorySizeBytes = Self.byteCount(forGiB: values.memoryGiB) else {
+    func saveResources(
+        for vm: ManagedVM,
+        values: VMResourceFormValues,
+        confirmedDiskGrowth: Bool
+    ) -> Bool {
+        let currentVM: ManagedVM
+        do {
+            currentVM = try service.resolveVM(identifier: vm.bundleURL.path)
+        } catch {
+            alertMessage = "The VM changed or is unavailable. Refresh and review its resource values before saving."
+            refresh()
+            return false
+        }
+
+        guard vm.metadata.id == values.originalVMID,
+              currentVM.metadata.id == values.originalVMID else {
+            alertMessage = "The VM changed while editing. Refresh and review its resource values before saving."
+            refresh()
+            return false
+        }
+        guard currentVM.metadata.diskSizeBytes == values.originalDiskSizeBytes else {
+            alertMessage = "The disk capacity changed while editing. Refresh and review its resource values before saving."
+            refresh()
+            return false
+        }
+
+        let name = currentVM.metadata.name
+        guard status(forName: name) == .stopped,
+              !service.hasLiveRuntime(for: currentVM),
+              dockerOperationMessages[name] == nil,
+              diskResizes[name] == nil else {
+            alertMessage = "Stop \(name) and wait for its current operation to finish before saving resources."
+            refresh()
+            return false
+        }
+
+        guard let memorySizeBytes = VMResourceFormValues.byteCount(forGiB: values.memoryGiB) else {
             alertMessage = "macOS memory must be positive and within the supported size."
             return false
         }
 
         let dockerConfiguration: DockerSidecarResourceConfiguration?
         if let docker = values.docker {
-            guard let dockerMemorySizeBytes = Self.byteCount(forGiB: docker.memoryGiB),
-                  let dockerDataDiskSizeBytes = Self.byteCount(forGiB: docker.diskGiB) else {
+            guard let dockerMemorySizeBytes = VMResourceFormValues.byteCount(forGiB: docker.memoryGiB),
+                  let dockerDataDiskSizeBytes = VMResourceFormValues.byteCount(forGiB: docker.diskGiB) else {
                 alertMessage = "Docker memory and disk values must be positive and within the supported size."
                 return false
             }
@@ -895,17 +933,80 @@ final class AppStore {
             dockerConfiguration = nil
         }
 
+        let diskDecision = values.diskEditDecision
+        let diskGrowth: (targetGiB: Int, targetSizeBytes: UInt64)?
+        switch diskDecision {
+        case .unchanged:
+            diskGrowth = nil
+        case let .growth(targetGiB, targetSizeBytes):
+            guard confirmedDiskGrowth else {
+                alertMessage = "Confirm disk growth before saving \(name)’s resource changes."
+                return false
+            }
+            diskGrowth = (targetGiB, targetSizeBytes)
+        case .invalidDecrease, .invalidTarget:
+            alertMessage = diskDecision.validationMessage(
+                currentSizeBytes: currentVM.metadata.diskSizeBytes
+            ) ?? "The disk capacity is not supported."
+            return false
+        }
+
+        let command = diskGrowth.map { CLIEquivalent.diskResize(name, sizeGiB: $0.targetGiB) }
+        if let diskGrowth, let command {
+            diskResizes[name] = DiskResizeProgress(
+                targetGiB: diskGrowth.targetGiB,
+                status: "Saving resource settings…",
+                command: command
+            )
+        }
+
         do {
-            _ = try service.configureVirtualMachineResources(
-                for: vm,
+            let savedVM = try service.configureVirtualMachineResources(
+                for: currentVM,
                 cpuCount: values.cpuCount,
                 memorySizeBytes: memorySizeBytes,
                 dockerConfiguration: dockerConfiguration
             )
-            refresh()
+
+            guard let diskGrowth, let command else {
+                refresh()
+                return true
+            }
+
+            diskResizes[name]?.status = "Validating disk…"
+            lastCommand = command
+            let service = self.service
+            let progress: VMOperationHandler = { [weak self] event in
+                guard case .status(let phase) = event else { return }
+                DispatchQueue.main.async {
+                    self?.diskResizes[name]?.status = phase
+                }
+            }
+            Task { @MainActor [weak self] in
+                do {
+                    _ = try await Task.detached(priority: .userInitiated) {
+                        try await service.resizeDisk(
+                            savedVM,
+                            toSizeBytes: diskGrowth.targetSizeBytes,
+                            progress: progress
+                        )
+                    }.value
+                    guard let self else { return }
+                    self.diskResizes[name] = nil
+                    self.refresh()
+                } catch {
+                    guard let self else { return }
+                    self.diskResizes[name] = nil
+                    self.refresh()
+                    self.alertMessage = "Failed to grow the disk for \(name): \(error.localizedDescription) CPU, memory, and Docker resource settings may already have been saved. Review the current disk capacity before retrying."
+                }
+            }
             return true
         } catch {
-            alertMessage = "Failed to update resources for \(vm.metadata.name): \(error.localizedDescription)"
+            if diskGrowth != nil {
+                diskResizes[name] = nil
+            }
+            alertMessage = "Failed to update resources for \(name): \(error.localizedDescription)"
             refresh()
             return false
         }
@@ -1312,118 +1413,6 @@ final class AppStore {
                 clones[sourceName] = nil
                 refresh()
                 alertMessage = "Failed to clone \(sourceName): \(error.localizedDescription)"
-            }
-        }
-    }
-
-    // MARK: - Grow disk
-
-    nonisolated static func suggestedDiskResizeTargetGiB(currentSizeBytes: UInt64) -> Int? {
-        let currentGiB = currentSizeBytes / bytesPerGiB
-        let nextGiB = currentGiB.addingReportingOverflow(1)
-        guard !nextGiB.overflow,
-              let targetGiB = Int(exactly: nextGiB.partialValue),
-              byteCount(forGiB: targetGiB) != nil else {
-            return nil
-        }
-        return targetGiB
-    }
-
-    nonisolated static func diskResizeTargetBytes(
-        targetGiB: Int,
-        currentSizeBytes: UInt64
-    ) -> UInt64? {
-        guard let targetSizeBytes = byteCount(forGiB: targetGiB),
-              targetSizeBytes > currentSizeBytes else {
-            return nil
-        }
-        return targetSizeBytes
-    }
-
-    func requestDiskResize(_ vm: ManagedVM) {
-        let name = vm.metadata.name
-        guard status(forName: name) == .stopped,
-              dockerOperationMessages[name] == nil else {
-            alertMessage = "Stop \(name) and wait for its current operation to finish before growing its disk."
-            return
-        }
-        guard let targetGiB = Self.suggestedDiskResizeTargetGiB(
-            currentSizeBytes: vm.metadata.diskSizeBytes
-        ) else {
-            alertMessage = "The disk for \(name) cannot be represented by a larger whole-GiB capacity."
-            return
-        }
-        diskResizeTargetGiB = targetGiB
-        diskResizeSheetVMName = name
-    }
-
-    var diskResizeCommandPreview: String {
-        CLIEquivalent.diskResize(
-            diskResizeSheetVMName ?? "<vm>",
-            sizeGiB: diskResizeTargetGiB
-        )
-    }
-
-    var canSubmitDiskResize: Bool {
-        guard let name = diskResizeSheetVMName,
-              let vm = vm(named: name) else {
-            return false
-        }
-        return Self.diskResizeTargetBytes(
-            targetGiB: diskResizeTargetGiB,
-            currentSizeBytes: vm.metadata.diskSizeBytes
-        ) != nil
-    }
-
-    func submitDiskResize() {
-        guard let name = diskResizeSheetVMName,
-              let vm = vm(named: name),
-              status(forName: name) == .stopped else {
-            diskResizeSheetVMName = nil
-            alertMessage = "The VM must remain stopped before its disk can be grown."
-            return
-        }
-        guard let targetSizeBytes = Self.diskResizeTargetBytes(
-            targetGiB: diskResizeTargetGiB,
-            currentSizeBytes: vm.metadata.diskSizeBytes
-        ) else {
-            alertMessage = "Enter a whole-GiB capacity larger than the current disk capacity."
-            return
-        }
-
-        let targetGiB = diskResizeTargetGiB
-        let command = CLIEquivalent.diskResize(name, sizeGiB: targetGiB)
-        diskResizeSheetVMName = nil
-        diskResizes[name] = DiskResizeProgress(
-            targetGiB: targetGiB,
-            status: "Validating disk…",
-            command: command
-        )
-        lastCommand = command
-
-        let service = self.service
-        let progress: VMOperationHandler = { [weak self] event in
-            guard case .status(let phase) = event else { return }
-            DispatchQueue.main.async {
-                self?.diskResizes[name]?.status = phase
-            }
-        }
-        Task { @MainActor in
-            do {
-                _ = try await Task.detached(priority: .userInitiated) {
-                    try await service.resizeDisk(
-                        vm,
-                        toSizeBytes: targetSizeBytes,
-                        progress: progress
-                    )
-                }.value
-                diskResizes[name] = nil
-                refresh()
-                lastCommand = command
-            } catch {
-                diskResizes[name] = nil
-                refresh()
-                alertMessage = "Failed to grow the disk for \(name): \(error.localizedDescription)"
             }
         }
     }

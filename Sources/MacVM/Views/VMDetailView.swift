@@ -1,3 +1,4 @@
+import Foundation
 import MacVMHostKit
 import SwiftUI
 
@@ -5,6 +6,7 @@ struct VMDetailView: View {
     @Environment(AppStore.self) private var store
     let name: String
     @State private var editedResources: VMResourceFormValues?
+    @State private var pendingDiskGrowth: PendingDiskGrowth?
 
     var body: some View {
         let vm = store.vm(named: name)
@@ -44,6 +46,36 @@ struct VMDetailView: View {
         }
         .onChange(of: name) {
             editedResources = nil
+            pendingDiskGrowth = nil
+        }
+        .onChange(of: status) {
+            if status != .stopped {
+                pendingDiskGrowth = nil
+            }
+        }
+        .confirmationDialog(
+            pendingDiskGrowth.map { "Grow Disk for “\($0.name)”?" } ?? "Grow Disk",
+            isPresented: Binding(
+                get: { pendingDiskGrowth != nil },
+                set: { if !$0 { pendingDiskGrowth = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let pendingDiskGrowth {
+                Button("Grow Disk and Save") {
+                    submitConfirmedDiskGrowth(pendingDiskGrowth, for: vm)
+                }
+                Button("Cancel", role: .cancel) {
+                    self.pendingDiskGrowth = nil
+                }
+            }
+        } message: {
+            if let pendingDiskGrowth,
+               case let .growth(targetGiB, _) = pendingDiskGrowth.decision {
+                Text(
+                    "Increase \(pendingDiskGrowth.name)’s disk from \(VMText.gibLabel(for: pendingDiskGrowth.values.originalDiskSizeBytes)) to \(targetGiB) GiB? The VM must remain stopped. Disk growth cannot be reversed or canceled after it starts."
+                )
+            }
         }
     }
 
@@ -79,32 +111,23 @@ struct VMDetailView: View {
     @ViewBuilder
     private func resourceEditingButtons(vm: ManagedVM, status: VMStatus) -> some View {
         let dockerBusy = store.dockerOperationMessages[vm.metadata.name] != nil
+        let diskDecision = editedResources?.diskEditDecision
         HStack(spacing: 6) {
-            if editedResources != nil {
+            if let editedResources {
                 Button("Cancel", role: .cancel) {
-                    editedResources = nil
+                    self.editedResources = nil
+                    pendingDiskGrowth = nil
                 }
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
 
                 Button("Save") {
-                    guard let editedResources else { return }
-                    if store.configureResources(for: vm, values: editedResources) {
-                        self.editedResources = nil
-                    }
+                    saveResources(editedResources, for: vm)
                 }
                 .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.capsule)
-                .disabled(status != .stopped || dockerBusy)
+                .disabled(status != .stopped || dockerBusy || diskDecision?.isValidForSaving == false)
             } else {
-                Button("Grow Disk…") {
-                    store.requestDiskResize(vm)
-                }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .disabled(status != .stopped || dockerBusy)
-                .help(status == .stopped ? "Increase the virtual disk capacity" : "Stop the VM to grow its disk")
-
                 Button("Edit") {
                     editedResources = VMResourceFormValues(metadata: vm.metadata)
                 }
@@ -115,6 +138,42 @@ struct VMDetailView: View {
             }
         }
         .controlSize(.regular)
+    }
+
+    private func saveResources(_ values: VMResourceFormValues, for vm: ManagedVM) {
+        switch values.diskEditDecision {
+        case .unchanged:
+            if store.saveResources(for: vm, values: values, confirmedDiskGrowth: false) {
+                editedResources = nil
+            }
+        case .growth:
+            pendingDiskGrowth = PendingDiskGrowth(
+                name: vm.metadata.name,
+                values: values,
+                decision: values.diskEditDecision
+            )
+        case .invalidDecrease, .invalidTarget:
+            store.alertMessage = values.diskEditDecision.validationMessage(
+                currentSizeBytes: vm.metadata.diskSizeBytes
+            )
+        }
+    }
+
+    private func submitConfirmedDiskGrowth(_ pending: PendingDiskGrowth, for vm: ManagedVM?) {
+        defer { pendingDiskGrowth = nil }
+        guard let vm else {
+            store.alertMessage = "The VM changed while editing. Refresh and review its resource values before saving."
+            return
+        }
+        if store.saveResources(for: vm, values: pending.values, confirmedDiskGrowth: true) {
+            editedResources = nil
+        }
+    }
+
+    private struct PendingDiskGrowth {
+        let name: String
+        let values: VMResourceFormValues
+        let decision: DiskEditDecision
     }
 
     @ViewBuilder
@@ -326,23 +385,113 @@ struct DockerSectionView: View {
     }
 }
 
+enum DiskEditDecision: Equatable {
+    case unchanged
+    case growth(targetGiB: Int, targetSizeBytes: UInt64)
+    case invalidDecrease
+    case invalidTarget
+
+    static func plan(targetGiB: Int, originalDiskSizeBytes: UInt64) -> Self {
+        let initialGiB = VMResourceFormValues.roundedUpGiB(originalDiskSizeBytes)
+        if targetGiB > 0, targetGiB == initialGiB {
+            // A pre-existing non-whole-GiB disk displays rounded up. Keeping that
+            // initial presentation unchanged must not turn a resource edit into a grow.
+            // Check this before validating target bytes so an untouched legacy disk
+            // near the host file-size limit remains a no-op.
+            return .unchanged
+        }
+        guard let targetSizeBytes = VMResourceFormValues.byteCount(forGiB: targetGiB) else {
+            return .invalidTarget
+        }
+        if targetGiB < initialGiB {
+            return .invalidDecrease
+        }
+        return .growth(targetGiB: targetGiB, targetSizeBytes: targetSizeBytes)
+    }
+
+    var isValidForSaving: Bool {
+        switch self {
+        case .unchanged, .growth:
+            true
+        case .invalidDecrease, .invalidTarget:
+            false
+        }
+    }
+
+    func validationMessage(currentSizeBytes: UInt64) -> String? {
+        switch self {
+        case .invalidDecrease:
+            return "Disk capacity can only be increased (current: \(VMText.gibLabel(for: currentSizeBytes)))."
+        case .invalidTarget:
+            return "Disk capacity must be a positive whole-GiB value within the supported host file limit."
+        case .unchanged, .growth:
+            return nil
+        }
+    }
+}
+
 struct VMResourceFormValues: Equatable {
-    private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
+    static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     var cpuCount: Int
     var memoryGiB: Int
+    var diskGiB: Int
+    private var invalidDiskInput: String?
+    let originalVMID: UUID
+    let originalDiskSizeBytes: UInt64
     var docker: DockerResourceFormValues?
 
     init(metadata: VMMetadata) {
         cpuCount = metadata.cpuCount
         memoryGiB = Self.roundedUpGiB(metadata.memorySizeBytes)
+        diskGiB = Self.roundedUpGiB(metadata.diskSizeBytes)
+        invalidDiskInput = nil
+        originalVMID = metadata.id
+        originalDiskSizeBytes = metadata.diskSizeBytes
         docker = metadata.dockerSidecar.map { DockerResourceFormValues(settings: $0) }
     }
 
-    private static func roundedUpGiB(_ bytes: UInt64) -> Int {
-        let wholeGiB = bytes / Self.bytesPerGiB
-        let roundedGiB = wholeGiB + (bytes.isMultiple(of: Self.bytesPerGiB) ? 0 : 1)
-        return Int(clamping: roundedGiB)
+    var initialDiskGiB: Int {
+        Self.roundedUpGiB(originalDiskSizeBytes)
+    }
+
+    var diskInputText: String {
+        invalidDiskInput ?? String(diskGiB)
+    }
+
+    var diskEditDecision: DiskEditDecision {
+        guard invalidDiskInput == nil else { return .invalidTarget }
+        return DiskEditDecision.plan(
+            targetGiB: diskGiB,
+            originalDiskSizeBytes: originalDiskSizeBytes
+        )
+    }
+
+    mutating func setDiskInput(_ input: String) {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let parsedGiB = Int(trimmed) else {
+            invalidDiskInput = input
+            return
+        }
+        diskGiB = parsedGiB
+        invalidDiskInput = nil
+    }
+
+    static func byteCount(forGiB value: Int) -> UInt64? {
+        guard value > 0, let unsignedValue = UInt64(exactly: value) else { return nil }
+        let result = unsignedValue.multipliedReportingOverflow(by: bytesPerGiB)
+        guard !result.overflow, result.partialValue <= UInt64(Int64.max) else {
+            return nil
+        }
+        return result.partialValue
+    }
+
+    static func roundedUpGiB(_ bytes: UInt64) -> Int {
+        let wholeGiB = bytes / bytesPerGiB
+        let rounded = wholeGiB.addingReportingOverflow(
+            bytes.isMultiple(of: bytesPerGiB) ? 0 : 1
+        )
+        return rounded.overflow ? Int.max : Int(clamping: rounded.partialValue)
     }
 }
 
@@ -481,6 +630,8 @@ struct SpecCardsView: View {
     var body: some View {
         let metadata = vm.metadata
         let gib: (UInt64) -> String = { "\($0 / (1024 * 1024 * 1024))" }
+        let diskCapacity = VMText.gibLabel(for: metadata.diskSizeBytes)
+        let diskDecision = editedResources?.diskEditDecision
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
             SpecCard(
                 label: "CPU",
@@ -497,7 +648,31 @@ struct SpecCardsView: View {
                     fallback: Int(metadata.memorySizeBytes / (1024 * 1024 * 1024))
                 )
             )
-            SpecCard(label: "Disk", value: gib(metadata.diskSizeBytes), unit: "GiB")
+            SpecCard(
+                label: "Disk",
+                value: gib(metadata.diskSizeBytes),
+                unit: "GiB",
+                detailLines: editedResources == nil ? [] : ["Increase only · current \(diskCapacity)"],
+                editableValue: resourceBinding(
+                    \.diskGiB,
+                    fallback: Int(metadata.diskSizeBytes / (1024 * 1024 * 1024))
+                ),
+                editableText: diskInputBinding(
+                    fallback: Int(metadata.diskSizeBytes / (1024 * 1024 * 1024))
+                ),
+                validationMessage: diskDecision?.validationMessage(
+                    currentSizeBytes: metadata.diskSizeBytes
+                ),
+                editableAccessibilityHint: editedResources.map {
+                    "Increase only. Current capacity is \(diskCapacity). The minimum whole-GiB value is \($0.initialDiskGiB) GiB."
+                },
+                editableAccessibilityValue: editedResources.map { values in
+                    if case .invalidTarget = values.diskEditDecision {
+                        return "Invalid capacity; current minimum \(values.initialDiskGiB) GiB"
+                    }
+                    return "\(values.diskInputText) GiB; current minimum \(values.initialDiskGiB) GiB"
+                }
+            )
             SpecCard(
                 label: "Display",
                 value: Self.displayResolutionText(
@@ -520,6 +695,18 @@ struct SpecCardsView: View {
             set: { newValue in
                 guard var values = editedResources else { return }
                 values[keyPath: keyPath] = newValue
+                editedResources = values
+            }
+        )
+    }
+
+    private func diskInputBinding(fallback: Int) -> Binding<String>? {
+        guard editedResources != nil else { return nil }
+        return Binding(
+            get: { editedResources?.diskInputText ?? String(fallback) },
+            set: { input in
+                guard var values = editedResources else { return }
+                values.setDiskInput(input)
                 editedResources = values
             }
         )
@@ -549,6 +736,10 @@ private struct SpecCard: View {
     var unit: String?
     var detailLines: [String] = []
     var editableValue: Binding<Int>? = nil
+    var editableText: Binding<String>? = nil
+    var validationMessage: String? = nil
+    var editableAccessibilityHint: String? = nil
+    var editableAccessibilityValue: String? = nil
 
     var body: some View {
         Card {
@@ -558,7 +749,19 @@ private struct SpecCard: View {
                     .tracking(0.4)
                     .foregroundStyle(.secondary)
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    if let editableValue {
+                    if let editableText {
+                        TextField(label, text: editableText)
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.trailing)
+                            .monospacedDigit()
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 62)
+                            .accessibilityLabel("macOS \(label)")
+                            .accessibilityValue(
+                                editableAccessibilityValue ?? "\(editableText.wrappedValue) \(unit ?? "")"
+                            )
+                            .accessibilityHint(editableAccessibilityHint ?? "")
+                    } else if let editableValue {
                         TextField(label, value: editableValue, format: .number)
                             .textFieldStyle(.roundedBorder)
                             .multilineTextAlignment(.trailing)
@@ -566,6 +769,10 @@ private struct SpecCard: View {
                             .font(.system(size: 15, weight: .semibold))
                             .frame(width: 62)
                             .accessibilityLabel("macOS \(label)")
+                            .accessibilityValue(
+                                editableAccessibilityValue ?? "\(editableValue.wrappedValue) \(unit ?? "")"
+                            )
+                            .accessibilityHint(editableAccessibilityHint ?? "")
                     } else {
                         Text(value)
                             .font(.system(size: 19, weight: .semibold))
@@ -583,6 +790,12 @@ private struct SpecCard: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+                if let validationMessage {
+                    Text(validationMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(EdgeInsets(top: 13, leading: 16, bottom: 13, trailing: 16))
