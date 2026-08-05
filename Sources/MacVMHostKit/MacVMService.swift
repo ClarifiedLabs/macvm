@@ -142,13 +142,30 @@ public final class MacVMService: Sendable {
     let storage: VMStorage
     private let launchOnBoot: VMLaunchOnBootController
     let dockerImageAutoRefreshOverride: Bool?
+    let hostPhysicalMemoryBytes: UInt64
     private let installCancellation = InstallCancellationRegistry.shared
 
-    public init(
+    public convenience init(
         rootDirectory: URL? = nil,
         launchAgentsDirectory: URL? = nil,
         executableURL: URL? = nil,
         dockerImageAutoRefreshEnabled: Bool? = nil
+    ) {
+        self.init(
+            rootDirectory: rootDirectory,
+            launchAgentsDirectory: launchAgentsDirectory,
+            executableURL: executableURL,
+            dockerImageAutoRefreshEnabled: dockerImageAutoRefreshEnabled,
+            hostPhysicalMemoryBytes: ProcessInfo.processInfo.physicalMemory
+        )
+    }
+
+    init(
+        rootDirectory: URL? = nil,
+        launchAgentsDirectory: URL? = nil,
+        executableURL: URL? = nil,
+        dockerImageAutoRefreshEnabled: Bool? = nil,
+        hostPhysicalMemoryBytes: UInt64
     ) {
         self.storage = VMStorage(rootDirectory: rootDirectory)
         self.launchOnBoot = VMLaunchOnBootController(
@@ -156,6 +173,7 @@ public final class MacVMService: Sendable {
             executableURL: executableURL
         )
         self.dockerImageAutoRefreshOverride = dockerImageAutoRefreshEnabled
+        self.hostPhysicalMemoryBytes = hostPhysicalMemoryBytes
     }
 
     public var rootDirectory: URL {

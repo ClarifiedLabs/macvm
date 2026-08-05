@@ -359,7 +359,11 @@ func virtualMachineResourceConfigurationPersistsGuestAndDockerValuesTogether() t
         genericMachineIdentifierDigest: DockerSidecarBundle.sha256Hex(identifier.dataRepresentation)
     ))
 
-    let updated = try MacVMService(rootDirectory: root).configureVirtualMachineResources(
+    let service = MacVMService(
+        rootDirectory: root,
+        hostPhysicalMemoryBytes: 10 * oneGiB
+    )
+    let updated = try service.configureVirtualMachineResources(
         for: ManagedVM(bundleURL: bundleURL, metadata: metadata),
         cpuCount: 4,
         memorySizeBytes: 6 * oneGiB,

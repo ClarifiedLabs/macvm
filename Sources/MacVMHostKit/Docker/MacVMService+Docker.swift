@@ -665,7 +665,7 @@ extension MacVMService {
             throw MacVMError.message("Docker data disk size must be at least 1 GiB.")
         }
         let combinedMemory = ownerMemorySizeBytes.addingReportingOverflow(configuration.memorySizeBytes)
-        guard !combinedMemory.overflow, combinedMemory.partialValue <= ProcessInfo.processInfo.physicalMemory else {
+        guard !combinedMemory.overflow, combinedMemory.partialValue <= hostPhysicalMemoryBytes else {
             throw MacVMError.message("The macOS VM and Docker sidecar request more memory than this host has available.")
         }
     }
