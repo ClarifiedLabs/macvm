@@ -82,8 +82,15 @@ struct VMDetailView: View {
     private func header(vm: ManagedVM?, status: VMStatus) -> some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(name)
-                    .font(.system(size: 22, weight: .semibold))
+                if editedResources != nil {
+                    TextField("VM name", text: resourceNameBinding(fallback: name))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 22, weight: .semibold))
+                        .frame(width: 280)
+                } else {
+                    Text(name)
+                        .font(.system(size: 22, weight: .semibold))
+                }
                 HStack(spacing: 6) {
                     StatusDot(status: status)
                     Text(headerStatus(status: status))
@@ -126,7 +133,12 @@ struct VMDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.capsule)
-                .disabled(status != .stopped || dockerBusy || diskDecision?.isValidForSaving == false)
+                .disabled(
+                    status != .stopped
+                        || dockerBusy
+                        || diskDecision?.isValidForSaving == false
+                        || !editedResources.hasValidName
+                )
             } else {
                 Button("Edit") {
                     editedResources = VMResourceFormValues(metadata: vm.metadata)
@@ -134,10 +146,21 @@ struct VMDetailView: View {
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
                 .disabled(status != .stopped || dockerBusy)
-                .help(status == .stopped ? "Edit macOS and Docker resources" : "Stop the VM to edit resources")
+                .help(status == .stopped ? "Edit the VM name and resources" : "Stop the VM to edit its name and resources")
             }
         }
         .controlSize(.regular)
+    }
+
+    private func resourceNameBinding(fallback: String) -> Binding<String> {
+        Binding(
+            get: { editedResources?.name ?? fallback },
+            set: { newValue in
+                guard var values = editedResources else { return }
+                values.name = newValue
+                editedResources = values
+            }
+        )
     }
 
     private func saveResources(_ values: VMResourceFormValues, for vm: ManagedVM) {
@@ -148,7 +171,7 @@ struct VMDetailView: View {
             }
         case .growth:
             pendingDiskGrowth = PendingDiskGrowth(
-                name: vm.metadata.name,
+                name: values.normalizedName,
                 values: values,
                 decision: values.diskEditDecision
             )
@@ -433,6 +456,7 @@ enum DiskEditDecision: Equatable {
 struct VMResourceFormValues: Equatable {
     static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
+    var name: String
     var cpuCount: Int
     var memoryGiB: Int
     var diskGiB: Int
@@ -442,6 +466,7 @@ struct VMResourceFormValues: Equatable {
     var docker: DockerResourceFormValues?
 
     init(metadata: VMMetadata) {
+        name = metadata.name
         cpuCount = metadata.cpuCount
         memoryGiB = Self.roundedUpGiB(metadata.memorySizeBytes)
         diskGiB = Self.roundedUpGiB(metadata.diskSizeBytes)
@@ -449,6 +474,14 @@ struct VMResourceFormValues: Equatable {
         originalVMID = metadata.id
         originalDiskSizeBytes = metadata.diskSizeBytes
         docker = metadata.dockerSidecar.map { DockerResourceFormValues(settings: $0) }
+    }
+
+    var normalizedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var hasValidName: Bool {
+        !normalizedName.isEmpty
     }
 
     var initialDiskGiB: Int {

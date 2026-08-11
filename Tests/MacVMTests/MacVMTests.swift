@@ -1061,6 +1061,72 @@ func managerKeepsLiveRuntimeAheadOfInactiveManagerSetupMarker() throws {
     #expect(store.status(forName: "dev-01") == .running)
 }
 
+@Test
+func resourceFormValuesValidateName() {
+    let metadata = VMMetadata(
+        name: "dev",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    var values = VMResourceFormValues(metadata: metadata)
+    #expect(values.name == "dev")
+    #expect(values.hasValidName)
+
+    values.name = "   "
+    #expect(!values.hasValidName)
+
+    values.name = "  renamed  "
+    #expect(values.hasValidName)
+    #expect(values.normalizedName == "renamed")
+}
+
+@Test
+@MainActor
+func managerRenameUpdatesSelectionAndMetadata() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let bundleURL = rootURL
+        .appendingPathComponent("dev", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let metadata = VMMetadata(
+        name: "dev",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeMetadata(metadata)
+
+    let store = AppStore(service: MacVMService(rootDirectory: rootURL))
+    let vm = try #require(store.vm(named: "dev"))
+    store.selection = .vm("dev")
+
+    var values = VMResourceFormValues(metadata: metadata)
+    values.name = "Renamed VM"
+    #expect(store.saveResources(for: vm, values: values, confirmedDiskGrowth: false))
+    #expect(store.alertMessage == nil)
+
+    let renamed = try #require(store.vm(named: "Renamed VM"))
+    #expect(renamed.metadata.id == metadata.id)
+    #expect(renamed.bundleURL == rootURL
+        .appendingPathComponent("Renamed-VM", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension))
+    #expect(store.vm(named: "dev") == nil)
+    #expect(store.selection == .vm("Renamed VM"))
+    #expect(!FileManager.default.fileExists(atPath: bundleURL.path))
+    #expect(store.lastCommand == "macvm show Renamed VM")
+}
+
 // MARK: - RestoreImageCatalog
 
 private struct StubRestoreImageDownloader: RestoreImageDownloading {

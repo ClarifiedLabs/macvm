@@ -880,7 +880,7 @@ final class AppStore {
         values: VMResourceFormValues,
         confirmedDiskGrowth: Bool
     ) -> Bool {
-        let currentVM: ManagedVM
+        var currentVM: ManagedVM
         do {
             currentVM = try service.resolveVM(identifier: vm.bundleURL.path)
         } catch {
@@ -901,12 +901,12 @@ final class AppStore {
             return false
         }
 
-        let name = currentVM.metadata.name
-        guard status(forName: name) == .stopped,
+        let originalName = currentVM.metadata.name
+        guard status(forName: originalName) == .stopped,
               !service.hasLiveRuntime(for: currentVM),
-              dockerOperationMessages[name] == nil,
-              diskResizes[name] == nil else {
-            alertMessage = "Stop \(name) and wait for its current operation to finish before saving resources."
+              dockerOperationMessages[originalName] == nil,
+              diskResizes[originalName] == nil else {
+            alertMessage = "Stop \(originalName) and wait for its current operation to finish before saving."
             refresh()
             return false
         }
@@ -940,7 +940,7 @@ final class AppStore {
             diskGrowth = nil
         case let .growth(targetGiB, targetSizeBytes):
             guard confirmedDiskGrowth else {
-                alertMessage = "Confirm disk growth before saving \(name)’s resource changes."
+                alertMessage = "Confirm disk growth before saving \(originalName)’s resource changes."
                 return false
             }
             diskGrowth = (targetGiB, targetSizeBytes)
@@ -951,16 +951,37 @@ final class AppStore {
             return false
         }
 
-        let command = diskGrowth.map { CLIEquivalent.diskResize(name, sizeGiB: $0.targetGiB) }
-        if let diskGrowth, let command {
-            diskResizes[name] = DiskResizeProgress(
-                targetGiB: diskGrowth.targetGiB,
-                status: "Saving resource settings…",
-                command: command
-            )
+        let desiredName = values.normalizedName
+        guard !desiredName.isEmpty else {
+            alertMessage = "VM name must not be empty."
+            return false
         }
 
+        var operationName = originalName
+        var diskOperationStarted = false
         do {
+            if desiredName != originalName {
+                currentVM = try service.renameVM(currentVM, to: desiredName)
+                operationName = currentVM.metadata.name
+                if selection == .vm(originalName) {
+                    selection = .vm(operationName)
+                }
+                refresh()
+                updateCommandForSelection()
+            }
+
+            let command = diskGrowth.map {
+                CLIEquivalent.diskResize(operationName, sizeGiB: $0.targetGiB)
+            }
+            if let diskGrowth, let command {
+                diskResizes[operationName] = DiskResizeProgress(
+                    targetGiB: diskGrowth.targetGiB,
+                    status: "Saving resource settings…",
+                    command: command
+                )
+                diskOperationStarted = true
+            }
+
             let savedVM = try service.configureVirtualMachineResources(
                 for: currentVM,
                 cpuCount: values.cpuCount,
@@ -973,13 +994,14 @@ final class AppStore {
                 return true
             }
 
-            diskResizes[name]?.status = "Validating disk…"
+            diskResizes[operationName]?.status = "Validating disk…"
             lastCommand = command
+            let progressOperationName = operationName
             let service = self.service
             let progress: VMOperationHandler = { [weak self] event in
                 guard case .status(let phase) = event else { return }
                 DispatchQueue.main.async {
-                    self?.diskResizes[name]?.status = phase
+                    self?.diskResizes[progressOperationName]?.status = phase
                 }
             }
             Task { @MainActor [weak self] in
@@ -992,21 +1014,21 @@ final class AppStore {
                         )
                     }.value
                     guard let self else { return }
-                    self.diskResizes[name] = nil
+                    self.diskResizes[progressOperationName] = nil
                     self.refresh()
                 } catch {
                     guard let self else { return }
-                    self.diskResizes[name] = nil
+                    self.diskResizes[progressOperationName] = nil
                     self.refresh()
-                    self.alertMessage = "Failed to grow the disk for \(name): \(error.localizedDescription) CPU, memory, and Docker resource settings may already have been saved. Review the current disk capacity before retrying."
+                    self.alertMessage = "Failed to grow the disk for \(progressOperationName): \(error.localizedDescription) CPU, memory, and Docker resource settings may already have been saved. Review the current disk capacity before retrying."
                 }
             }
             return true
         } catch {
-            if diskGrowth != nil {
-                diskResizes[name] = nil
+            if diskOperationStarted {
+                diskResizes[operationName] = nil
             }
-            alertMessage = "Failed to update resources for \(name): \(error.localizedDescription)"
+            alertMessage = "Failed to save \(operationName): \(error.localizedDescription)"
             refresh()
             return false
         }

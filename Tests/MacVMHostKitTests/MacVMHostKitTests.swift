@@ -996,6 +996,137 @@ func recommendedCPUCountRespectsVirtualizationBounds() {
     )
 }
 
+private func makeRenamableVMBundle(
+    rootURL: URL,
+    name: String
+) throws -> (bundleURL: URL, metadata: VMMetadata) {
+    let bundleURL = rootURL
+        .appendingPathComponent(name, isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+    let metadata = VMMetadata(
+        name: name,
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    try VMBundle(url: bundleURL).writeMetadata(metadata)
+    return (bundleURL, metadata)
+}
+
+@Test
+func renameVMMovesBundleUpdatesLaunchOnBootAndPreservesIdentity() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let launchAgentsURL = rootURL.appendingPathComponent("LaunchAgents", isDirectory: true)
+    let executableURL = rootURL.appendingPathComponent("bin/macvm", isDirectory: false)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let (bundleURL, metadata) = try makeRenamableVMBundle(rootURL: rootURL, name: "dev-01")
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+    let service = MacVMService(
+        rootDirectory: rootURL,
+        launchAgentsDirectory: launchAgentsURL,
+        executableURL: executableURL
+    )
+    try service.setLaunchOnBoot(true, for: vm)
+
+    let renamed = try service.renameVM(vm, to: "  dev renamed ")
+
+    let expectedURL = rootURL
+        .appendingPathComponent("dev-renamed", isDirectory: true)
+        .appendingPathExtension(VMStorage.bundleExtension)
+    #expect(renamed.bundleURL.path == expectedURL.path)
+    #expect(renamed.metadata.id == metadata.id)
+    #expect(renamed.metadata.name == "dev renamed")
+    #expect(!FileManager.default.fileExists(atPath: bundleURL.path))
+    #expect(try VMBundle(url: expectedURL).readMetadata() == renamed.metadata)
+
+    let launchStatus = service.launchOnBootStatus(for: renamed)
+    #expect(launchStatus.enabled == true)
+    let plist = try readPropertyListDictionary(at: launchStatus.plistURL)
+    #expect(plist["ProgramArguments"] as? [String] == [
+        executableURL.path,
+        "run",
+        expectedURL.standardizedFileURL.path,
+        "--headless",
+    ])
+    #expect(service.launchOnBootStatus(for: vm).enabled == false)
+}
+
+@Test
+func renameVMRejectsEmptyAndDuplicateNamesWithoutMovingBundle() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let (bundleURL, metadata) = try makeRenamableVMBundle(rootURL: rootURL, name: "dev-01")
+    _ = try makeRenamableVMBundle(rootURL: rootURL, name: "other")
+    let service = MacVMService(rootDirectory: rootURL)
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+
+    #expect(throws: MacVMError.self) {
+        try service.renameVM(vm, to: "   ")
+    }
+    do {
+        _ = try service.renameVM(vm, to: "OTHER")
+        Issue.record("Expected duplicate rename to be rejected")
+    } catch {
+        #expect(error.localizedDescription.contains("already exists"))
+    }
+
+    #expect(FileManager.default.fileExists(atPath: bundleURL.path))
+    #expect(try VMBundle(url: bundleURL).readMetadata() == metadata)
+}
+
+@Test
+func renameVMRejectsRunningVM() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let (bundleURL, metadata) = try makeRenamableVMBundle(rootURL: rootURL, name: "dev-01")
+    let bundle = VMBundle(url: bundleURL)
+    try bundle.writeVMProcessRuntimeState(VMProcessRuntimeState(
+        role: .headless,
+        pid: getpid(),
+        startedAt: Date()
+    ))
+    let service = MacVMService(rootDirectory: rootURL)
+
+    do {
+        _ = try service.renameVM(ManagedVM(bundleURL: bundleURL, metadata: metadata), to: "renamed")
+        Issue.record("Expected rename of a running VM to be rejected")
+    } catch {
+        #expect(error.localizedDescription.contains("Stop 'dev-01'"))
+    }
+    #expect(FileManager.default.fileExists(atPath: bundleURL.path))
+    #expect(try bundle.readMetadata() == metadata)
+}
+
+@Test
+func renameVMWithoutBundleMoveUpdatesDisplayNameOnly() throws {
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let (bundleURL, metadata) = try makeRenamableVMBundle(rootURL: rootURL, name: "dev-01")
+    let service = MacVMService(rootDirectory: rootURL)
+    let vm = ManagedVM(bundleURL: bundleURL, metadata: metadata)
+
+    // A trailing-space rename sanitizes to the existing bundle filename, so only
+    // the display name changes.
+    let renamed = try service.renameVM(vm, to: "dev-01 ")
+    #expect(renamed.bundleURL.path == bundleURL.path)
+    #expect(renamed.metadata.name == "dev-01")
+    #expect(renamed.metadata.id == metadata.id)
+    #expect(try VMBundle(url: bundleURL).readMetadata() == renamed.metadata)
+}
+
 @Test
 func removeVMDeletesResolvedBundle() throws {
     let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)

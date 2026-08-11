@@ -448,6 +448,124 @@ public final class MacVMService: Sendable {
         try launchOnBoot.setEnabled(enabled, for: vm)
     }
 
+    /// Rename a stopped VM, keeping its metadata name and bundle filename in sync.
+    public func renameVM(_ vm: ManagedVM, to rawName: String) throws -> ManagedVM {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw MacVMError.invalidName
+        }
+
+        let sourceURL = vm.bundleURL.standardizedFileURL
+        let destinationURL = sourceURL.deletingLastPathComponent()
+            .appendingPathComponent(sanitizedBundleName(name), isDirectory: true)
+            .appendingPathExtension(VMStorage.bundleExtension)
+        let movesBundle = sourceURL.path.compare(destinationURL.path, options: .caseInsensitive) != .orderedSame
+        let fileManager = FileManager.default
+
+        if movesBundle, fileManager.fileExists(atPath: destinationURL.path) {
+            throw MacVMError.bundleAlreadyExists(destinationURL)
+        }
+
+        let destinationBundle = VMBundle(url: destinationURL)
+        let destinationDiskLock = movesBundle
+            ? try destinationBundle.acquireDiskLifecycleLock(operation: "rename the VM")
+            : nil
+        defer { withExtendedLifetime(destinationDiskLock) {} }
+        let destinationDockerLock = movesBundle
+            ? try destinationBundle.acquireDockerSidecarOperationLock(operation: "rename the VM")
+            : nil
+        defer { withExtendedLifetime(destinationDockerLock) {} }
+
+        let sourceBundle = VMBundle(url: sourceURL)
+        let sourceDiskLock = try sourceBundle.acquireDiskLifecycleLock(operation: "rename the VM")
+        defer { withExtendedLifetime(sourceDiskLock) {} }
+        let diskMetadata = try sourceBundle.recoverDiskResizeWhileHoldingLifecycleLock()
+        let sourceDockerLock = try sourceBundle.acquireDockerSidecarOperationLock(operation: "rename the VM")
+        defer { withExtendedLifetime(sourceDockerLock) {} }
+        let currentMetadata = try sourceBundle.recoverDockerSidecarReplacementIfNeeded()
+        guard diskMetadata.id == currentMetadata.id, currentMetadata.id == vm.metadata.id else {
+            throw MacVMError.message(
+                "The VM at \(vm.bundleURL.path) no longer matches the rename request. Refresh and try again."
+            )
+        }
+        try requireStoppedForRemoval(bundle: sourceBundle, name: currentMetadata.name)
+
+        let duplicateName = try storage.loadManagedVMs().contains { candidate in
+            candidate.metadata.id != currentMetadata.id
+                && candidate.metadata.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }
+        guard !duplicateName else {
+            throw MacVMError.message("A VM named '\(name)' already exists.")
+        }
+
+        if !movesBundle {
+            let metadata = try sourceBundle.updateMetadata { metadata in
+                guard metadata.id == currentMetadata.id else {
+                    throw MacVMError.message("The VM changed while it was being renamed. Refresh and try again.")
+                }
+                metadata.name = name
+            }
+            return ManagedVM(bundleURL: sourceURL, metadata: metadata)
+        }
+
+        guard !fileManager.fileExists(atPath: destinationURL.path) else {
+            throw MacVMError.bundleAlreadyExists(destinationURL)
+        }
+        let launchOnBootEnabled = launchOnBoot.status(
+            for: ManagedVM(bundleURL: sourceURL, metadata: currentMetadata)
+        ).enabled
+        try fileManager.moveItem(at: sourceURL, to: destinationURL)
+
+        do {
+            let metadata = try destinationBundle.updateMetadata { metadata in
+                guard metadata.id == currentMetadata.id else {
+                    throw MacVMError.message("The VM changed while it was being renamed. Refresh and try again.")
+                }
+                metadata.name = name
+            }
+            let renamedVM = ManagedVM(bundleURL: destinationURL, metadata: metadata)
+            if launchOnBootEnabled {
+                try launchOnBoot.setEnabled(true, for: renamedVM)
+            }
+            return renamedVM
+        } catch {
+            let renameError = error
+            var rollbackErrors: [String] = []
+            do {
+                _ = try destinationBundle.updateMetadata { metadata in
+                    guard metadata.id == currentMetadata.id else {
+                        throw MacVMError.message("The VM identity changed after its bundle was moved.")
+                    }
+                    metadata.name = currentMetadata.name
+                }
+            } catch {
+                rollbackErrors.append("restore metadata: \(error.localizedDescription)")
+            }
+            do {
+                try fileManager.moveItem(at: destinationURL, to: sourceURL)
+            } catch {
+                rollbackErrors.append("restore bundle path: \(error.localizedDescription)")
+            }
+            if launchOnBootEnabled, fileManager.fileExists(atPath: sourceURL.path) {
+                do {
+                    try launchOnBoot.setEnabled(
+                        true,
+                        for: ManagedVM(bundleURL: sourceURL, metadata: currentMetadata)
+                    )
+                } catch {
+                    rollbackErrors.append("restore launch-on-boot: \(error.localizedDescription)")
+                }
+            }
+            guard rollbackErrors.isEmpty else {
+                throw MacVMError.message(
+                    "Rename failed (\(renameError.localizedDescription)); rollback also failed: "
+                        + rollbackErrors.joined(separator: "; ")
+                )
+            }
+            throw renameError
+        }
+    }
+
     /// Ensure the VM has a persisted MAC, backfilling one if it predates the
     /// `macAddress` metadata field. Returns the (possibly updated) VM.
     public func ensureNetworkIdentity(_ vm: ManagedVM) throws -> ManagedVM {
