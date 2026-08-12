@@ -12,7 +12,8 @@ MacVM is an Xcode project for macOS virtualization. It is not SwiftPM-driven; do
 - `Tests/MacVMHostKitTests/` and `Tests/MacVMTests/`: Swift Testing tests
 - `Sources/MacVMHostKit/Resources/Bootstrap/`: guest bootstrap resources
 - `Support/macvm.entitlements`: virtualization entitlement used by CLI and app
-- `scripts/package-release.sh`: Developer ID signing, notarization, disk-image creation, and installer packaging
+- `scripts/package-release.sh`: Developer ID signing, notarization, disk-image creation, installer packaging, and final artifact verification
+- `scripts/verify-release-artifacts.sh`: read-only DMG mounting and PKG expansion checks in unsigned or signed mode
 
 ## Build And Test
 
@@ -27,11 +28,14 @@ make dist
 make dist-cli
 make dist-app
 make package
+make verify-package VERSION=X.Y.Z VERIFY_MODE=unsigned
 ```
 
-`make build`, `make build-cli`, and `make build-app` produce locally signed Debug products in Xcode's derived data without running tests. `make test` runs the Xcode test suite. Bare `make` and `make dist` run tests and stage Release builds of both `dist/macvm` and `dist/MacVM.app` with the local Xcode signing configuration. Use `make dist-cli` or `make dist-app` to test and stage only one product. `make package` builds local unsigned `.dmg` and `.pkg` release artifacts for layout testing.
+`make build`, `make build-cli`, and `make build-app` produce locally signed Debug products in Xcode's derived data without running tests. `make test` runs the Xcode test suite. Bare `make` and `make dist` run tests and stage Release builds of both `dist/macvm` and `dist/MacVM.app` with the local Xcode signing configuration. Use `make dist-cli` or `make dist-app` to test and stage only one product. `make package` builds local unsigned `.dmg` and `.pkg` release artifacts for layout testing and runs the final-artifact verifier. Use `make verify-package VERSION=X.Y.Z VERIFY_MODE=unsigned` to recheck existing local artifacts, or `VERIFY_MODE=signed` for Developer ID artifacts. `PACKAGE_OUTPUT_DIR` selects a directory other than `dist/`.
 
-Public release artifacts are produced in GitHub Actions with Developer ID signing and notarization. Homebrew consumes the disk image; manual installations use the package.
+The verifier mounts the DMG read-only and expands the PKG into a private temporary directory. Its exit trap detaches the image and removes temporary content on success, failure, or interruption. Both modes check final layouts, identifiers, versions, symlinks, and arm64 executables; signed mode also verifies the disk image, app and nested executable Developer ID Application chains, and the package's Developer ID Installer chain.
+
+Public release artifacts are produced in GitHub Actions with Developer ID signing and notarization. The release workflow reruns signed artifact verification after notarization and stapling. Homebrew consumes the disk image; manual installations use the package.
 
 ## Signing
 
@@ -77,14 +81,27 @@ logged-in macOS GUI session.
 
 Every owner publishes a password-protected `Runtime/vnc-session.json`. VNC client automation commands such as `screenshot`, `type`, `keys`, `vnc`, `wait-text`, and `click-text` attach to that live session over loopback RFB and should error if no session is live; they do not instantiate a `VZVirtualMachine`, although the bundled CLI is still signed with the virtualization entitlement. The private server itself binds beyond loopback, so the password is mandatory. App runtimes use the `manager` owner role; never signal that PID to stop one VM. Route the request to the app and stop its path-keyed `VMViewerController` instead. Native display close requests always hide the window without ending the VM.
 
+Every owner of an attached `Disk.img` retains `VMDiskLifecycleLock` from before
+attachment through complete Virtualization.framework teardown. Create, boot,
+setup, clone, rename, remove, and resize serialize on the stable sibling
+`.<bundle>.disk.lock`, derived from the canonical bundle path so symlinks cannot
+bypass it. Interrupted resize recovery runs only while holding that lock. VM
+listing and resolution try the lock without waiting: they may complete journal
+recovery when uncontended, but return the last coherent metadata while a live
+grower owns it. Consequently these inspection paths are nonblocking but not
+strictly filesystem-pure. Never inspect, recover, or mutate a disk transaction
+outside this model.
+
 When `VMMetadata.dockerSidecar` is enabled, `VMViewerController` also owns a
 `DockerSidecarRuntime` and one retained `DockerPairNetwork`. The sidecar starts
 before the ordinary macOS start request and stops after macOS. Recovery never
 starts it. Synchronous configuration, integrity, transaction-recovery, and lock
 failures prevent the macOS start request; failures that occur later during
 sidecar readiness or guest-helper integration can leave macOS running and publish
-`Runtime/docker-sidecar.json` as degraded. Do not move this ownership into `HeadlessRunner` or
-create a top-level managed VM for `DockerSidecar/`.
+`Runtime/docker-sidecar.json` as degraded. Do not move this ownership into
+`HeadlessRunner` or create a top-level managed VM for `DockerSidecar/`. If an
+operation needs both locks, acquire the disk lifecycle lock before the Docker
+operation lock.
 
 The nested bundle contains FCOS system/data disks, EFI and generic identities,
 Ignition, and reset-stable pairing public material. FCOS stream metadata must
@@ -93,14 +110,34 @@ both compressed and uncompressed SHA-256 values. The guest helper is built as a
 separate executable target, copied into the HostKit resource bundle, and
 installed only after setup has produced an SSH-ready account.
 
-The bind mapper is a Docker API and mount-namespace boundary: add endpoint-specific
-JSON transforms for Docker API schema changes; never perform arbitrary textual
-path replacement. Unknown endpoints and upgrade/hijack streams remain raw byte
-relays. SSHFS mounts must remain constrained to `/run/macvm-macos/<filesystem-id>`,
-the resolved requested source subtree, and the isolated `192.168.127.0/30`
-sidecar link. Exact-file binds must use the isolated one-entry export and must
-never widen to the source's parent directory. This namespace restriction is not
-containment against compromised sidecar root, which owns the restricted SSHFS key.
+The bind mapper is a Docker API and mount-namespace boundary: add
+endpoint-specific JSON transforms for Docker API schema changes; never perform
+arbitrary textual path replacement. Container create/inspect, service
+create/update/inspect, and local bind-volume create/inspect are the supported
+schemas. Unknown endpoints, service logs, and upgrade/hijack streams remain raw
+byte relays. Finite mapped JSON bodies are capped at 16 MiB. Raw HTTP policy
+also caps heads at 64 KiB, chunk-size lines at 8 KiB, trailers at 64 KiB, and
+pre-connect backend queues at 256 KiB; relay write watermarks are 64/256 KiB.
+Preserve those bounds, backpressure, matching upgrade handshakes, and explicit
+framing errors when adding a schema.
+
+SSHFS mounts must remain constrained to
+`/run/macvm-macos/<filesystem-id>`, the resolved requested source subtree, and
+the isolated `192.168.127.0/30` sidecar link. Exact-file binds must use the
+isolated one-entry export and must never widen to the source's parent directory.
+Directory/file access runs with the recorded setup user's macOS permissions.
+Unix stream sockets use one stream-local relay per canonical path and likewise
+must be connectable by that setup user; do not claim datagrams, descriptor
+passing, or peer credentials. These per-export namespace restrictions reduce
+accidental Docker-visible exposure but are not containment against compromised
+sidecar root, which owns the restricted SSHFS and relay credentials.
+
+Swarm service task templates pass through the same mount-array transformer for
+both replicated and global task modes. The publication policy decodes service
+ports separately from container ports and relays TCP/UDP for both `ingress` and
+`host` publish modes on the owning single node. Keep service log streams raw.
+Do not infer support for multi-node placement, remote overlay reachability,
+per-node host-mode semantics, or routing-mesh behavior beyond that sidecar.
 
 Existing appliance replacement uses `renameatx_np(RENAME_SWAP)` and an external
 journal. A committed replacement's journal must remain until parent metadata and
@@ -118,15 +155,34 @@ rules after an SSH reconnect. Keep Zincati masked unless Docker startup is first
 gated on successful host-side mount reconciliation; an autonomous FCOS reboot
 must never let restart-policy containers write into empty `/run` mountpoints.
 
-Real-guest release checks are required for:
+Real-guest checks are required for changes that touch any of these contracts.
+They must run on a virtualization-capable physical Apple-silicon Mac against a
+trusted, dedicated, SSH-ready seed VM created for this repository. The harness
+runs repository code in privileged disposable clones, can expose setup-user
+files and sockets to sidecar root, and deliberately destroys Docker state; never
+point it at an untrusted VM, a production VM, or a seed containing Apple Account,
+personal, production, or irreplaceable credentials. Unit fixtures and a host
+Docker baseline do not replace these guest checks.
+
+Required coverage includes:
 
 - `$PWD`, `/Users/Shared`, `/private/tmp`, and a mounted path under `/Volumes`
   through both `-v` and `--mount`, including inspect reverse mapping
-- reverse-tunneled SSHFS transport, symlinks, spaces, Unicode,
-  read-only mounts, inotify/watch behavior, and large trees
+- reverse-tunneled SSHFS transport, per-directory and exact-file export scope,
+  setup-user permissions, symlinks, spaces, Unicode, read-only mounts,
+  inotify/watch behavior, and large trees
+- setup-user-accessible Unix stream sockets (nested Docker, SSH agent, and a
+  generic service), including reconnect behavior and explicit rejection of
+  unsupported socket types/capabilities
+- single-node Swarm bind mounts in replicated and global task modes, raw service
+  logs, and TCP/UDP service publications in both `ingress` and `host` modes; each
+  mode needs a real-guest assertion rather than inference from the JSON policy
 - fixed/random IPv4 TCP and UDP publishing with loopback/all-interface semantics,
   multiple independent UDP clients, cleanup after container removal, and explicit
   rejection of unsupported IPv6-only or same-port/multi-address bindings
+- proxy framing, backpressure, 64 KiB head/trailer, 8 KiB chunk-line, 256 KiB
+  queue/watermark, and 16 MiB mapped-body limits; raw unknown endpoints,
+  admitted/rejected hijack streams, and reverse mapping for every supported schema
 - native arm64 and `linux/amd64` images with Rosetta, including clear behavior
   when Rosetta is unavailable or not installed
 - clone source/destination concurrent use, Docker engine ID refresh, recovery
@@ -134,22 +190,28 @@ Real-guest release checks are required for:
 
 ### Docker compatibility suite
 
-Run the real-guest contract against a stopped, SSH-ready, Docker-ready seed:
+The trusted `.github/workflows/docker-e2e.yml` path runs only upstream `main`, `release-ci`, or validated release-tag commits. A GitHub-hosted authorization job resolves the exact SHA before a labeled self-hosted macOS/arm64 runner checks it out; pull requests, including forks, never enter that runner. Release packaging independently requires a successful Docker E2E run with the exact release `head_sha`.
+
+Run the same real-guest contract locally against a stopped, SSH-ready, Docker-ready seed:
 
 ```bash
 make test-docker-e2e MACVM_DOCKER_E2E_SEED=docker-seed
 ```
 
-The seed is never started or modified. The harness creates disposable
-copy-on-write clones, uses the Debug CLI and app built from the current
-checkout, and removes the clones only after a successful run. Failed clones are
-retained with their names printed at exit. Quit any installed or older
-`MacVM.app` before starting; the preflight refuses to hand test VMs to an app
-from a different path.
+The seed is never started or modified, but cloning copies its guest accounts,
+SSH material, files, and Docker data into test clones; this is why the seed must
+still be trusted and disposable in security terms. The harness creates
+disposable copy-on-write clones, uses the Debug CLI and app built from the
+current checkout, and removes the clones only after a successful run. Failed
+clones are retained with their names printed at exit and must be reviewed and
+removed securely. Quit any installed or older `MacVM.app` before starting; the
+preflight refuses to hand test VMs to an app from a different path.
 
 The default `full` suite runs the black-box contract, Testcontainers for Go,
-kind, and destructive lifecycle checks. A quicker `smoke` run omits the
-ecosystem and lifecycle portions:
+kind, and destructive lifecycle checks. Core coverage also exercises container
+wait/diff/commit behavior. Fixture process IDs, APFS mounts, socket directories,
+and Docker resources are recorded and cleaned by the suite's exit trap. A
+quicker `smoke` run omits the ecosystem and lifecycle portions:
 
 ```bash
 MACVM_DOCKER_E2E_SUITE=smoke \

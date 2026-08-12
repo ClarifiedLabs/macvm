@@ -53,17 +53,34 @@ macvm docker disable docker-dev
 macvm docker reset docker-dev
 ```
 
-Disk capacity can grow but cannot shrink. Use `reset` to create a smaller fresh
-disk; this destroys all Docker images, containers, and volumes. `disable`
-preserves the appliance and its data.
+Disk capacity can grow but cannot shrink. `reset` creates a fresh appliance at
+the **currently recorded** resource settings; it accepts no CPU, memory, disk,
+or amd64 overrides and therefore cannot be used to shrink the data disk. It
+destroys all Docker images, containers, and volumes. To change supported
+settings, use `configure` before reset; a smaller disk is not currently a
+supported configuration change.
 
-Rosetta for Linux is never installed implicitly. Request it when
-`linux/amd64` containers need it:
+`disable` preserves the appliance, data, identities, and recorded settings. A
+later re-enable uses the same appliance and data. However, the CLI `enable`
+command applies the CPU, memory, disk, and amd64 values from that invocation,
+including command defaults for omitted options. Repeat nondefault values when
+re-enabling from the CLI; `configure`, by contrast, changes only the options you
+supply.
+
+Rosetta for Linux is never installed implicitly. The two controls are separate:
+`--amd64` persists the request in this sidecar's settings, while
+`--install-rosetta` only invokes Apple's host-wide Rosetta installation and may
+show its consent dialog. It does not itself enable amd64 for a sidecar. Use it
+with an amd64 request:
 
 ```bash
 macvm docker configure docker-dev --amd64 --install-rosetta
 # or: macvm docker enable docker-dev --install-rosetta
 ```
+
+Once Rosetta is installed, amd64-requesting sidecars attach its host directory
+share on future starts; disabling amd64 does not uninstall Rosetta. The CLI does
+not expose `--install-rosetta` as a standalone setting-free configure action.
 
 `macvm docker update` replaces the Fedora CoreOS system appliance while
 preserving its machine identity and separate `/var/lib/docker` data disk.
@@ -98,24 +115,28 @@ docker run --rm -v "$PWD:/work" -w /work alpine ls
 docker run --rm --mount type=bind,src=/private/tmp,dst=/tmp alpine ls /tmp
 ```
 
-Supported bind fields are mapped to narrowly scoped mounts under
+Supported bind fields are mapped to per-export paths under
 `/run/macvm-macos`. The sidecar-native `/lib/modules` bind used by kind is
-passed through to Fedora CoreOS instead. A directory bind exposes the requested
-subtree. An exact file bind uses an isolated one-entry export rather than
-exposing the file's parent directory. Mounted paths under `/Volumes` are
-supported, and persisted mappings are restored after the guest helper or
-appliance reconnects.
+passed through to Fedora CoreOS instead. Each export has different capabilities:
 
-Unix stream socket bind sources use an SSH stream-local relay instead of
-SSHFS. The container receives a sidecar-local socket whose connections are
-forwarded to the original socket in the macOS guest. This supports common
-Docker, BuildKit, SSH-agent, database, and service sockets, including nested
-Docker clients that bind `/var/run/docker.sock`. Datagram and sequenced-packet
-sockets, file-descriptor passing, and peer-credential propagation are not
-supported across the VM boundary.
+| macOS guest source | Transport and scope | Capabilities and residual risk |
+| --- | --- | --- |
+| Directory | SSHFS rooted at the resolved requested directory | Containers receive the requested subtree with the Docker mount's read/write mode. Access is still limited by the setup user's macOS permissions. Symlinks and content inside that subtree remain guest-controlled. |
+| Exact regular file | SSHFS over an isolated one-entry export | The parent directory is not exported. The setup user must be able to traverse to and access the file; the one entry follows its host-side symlink, so replacing the file or link changes what future access reaches. |
+| Unix stream socket | One SSH stream-local relay and one sidecar-local socket | Connections forward byte streams to the exact canonical socket path. The socket must be connectable by the recorded setup user. The sidecar endpoint can reconnect while the mapping exists, but receives neither file descriptors nor peer credentials. |
 
-This Docker-visible scoping is not containment against a compromised appliance
-root, which owns the restricted SSHFS credential.
+Mounted paths under `/Volumes` are supported, and persisted mappings are
+restored after the guest helper or appliance reconnects. FIFOs, devices,
+datagram sockets, and sequenced-packet sockets are rejected. Socket relays also
+do not carry file-descriptor passing or peer-credential propagation across the
+VM boundary. Common Docker, BuildKit, SSH-agent, database, and service stream
+sockets work when the setup user has access, including nested Docker clients
+that bind `/var/run/docker.sock`.
+
+The appliance root owns the restricted SSHFS and relay credentials. Per-export
+scoping limits accidental exposure through the Docker-visible mount namespace;
+it is **not containment** against a compromised appliance root, which may use
+those credentials directly for the lifetime of the integration.
 
 ### Bind-mount file events
 
@@ -132,6 +153,22 @@ the running container lifecycle. A successful container start is not returned
 to the Docker client until its macOS relay is installed. IPv6-only publications
 and ambiguous same-port/multiple-address publications are rejected instead of
 being exposed incorrectly.
+
+### Docker Swarm
+
+MacVM rewrites bind mounts in Swarm service create and update task templates, so
+both replicated and global service task modes use macOS guest paths on this
+single sidecar node. IPv4 TCP and UDP service publications are relayed for both
+Swarm's default `ingress` and `host` publish modes; they bind all macOS guest
+interfaces, unlike container publications that may request loopback only.
+Service inspect paths are translated back to macOS paths, while service log
+streams pass through unchanged.
+
+This is a single-node contract. Multi-node placement, per-node `host`-mode
+semantics, overlay-network reachability from other nodes, and routing-mesh
+behavior beyond the owning sidecar are not supported. Use a trusted disposable
+VM when validating Swarm because initializing a manager changes persistent
+Docker state.
 
 The guest helper reads `/containers/json` through an in-process Unix-domain
 HTTP client. It reconciles every two seconds as a fallback and immediately
@@ -201,7 +238,22 @@ separate NAT interface for image pulls. Both Moby's data root and containerd's
 image and snapshot storage live on the configured Docker data disk. Bind mounts
 use SSHFS over an isolated reverse SSH tunnel. A schema-aware Docker API proxy
 transforms supported bind fields rather than replacing arbitrary strings in
-JSON.
+JSON. It reconstructs only finite JSON bodies on
+container create/inspect, service create/update/inspect, and local bind-volume
+create/inspect endpoints. Mapped request or response bodies are limited to
+16 MiB, and HTTP heads are limited to 64 KiB; oversize mapped requests fail with
+an HTTP error. Mapped requests require `Content-Length` or chunked framing. Raw
+chunk-size lines are limited to 8 KiB, trailer sections to 64 KiB, and data
+queued before the backend connects to 256 KiB. Raw relay writes use 64 KiB and
+256 KiB low/high watermarks for backpressure; these are buffering bounds, not a
+256 KiB stream-size limit.
+
+Unknown endpoints, non-mapped fields, service logs, and admitted Docker
+hijack/upgrade streams are relayed without path translation. Upgrades require
+matching request/response upgrade headers, and malformed or unsolicited
+upgrades are rejected. A Docker API extension that puts a macOS path in another
+schema field therefore remains sidecar-native until that field is explicitly
+supported.
 
 Automatic Fedora CoreOS reboots are disabled so mounts cannot disappear under
 restart-policy containers. The helper restores persisted mounts and
@@ -217,6 +269,15 @@ A synchronous configuration, integrity, transaction-recovery, or locking
 failure prevents the macOS VM start request. A later appliance-readiness or
 guest-helper integration failure can leave macOS running and is reported by
 `macvm docker status` as degraded.
+
+Use `macvm docker status <vm> --json` for machine-readable state, logical and
+allocated data-disk sizes, requested/available amd64 state, owner PID, and the
+last runtime error. Status is observational during ordinary operation, but it
+is not guaranteed to be filesystem-pure: if an interrupted replacement journal
+exists, status takes the nonblocking per-VM Docker operation lock and completes
+recovery before reporting. Mutations, startup, clone, and status recovery share
+the stable sibling `.<bundle>.docker-sidecar.lock`; VM disk users separately
+share `.<bundle>.disk.lock`, acquiring the disk lock first when both are needed.
 
 Contributor-facing ownership, locking, recovery, security-boundary, and
 real-guest test invariants are documented in the

@@ -137,12 +137,17 @@ The target must be larger than the current disk; shrinking is not supported and
 a rejected equal-or-smaller request does not change files. MacVM stages and
 verifies a candidate (copy-on-write where the host filesystem supports it),
 moves RecoveryOS to the new end of the disk, grows the main APFS container, and
-only then commits the new image and
-metadata. The additional logical capacity remains sparse until the guest writes
-to it. In the app, stop the VM, choose **Edit**, and increase the **Disk**
-capacity; saving a larger value asks for confirmation before the same stopped-VM
-growth operation starts. Do not attach or modify `Disk.img` with disk utilities
-while the operation is running.
+only then commits the new image and metadata. The additional logical capacity
+remains sparse until the guest writes to it. In the app, stop the VM, choose
+**Edit**, and increase the **Disk** capacity; saving a larger value asks for
+confirmation before the same stopped-VM growth operation starts.
+
+Start, clone, rename, remove, and resize operations serialize access to
+`Disk.img` with a canonical, per-bundle advisory lock. A contending operation
+fails instead of using a disk mid-transaction. `list` and `show` opportunistically
+recover an interrupted resize when they can acquire that lock without waiting;
+while a live operation owns it, they report the last coherent metadata instead.
+Do not attach or modify `Disk.img` with disk utilities while MacVM is using it.
 
 ## Docker Inside the macOS Guest
 
@@ -168,10 +173,16 @@ macvm docker reset docker-dev
 Automated setup installs the required Homebrew dependency. For another
 SSH-ready VM, run `macvm provision docker-dev --profile homebrew` while it is
 running before enabling Docker. Docker defaults to 2 vCPUs, 4 GiB RAM, and a
-sparse 64 GiB data disk. Disk capacity can grow but cannot shrink; `reset`
-destroys Docker images, containers, and volumes.
+sparse 64 GiB data disk. Disk capacity can grow but cannot shrink. `disable`
+preserves the appliance, data, and recorded settings. On the CLI, `enable`
+applies its supplied resource values—and its defaults for omitted options—when
+re-enabling, so repeat any nondefault sizing. `reset` destroys Docker images,
+containers, and volumes, reuses the recorded settings, and currently accepts no
+resource overrides; it does not provide a way to shrink the data disk.
 
-Install Rosetta for Linux explicitly when `linux/amd64` containers need it:
+Rosetta for Linux is a host installation and is never installed implicitly.
+`--amd64` records the sidecar request; `--install-rosetta` only performs Apple's
+host installation (and may show a consent dialog). Use both when needed:
 
 ```bash
 macvm docker configure docker-dev --amd64 --install-rosetta
