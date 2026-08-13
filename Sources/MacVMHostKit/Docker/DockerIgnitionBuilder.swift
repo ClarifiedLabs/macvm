@@ -326,18 +326,16 @@ struct DockerIgnitionBuilder {
                 """
             ),
             unit(
-                name: "macvm-filesystem-key.service",
+                name: "macvm-export-migration.service",
                 enabled: true,
                 contents: """
                 [Unit]
-                Description=Create the sidecar-only SSHFS identity
+                Description=Remove legacy global macOS filesystem credentials
                 Before=sshd.service macvm-ready.service
 
                 [Service]
                 Type=oneshot
-                ExecStart=/usr/bin/env SSH_ORIGINAL_COMMAND=public-key /usr/local/libexec/macvm-mount-broker
-                StandardOutput=journal+console
-                StandardError=journal+console
+                ExecStart=/usr/bin/rm -f /var/lib/macvm/macos_fs_ed25519 /var/lib/macvm/macos_fs_ed25519.pub /var/lib/macvm/macos_known_hosts
                 RemainAfterExit=yes
 
                 [Install]
@@ -392,8 +390,8 @@ struct DockerIgnitionBuilder {
                 contents: """
                 [Unit]
                 Description=Publish Docker sidecar readiness
-                After=docker.service sshd.service macvm-resolver.service macvm-filesystem-key.service macvm-filesystem-tools.service macvm-firewall.service macvm-rosetta.service
-                Requires=docker.service sshd.service macvm-resolver.service macvm-filesystem-key.service macvm-filesystem-tools.service macvm-firewall.service
+                After=docker.service sshd.service macvm-resolver.service macvm-export-migration.service macvm-filesystem-tools.service macvm-firewall.service macvm-rosetta.service
+                Requires=docker.service sshd.service macvm-resolver.service macvm-export-migration.service macvm-filesystem-tools.service macvm-firewall.service
 
                 [Service]
                 Type=oneshot
@@ -432,52 +430,58 @@ struct DockerIgnitionBuilder {
         #!/bin/bash
         set -euo pipefail
 
-        ensure_filesystem_key() {
-          /usr/bin/install -d -m 0700 /var/lib/macvm
-          if [[ ! -s /var/lib/macvm/macos_fs_ed25519 || ! -s /var/lib/macvm/macos_fs_ed25519.pub ]]; then
-            temporary="$(/usr/bin/mktemp -d /tmp/macvm-filesystem-key.XXXXXX)"
-            trap '/usr/bin/rm -rf "$temporary"' EXIT
+        export_directory=/var/lib/macvm/exports
+        valid_id() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; }
+        export_key() { printf '%s/%s_ed25519' "$export_directory" "$1"; }
+        ensure_export_key() {
+          local filesystem_id="$1" key
+          valid_id "$filesystem_id" || exit 64
+          key="$(export_key "$filesystem_id")"
+          /usr/bin/install -d -m 0700 "$export_directory"
+          if [[ ! -s "$key" || ! -s "$key.pub" ]]; then
+            /usr/bin/rm -f "$key" "$key.pub"
             umask 077
-            /usr/bin/ssh-keygen -q -t ed25519 -N "" -C macvm-filesystem -f "$temporary/macos_fs_ed25519"
-            /usr/bin/install -m 0600 "$temporary/macos_fs_ed25519" /var/lib/macvm/macos_fs_ed25519
-            /usr/bin/install -m 0644 "$temporary/macos_fs_ed25519.pub" /var/lib/macvm/macos_fs_ed25519.pub
-            /usr/sbin/restorecon -F /var/lib/macvm/macos_fs_ed25519 /var/lib/macvm/macos_fs_ed25519.pub || true
-            /usr/bin/rm -rf "$temporary"
-            trap - EXIT
+            /usr/bin/ssh-keygen -q -t ed25519 -N "" -C "macvm-export:$filesystem_id" -f "$key"
+            /usr/sbin/restorecon -F "$key" "$key.pub" || true
           fi
         }
 
-        IFS=' ' read -r action filesystem_id _ <<<"${SSH_ORIGINAL_COMMAND:-}"
-        argument="${SSH_ORIGINAL_COMMAND#* }"
-        argument="${argument#* }"
+        /usr/bin/rm -f /var/lib/macvm/macos_fs_ed25519 /var/lib/macvm/macos_fs_ed25519.pub /var/lib/macvm/macos_known_hosts
+        IFS=' ' read -r -a fields <<<"${SSH_ORIGINAL_COMMAND:-}"
+        action="${fields[0]:-}"
+        filesystem_id="${fields[1]:-}"
         case "$action" in
-          public-key)
-            ensure_filesystem_key
-            exec /usr/bin/cat /var/lib/macvm/macos_fs_ed25519.pub
+          export-key)
+            [[ ${#fields[@]} -eq 2 ]] && valid_id "$filesystem_id" || exit 64
+            ensure_export_key "$filesystem_id"
+            exec /usr/bin/cat "$(export_key "$filesystem_id").pub"
             ;;
-          mount-sshfs|mount-sshfs-file)
-            [[ "$filesystem_id" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || exit 64
-            remote_user="${argument%% *}"
-            remote_path="${argument#* }"
-            [[ "$remote_user" =~ ^[A-Za-z0-9._-]+$ ]] || exit 64
-            [[ "$remote_path" == /* ]] || exit 64
-            ensure_filesystem_key
+          mount-export)
+            [[ ${#fields[@]} -eq 3 ]] && valid_id "$filesystem_id" || exit 64
+            remote_user="${fields[2]}"
+            [[ "$remote_user" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || exit 64
+            ensure_export_key "$filesystem_id"
             target="/run/macvm-macos/$filesystem_id"
             /usr/bin/mkdir -p "$target"
-            follow=()
-            [[ "$action" == "mount-sshfs-file" ]] && follow=(-o follow_symlinks)
             if ! /usr/bin/mountpoint -q "$target"; then
-              exec /usr/bin/sshfs "$remote_user@127.0.0.1:$remote_path" "$target" -p 2222 -o IdentityFile=/var/lib/macvm/macos_fs_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/var/lib/macvm/macos_known_hosts -o reconnect -o allow_other "${follow[@]}"
+              exec /usr/bin/sshfs "$remote_user@127.0.0.1:/" "$target" -p 2222 -o "IdentityFile=$(export_key "$filesystem_id")" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$export_directory/${filesystem_id}_known_hosts" -o reconnect -o allow_other
             fi
             ;;
           unmount)
-            [[ "$filesystem_id" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || exit 64
+            [[ ${#fields[@]} -eq 2 ]] && valid_id "$filesystem_id" || exit 64
             target="/run/macvm-macos/$filesystem_id"
             /usr/bin/mountpoint -q "$target" && /usr/bin/umount --lazy "$target" || true
             /usr/bin/rmdir "$target" 2>/dev/null || true
             ;;
+          remove-export)
+            [[ ${#fields[@]} -eq 2 ]] && valid_id "$filesystem_id" || exit 64
+            target="/run/macvm-macos/$filesystem_id"
+            /usr/bin/mountpoint -q "$target" && /usr/bin/umount --lazy "$target" || true
+            /usr/bin/rmdir "$target" 2>/dev/null || true
+            /usr/bin/rm -f "$(export_key "$filesystem_id")" "$(export_key "$filesystem_id").pub" "$export_directory/${filesystem_id}_known_hosts"
+            ;;
           prepare-socket|wait-socket|remove-socket)
-            [[ "$filesystem_id" =~ ^socket-[A-Za-z0-9._-]{1,57}$ ]] || exit 64
+            [[ ${#fields[@]} -eq 2 && "$filesystem_id" =~ ^socket-[A-Za-z0-9._-]{1,57}$ ]] || exit 64
             target="/run/macvm-macos/$filesystem_id"
             socket="$target/source"
             if [[ "$action" == "prepare-socket" ]]; then
@@ -495,6 +499,11 @@ struct DockerIgnitionBuilder {
             fi
             ;;
           reset-ports|publish-port|unpublish-port)
+            if [[ "$action" == "reset-ports" ]]; then
+              [[ ${#fields[@]} -eq 1 ]] || exit 64
+            else
+              [[ ${#fields[@]} -eq 3 ]] || exit 64
+            fi
             interface="$(nmcli -g GENERAL.DEVICES connection show macvm-private)"
             [[ -n "$interface" ]] || exit 69
             iptables="$(command -v iptables)"
@@ -510,7 +519,7 @@ struct DockerIgnitionBuilder {
               exit 0
             fi
             protocol="$filesystem_id"
-            port="$argument"
+            port="${fields[2]}"
             [[ "$protocol" == "tcp" || "$protocol" == "udp" ]] || exit 64
             [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( port >= 1 && port <= 65535 )) || exit 64
             rule=(-p "$protocol" --dport "$port" -j DNAT --to-destination "127.0.0.1:$port")

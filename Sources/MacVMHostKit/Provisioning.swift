@@ -476,7 +476,7 @@ struct AnsibleProvisioner {
         return nil
     }
 
-    func run() throws {
+    func run() async throws {
         let bundle = VMBundle(url: vm.bundleURL)
         try FileManager.default.createDirectory(at: bundle.provisioningLogsDirectoryURL, withIntermediateDirectories: true)
         var state = bundle.readProvisioningState() ?? ProvisioningState()
@@ -495,7 +495,7 @@ struct AnsibleProvisioner {
                 bundleRelativePath: "Setup/Provisioning/\(logName)"
             )))
             do {
-                try run(profile, logURL: logURL)
+                try await run(profile, logURL: logURL)
                 state.profiles[profile.id] = record(
                     profile: profile,
                     status: .succeeded,
@@ -518,7 +518,7 @@ struct AnsibleProvisioner {
         }
     }
 
-    private func run(_ profile: ProvisioningProfile, logURL: URL) throws {
+    private func run(_ profile: ProvisioningProfile, logURL: URL) async throws {
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("macvm-ansible-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
@@ -550,26 +550,27 @@ struct AnsibleProvisioner {
         let log = try FileHandle(forWritingTo: logURL)
         defer { try? log.close() }
 
-        let process = Process()
-        process.executableURL = executableURL
-        process.currentDirectoryURL = profile.directoryURL
-        process.arguments = [
-            "-i", inventoryURL.path,
-            profile.playbookURL.path,
-            "--extra-vars", "@\(variablesURL.path)",
-        ]
-        process.environment = ProcessInfo.processInfo.environment.merging([
-            "ANSIBLE_NOCOLOR": "1",
-            "ANSIBLE_HOST_KEY_CHECKING": "False",
-            "ANSIBLE_ROLES_PATH": profile.directoryURL.appendingPathComponent("roles").path,
-        ]) { _, new in new }
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = log
-        process.standardError = log
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw MacVMError.message("ansible-playbook exited with status \(process.terminationStatus).")
+        let result = try await AsyncProcessSupervisor.run(.init(
+            executableURL: executableURL,
+            arguments: [
+                "-i", inventoryURL.path,
+                profile.playbookURL.path,
+                "--extra-vars", "@\(variablesURL.path)",
+            ],
+            currentDirectoryURL: profile.directoryURL,
+            environment: ProcessInfo.processInfo.environment.merging([
+                "ANSIBLE_NOCOLOR": "1",
+                "ANSIBLE_HOST_KEY_CHECKING": "False",
+                "ANSIBLE_ROLES_PATH": profile.directoryURL.appendingPathComponent("roles").path,
+            ]) { _, new in new },
+            standardOutput: .fileHandle(log),
+            standardError: .fileHandle(log),
+            timeout: 2 * 60 * 60,
+            terminationGracePeriod: 5,
+            timeoutDescription: "ansible-playbook"
+        ))
+        guard result.terminationStatus == 0 else {
+            throw MacVMError.message("ansible-playbook exited with status \(result.terminationStatus).")
         }
     }
 

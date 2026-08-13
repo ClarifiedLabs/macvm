@@ -539,9 +539,6 @@ extension MacVMCommand {
                 let withIdentity = try service.ensureNetworkIdentity(virtualMachine)
                 try await performSetup(service: service, virtualMachine: withIdentity, options: setupOptions)
                 if docker {
-                    if dockerInstallRosetta {
-                        try await service.installRosettaIfNeeded()
-                    }
                     let stoppedVM = try service.resolveVM(identifier: virtualMachine.bundleURL.path)
                     guard let dockerConfiguration else {
                         throw ValidationError("Docker resource configuration is unavailable.")
@@ -550,6 +547,9 @@ extension MacVMCommand {
                         for: stoppedVM,
                         configuration: dockerConfiguration
                     ) { event in reporter.handle(event) }
+                    if dockerInstallRosetta, enabledVM.metadata.dockerSidecar?.amd64Enabled == true {
+                        try await service.installRosettaIfNeeded()
+                    }
                     print("Docker sidecar enabled for \(enabledVM.metadata.name). It will finish guest integration on the next normal start.")
                 }
             } else {
@@ -831,28 +831,40 @@ extension MacVMCommand {
 
             @OptionGroup var storage: StorageOptions
             @OptionGroup var debugOptions: DebugOptions
-            @Option(name: .long, help: "Docker sidecar virtual CPU count.") var cpu = DockerSidecarSettings.defaultCPUCount
-            @Option(name: .long, help: "Docker sidecar memory in GiB.") var memoryGiB = DockerSidecarSettings.defaultMemoryGiB
-            @Option(name: .long, help: "Docker data disk in GiB.") var diskGiB = DockerSidecarSettings.defaultDiskGiB
+            @Option(name: .long, help: "Docker sidecar virtual CPU count. Preserved when omitted on re-enable.") var cpu: Int?
+            @Option(name: .long, help: "Docker sidecar memory in GiB. Preserved when omitted on re-enable.") var memoryGiB: Int?
+            @Option(name: .long, help: "Docker data disk in GiB. Preserved when omitted on re-enable.") var diskGiB: Int?
+            @Flag(name: .long, help: "Enable linux/amd64 translation for this sidecar.") var amd64 = false
             @Flag(name: .long, help: "Disable linux/amd64 translation for this sidecar.") var noAMD64 = false
             @Flag(name: .long, help: "Install Rosetta for Linux with Apple's consent dialog.") var installRosetta = false
             @Argument(help: "VM name, bundle basename, or full bundle path.") var identifier: String
+
+            mutating func validate() throws {
+                guard !amd64 || !noAMD64 else {
+                    throw ValidationError("Use either --amd64 or --no-amd64, not both.")
+                }
+                guard !installRosetta || !noAMD64 else {
+                    throw ValidationError("--install-rosetta cannot be combined with --no-amd64.")
+                }
+            }
 
             func run() async throws {
                 debugOptions.apply()
                 let service = MacVMService(rootDirectory: storage.resolvedURL)
                 let vm = try service.resolveVM(identifier: identifier)
-                if installRosetta && !noAMD64 { try await service.installRosettaIfNeeded() }
                 let reporter = CLIReporter()
                 let result = try await service.enableDockerSidecar(
                     for: vm,
-                    configuration: DockerSidecarResourceConfiguration(
+                    resourcePatch: DockerSidecarResourcePatch(
                         cpuCount: cpu,
-                        memorySizeBytes: try Docker.bytes(gib: memoryGiB),
-                        dataDiskSizeBytes: try Docker.bytes(gib: diskGiB),
-                        amd64Enabled: !noAMD64
+                        memorySizeBytes: try memoryGiB.map(Docker.bytes),
+                        dataDiskSizeBytes: try diskGiB.map(Docker.bytes),
+                        amd64Enabled: amd64 ? true : (noAMD64 ? false : nil)
                     )
                 ) { reporter.handle($0) }
+                if installRosetta, result.metadata.dockerSidecar?.amd64Enabled == true {
+                    try await service.installRosettaIfNeeded()
+                }
                 print("Docker sidecar enabled for \(result.metadata.name).")
             }
         }
@@ -900,23 +912,55 @@ extension MacVMCommand {
 
             mutating func validate() throws {
                 guard !amd64 || !noAMD64 else { throw ValidationError("Use either --amd64 or --no-amd64, not both.") }
-                guard cpu != nil || memoryGiB != nil || diskGiB != nil || amd64 || noAMD64 else {
-                    throw ValidationError("Specify at least one Docker setting to change.")
+                guard !installRosetta || !noAMD64 else {
+                    throw ValidationError("--install-rosetta cannot be combined with --no-amd64.")
+                }
+                guard cpu != nil || memoryGiB != nil || diskGiB != nil || amd64 || noAMD64 || installRosetta else {
+                    throw ValidationError("Specify at least one Docker setting to change or use --install-rosetta.")
+                }
+                if let cpu, cpu <= 0 {
+                    throw ValidationError("Docker CPU count must be greater than zero.")
+                }
+                if let memoryGiB, memoryGiB <= 0 {
+                    throw ValidationError("Docker memory must be greater than zero.")
+                }
+                if let diskGiB, diskGiB <= 0 {
+                    throw ValidationError("Docker disk size must be greater than zero.")
                 }
             }
 
             func run() async throws {
+                let memorySizeBytes = try memoryGiB.map(Docker.bytes)
+                let dataDiskSizeBytes = try diskGiB.map(Docker.bytes)
+                let changesDockerSettings = cpu != nil || memoryGiB != nil || diskGiB != nil || amd64 || noAMD64
                 let service = MacVMService(rootDirectory: storage.resolvedURL)
                 let vm = try service.resolveVM(identifier: identifier)
-                if installRosetta && amd64 { try await service.installRosettaIfNeeded() }
-                let result = try service.configureDockerSidecar(
-                    for: vm,
-                    cpuCount: cpu,
-                    memorySizeBytes: try memoryGiB.map(Docker.bytes),
-                    dataDiskSizeBytes: try diskGiB.map(Docker.bytes),
-                    amd64Enabled: amd64 ? true : (noAMD64 ? false : nil)
-                )
-                print("Docker sidecar configuration updated for \(result.metadata.name).")
+
+                if installRosetta {
+                    try await service.installRosettaIfNeeded()
+                    print("Rosetta for Linux is installed.")
+                }
+                guard changesDockerSettings else { return }
+
+                do {
+                    let result = try service.configureDockerSidecar(
+                        for: vm,
+                        resourcePatch: DockerSidecarResourcePatch(
+                            cpuCount: cpu,
+                            memorySizeBytes: memorySizeBytes,
+                            dataDiskSizeBytes: dataDiskSizeBytes,
+                            amd64Enabled: amd64 ? true : (noAMD64 ? false : nil)
+                        )
+                    )
+                    print("Docker sidecar configuration updated for \(result.metadata.name).")
+                } catch {
+                    if installRosetta {
+                        throw ValidationError(
+                            "Rosetta was installed, but Docker settings were not changed: \(error.localizedDescription)"
+                        )
+                    }
+                    throw error
+                }
             }
         }
 
@@ -952,25 +996,54 @@ extension MacVMCommand {
         }
 
         struct Reset: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(abstract: "Destroy Docker state and create a fresh sidecar appliance.")
+            static let configuration = CommandConfiguration(abstract: "Replace a stopped VM's Docker appliance and destroy its Docker data.")
+
             @OptionGroup var storage: StorageOptions
+            @OptionGroup var debugOptions: DebugOptions
             @Flag(name: [.short, .long], help: "Reset without prompting for confirmation.") var force = false
+            @Option(name: .long, help: "Docker sidecar virtual CPU count. Preserved when omitted.") var cpu: Int?
+            @Option(name: .long, help: "Docker sidecar memory in GiB. Preserved when omitted.") var memoryGiB: Int?
+            @Option(name: .long, help: "Fresh Docker data disk in GiB. May be smaller than the old disk.") var diskGiB: Int?
+            @Flag(name: .long, help: "Enable linux/amd64 translation.") var amd64 = false
+            @Flag(name: .long, help: "Disable linux/amd64 translation.") var noAMD64 = false
             @Argument(help: "VM name, bundle basename, or full bundle path.") var identifier: String
 
+            mutating func validate() throws {
+                guard !amd64 || !noAMD64 else {
+                    throw ValidationError("Use either --amd64 or --no-amd64, not both.")
+                }
+            }
+
             func run() async throws {
+                debugOptions.apply()
                 let service = MacVMService(rootDirectory: storage.resolvedURL)
                 let vm = try service.resolveVM(identifier: identifier)
                 if !force {
-                    print("Reset Docker for '\(vm.metadata.name)'? Images, containers, and volumes will be destroyed. [y/N] ", terminator: "")
-                    fflush(stdout)
-                    guard let answer = readLine(), ["y", "yes"].contains(answer.lowercased()) else {
-                        print("Cancelled.")
-                        return
+                    let currentSize = service.dockerStatus(for: vm).dataDiskSizeBytes
+                        ?? vm.metadata.dockerSidecar?.dataDiskSizeBytes
+                        ?? 0
+                    let targetSize = try diskGiB.map(Docker.bytes) ?? currentSize
+                    print(
+                        "Reset Docker for \(vm.metadata.name): data disk "
+                            + "\(VMText.gibLabel(for: currentSize)) → \(VMText.gibLabel(for: targetSize))."
+                    )
+                    print("This permanently destroys all Docker images, containers, and volumes. Continue? [y/N] ", terminator: "")
+                    guard let response = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                          response == "y" || response == "yes" else {
+                        throw ValidationError("Docker reset cancelled.")
                     }
                 }
                 let reporter = CLIReporter()
-                _ = try await service.resetDockerSidecar(for: vm) { reporter.handle($0) }
-                print("Docker sidecar reset for \(vm.metadata.name).")
+                let result = try await service.resetDockerSidecar(
+                    for: vm,
+                    resourcePatch: DockerSidecarResourcePatch(
+                        cpuCount: cpu,
+                        memorySizeBytes: try memoryGiB.map(Docker.bytes),
+                        dataDiskSizeBytes: try diskGiB.map(Docker.bytes),
+                        amd64Enabled: amd64 ? true : (noAMD64 ? false : nil)
+                    )
+                ) { reporter.handle($0) }
+                print("Docker sidecar reset for \(result.metadata.name).")
             }
         }
 

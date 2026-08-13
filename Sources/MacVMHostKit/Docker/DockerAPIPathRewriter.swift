@@ -1,4 +1,5 @@
 import Foundation
+import MacVMDockerGuestCore
 
 public struct DockerAPIPathRewriter {
     public typealias PathTransform = (String) throws -> String
@@ -33,12 +34,17 @@ public struct DockerAPIPathRewriter {
     public static func affectsPublishedPorts(method: String, uri: String, status: Int) -> Bool {
         guard (200...299).contains(status) else { return false }
         let components = normalizedAPIPath(uri).split(separator: "/").map(String.init)
-        guard components.count >= 2, components[0] == "containers" else { return false }
-        switch method.uppercased() {
-        case "POST":
+        guard components.count >= 2 else { return false }
+        switch (method.uppercased(), components[0]) {
+        case ("POST", "containers"):
             guard components.count == 3 else { return false }
             return ["kill", "restart", "start", "stop"].contains(components[2])
-        case "DELETE":
+        case ("DELETE", "containers"):
+            return components.count == 2
+        case ("POST", "services"):
+            return (components.count == 2 && components[1] == "create")
+                || (components.count == 3 && components[2] == "update")
+        case ("DELETE", "services"):
             return components.count == 2
         default:
             return false
@@ -104,55 +110,16 @@ public struct DockerAPIPathRewriter {
         _ root: inout Any,
         transform: PathTransform
     ) throws {
-        try validatePublishedPorts(in: root)
+        try DockerPublishedPortPolicy.validateContainerConfiguration(root)
         try rewriteBindStrings(in: &root, keyPath: ["HostConfig", "Binds"], transform: transform)
         try rewriteMountArray(in: &root, keyPath: ["HostConfig", "Mounts"], transform: transform)
-    }
-
-    private static func validatePublishedPorts(in root: Any) throws {
-        guard let dictionary = root as? [String: Any],
-              let hostConfig = dictionary["HostConfig"] as? [String: Any],
-              let portBindings = hostConfig["PortBindings"] as? [String: Any] else {
-            return
-        }
-        var hostAddressesByPublishedPort: [String: Set<String>] = [:]
-        for (containerPort, rawBindings) in portBindings {
-            guard let protocolKind = containerPort.split(separator: "/").last,
-                  let bindings = rawBindings as? [[String: Any]] else { continue }
-            for binding in bindings {
-                let hostIP = (binding["HostIp"] as? String) ?? ""
-                let hostPort = (binding["HostPort"] as? String) ?? ""
-                guard !hostIP.contains(":") else {
-                    throw DockerAPIPathRewriterError(
-                        "IPv6 Docker publication \(hostIP):\(hostPort)/\(protocolKind) is not supported by the macOS port relay."
-                    )
-                }
-                guard ["", "0.0.0.0", "127.0.0.1"].contains(hostIP) else {
-                    throw DockerAPIPathRewriterError(
-                        "Docker publication on host address \(hostIP) is not supported; use 127.0.0.1 or 0.0.0.0."
-                    )
-                }
-                guard !hostPort.isEmpty else { continue }
-                let key = "\(hostPort)/\(protocolKind)"
-                let normalizedHostIP = hostIP.isEmpty ? "0.0.0.0" : hostIP
-                hostAddressesByPublishedPort[key, default: []].insert(normalizedHostIP)
-            }
-        }
-        if let ambiguous = hostAddressesByPublishedPort
-            .filter({ $0.value.count > 1 })
-            .keys
-            .sorted()
-            .first {
-            throw DockerAPIPathRewriterError(
-                "Docker published port \(ambiguous) cannot use multiple host addresses."
-            )
-        }
     }
 
     private static func rewriteServiceConfiguration(
         _ root: inout Any,
         transform: PathTransform
     ) throws {
+        try DockerPublishedPortPolicy.validateServiceConfiguration(root)
         try rewriteMountArray(
             in: &root,
             keyPath: ["TaskTemplate", "ContainerSpec", "Mounts"],

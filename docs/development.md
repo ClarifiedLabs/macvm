@@ -33,7 +33,7 @@ make verify-package VERSION=X.Y.Z VERIFY_MODE=unsigned
 
 `make build`, `make build-cli`, and `make build-app` produce locally signed Debug products in Xcode's derived data without running tests. `make test` runs the Xcode test suite. Bare `make` and `make dist` run tests and stage Release builds of both `dist/macvm` and `dist/MacVM.app` with the local Xcode signing configuration. Use `make dist-cli` or `make dist-app` to test and stage only one product. `make package` builds local unsigned `.dmg` and `.pkg` release artifacts for layout testing and runs the final-artifact verifier. Use `make verify-package VERSION=X.Y.Z VERIFY_MODE=unsigned` to recheck existing local artifacts, or `VERIFY_MODE=signed` for Developer ID artifacts. `PACKAGE_OUTPUT_DIR` selects a directory other than `dist/`.
 
-The verifier mounts the DMG read-only and expands the PKG into a private temporary directory. Its exit trap detaches the image and removes temporary content on success, failure, or interruption. Both modes check final layouts, identifiers, versions, symlinks, and arm64 executables; signed mode also verifies the disk image, app and nested executable Developer ID Application chains, and the package's Developer ID Installer chain.
+The verifier runs `hdiutil verify`, mounts the DMG read-only, and expands the PKG into a private temporary directory. Its exit trap discovers and attempts to detach every device associated with that image—even if attach-plist parsing fails—and removes temporary content on success, failure, or interruption. Both modes enforce exact container/payload/resource allowlists, identifiers, versions, symlinks, arm64 executables, a safe isolated CLI version/resource probe, and a recursive hash/type/mode/symlink manifest match between both app copies. Signed mode additionally requires one Developer ID team, exact code identifiers, hardened runtime, virtualization entitlement only on the app and CLI, no guest-helper entitlements, stapled notarization tickets, and passing DMG/PKG Gatekeeper assessments.
 
 Public release artifacts are produced in GitHub Actions with Developer ID signing and notarization. The release workflow reruns signed artifact verification after notarization and stapling. Homebrew consumes the disk image; manual installations use the package.
 
@@ -43,12 +43,12 @@ Local Debug and Release builds use ad-hoc signing with `Support/macvm.entitlemen
 
 Public releases use `scripts/package-release.sh` with:
 
-- Developer ID Application signing without virtualization entitlements for the bundled `macvm-docker-guest` payload
-- Developer ID Application signing with virtualization entitlements for `/Applications/MacVM.app/Contents/Helpers/macvm`
-- Developer ID Application signing for `/Applications/MacVM.app` after both nested executables
-- Developer ID Application signing for `MacVM-<version>.dmg`
-- Developer ID Installer signing for `MacVM-<version>.pkg`
-- Apple notarization and stapling for both release artifacts
+- Developer ID Application signing with hardened runtime and no entitlements for both bundled guest-helper payloads
+- Developer ID Application signing with hardened runtime and only the virtualization entitlement for `/Applications/MacVM.app/Contents/Helpers/macvm`
+- Developer ID Application signing with hardened runtime and only the virtualization entitlement for `/Applications/MacVM.app` after all nested executables
+- Developer ID Application signing with identifier `dev.macvm.macvm.dmg` for `MacVM-<version>.dmg`
+- Developer ID Installer signing for package identifier `dev.macvm.macvm.pkg`
+- mandatory Apple notarization and stapling for both artifacts whenever release signing is enabled
 
 The Homebrew disk image contains `MacVM.app`. Its cask moves the app into Homebrew's configured app directory and links `MacVM.app/Contents/Helpers/macvm` into `$(brew --prefix)/bin`.
 
@@ -190,7 +190,9 @@ Required coverage includes:
 
 ### Docker compatibility suite
 
-The trusted `.github/workflows/docker-e2e.yml` path runs only upstream `main`, `release-ci`, or validated release-tag commits. A GitHub-hosted authorization job resolves the exact SHA before a labeled self-hosted macOS/arm64 runner checks it out; pull requests, including forks, never enter that runner. Release packaging independently requires a successful Docker E2E run with the exact release `head_sha`.
+The trusted `.github/workflows/docker-e2e.yml` path runs only upstream `main`, `release-ci`, schedules/manual dispatches on allowed refs, or validated main-ancestry release tags. Main/tag pushes default to `smoke`; nightly and prerelease pushes run `full`; manual runs default to `smoke` and may select `full`. A GitHub-hosted authorization job resolves the exact SHA before a labeled self-hosted macOS/arm64 runner creates a detached checkout under `runner.temp`; pull requests, including forks, never enter that runner. One seed-level concurrency group prevents overlapping clones. The stopped seed is metadata-snapshotted before and after, current-run clones/checkouts are always disposed after diagnostics upload, and every outcome uploads reports plus runner/clone diagnostics. Release packaging independently requires a successful Docker E2E run with the exact release `head_sha`.
+
+The prerelease branch is a deliberate exception to main ancestry. Repository administrators must create a protected `release-ci` GitHub Environment with required reviewers, prevent self-review, and restrict it to that branch. The self-hosted job targets this Environment for every `release-ci` push/manual run; review the exact authorized SHA before approval. Keep `main` branch-protected, restrict manual workflow dispatch to maintainers, and never weaken the hosted authorization job merely to test fork or feature-branch code.
 
 Run the same real-guest contract locally against a stopped, SSH-ready, Docker-ready seed:
 

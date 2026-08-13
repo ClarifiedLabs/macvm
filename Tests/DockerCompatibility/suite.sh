@@ -120,10 +120,40 @@ remove_network() {
     docker network rm "$1" >/dev/null 2>&1 || true
 }
 
+stop_recorded_process() {
+    pid_file=$1
+    if [ -f "$pid_file" ]; then
+        process_pid=$(cat "$pid_file")
+        case "$process_pid" in
+            ''|*[!0-9]*) ;;
+            *)
+                kill "$process_pid" >/dev/null 2>&1 || true
+                wait "$process_pid" >/dev/null 2>&1 || true
+                ;;
+        esac
+        rm -f "$pid_file"
+    fi
+}
+
+detach_apfs_device() {
+    device=$1
+    attempt=1
+    while [ "$attempt" -le 10 ]; do
+        if hdiutil detach -quiet "$device"; then
+            return 0
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
 cleanup_resources() {
+    stop_recorded_process "$WORK_ROOT/http-server-pid"
+    stop_recorded_process "$WORK_ROOT/stream-server-pid"
     if [ -f "$WORK_ROOT/apfs-device" ]; then
         apfs_device=$(cat "$WORK_ROOT/apfs-device")
-        case "$apfs_device" in /dev/disk*) hdiutil detach -quiet "$apfs_device" >/dev/null 2>&1 || true ;; esac
+        case "$apfs_device" in /dev/disk*) detach_apfs_device "$apfs_device" >/dev/null 2>&1 || true ;; esac
     fi
     if [ -f "$WORK_ROOT/swarm-created" ]; then
         docker swarm leave --force >/dev/null 2>&1 || true
@@ -272,6 +302,19 @@ test_container_operations() {
     docker rename "$name" "$renamed"
     assert_contains "$(docker top "$renamed")" sleep
     assert_eq "$(docker stats --no-stream --format '{{.Name}}' "$renamed")" "$renamed"
+}
+
+test_container_wait_diff_commit() {
+    name=$(container_name waitcommit)
+    image="$RUN_PREFIX-committed:latest"
+    docker run -d --name "$name" --label "$(label_args)" alpine:3.23 sh -c \
+        'printf commit-marker >/committed-value; exit 7'
+    assert_eq "$(docker wait "$name")" 7
+    assert_contains "$(docker diff "$name")" /committed-value
+    docker commit --change "LABEL $LABEL_KEY=$RUN_ID" "$name" "$image" >/dev/null
+    assert_eq "$(docker run --rm --label "$(label_args)" "$image" cat /committed-value)" commit-marker
+    committed_label=$(docker image inspect "$image" --format "{{ index .Config.Labels \"$LABEL_KEY\" }}")
+    assert_eq "$committed_label" "$RUN_ID"
 }
 
 test_streams_exit() {
@@ -463,7 +506,7 @@ test_bind_apfs_volume() {
     device=$(printf '%s\n' "$attach_output" | awk '/^\/dev\/disk/ { print $1; exit }')
     mount_point="/Volumes/$volume_name"
     if [ -z "$device" ] || [ ! -d "$mount_point" ]; then
-        [ -n "$device" ] && hdiutil detach -quiet "$device" >/dev/null 2>&1 || true
+        [ -n "$device" ] && detach_apfs_device "$device" >/dev/null 2>&1 || true
         fail "could not determine the APFS image mount point"
     fi
     printf '%s\n' "$device" >"$WORK_ROOT/apfs-device"
@@ -471,9 +514,12 @@ test_bind_apfs_volume() {
     set +e
     output=$(docker run --rm --label "$(label_args)" -v "$mount_point:/volume" alpine:3.23 cat /volume/value)
     code=$?
-    hdiutil detach -quiet "$device"
-    detach_code=$?
-    rm -f "$WORK_ROOT/apfs-device"
+    if detach_apfs_device "$device"; then
+        detach_code=0
+        rm -f "$WORK_ROOT/apfs-device"
+    else
+        detach_code=1
+    fi
     set -e
     [ "$detach_code" -eq 0 ] || fail "could not detach the compatibility APFS image"
     [ "$code" -eq 0 ] || fail "container could not read the mounted APFS volume"
@@ -579,6 +625,7 @@ server.close()
 PY
     python3 "$CASE_DIR/server.py" "$socket_path" >"$CASE_DIR/server.log" 2>&1 &
     server_pid=$!
+    printf '%s\n' "$server_pid" >"$WORK_ROOT/stream-server-pid"
     deadline=$(( $(date +%s) + 10 ))
     while [ ! -S "$socket_path" ] && [ "$(date +%s)" -lt "$deadline" ]; do sleep 1; done
     [ -S "$socket_path" ] || fail "host Unix stream socket was not created"
@@ -593,6 +640,7 @@ PY
     fi
     wait "$server_pid"
     server_code=$?
+    rm -f "$WORK_ROOT/stream-server-pid"
     set -e
     [ "$code" -eq 0 ] || fail "container could not use the relayed stream socket"
     [ "$server_code" -eq 0 ] || fail "host stream socket server failed"
@@ -679,6 +727,7 @@ test_host_internal() {
         python3 -m http.server "$port" --bind 0.0.0.0
     ) >"$CASE_DIR/http.log" 2>&1 &
     server_pid=$!
+    printf '%s\n' "$server_pid" >"$WORK_ROOT/http-server-pid"
     sleep 2
     set +e
     output=$(docker run --rm --label "$(label_args)" alpine:3.23 wget -qO- "http://host.docker.internal:$port")
@@ -686,6 +735,7 @@ test_host_internal() {
     set -e
     kill "$server_pid" >/dev/null 2>&1 || true
     wait "$server_pid" >/dev/null 2>&1 || true
+    rm -f "$WORK_ROOT/http-server-pid"
     [ "$code" -eq 0 ] || fail "container could not reach host.docker.internal:$port"
     assert_contains "$output" host-internal-marker
 }
@@ -751,7 +801,7 @@ FROM alpine:3.23
 LABEL $LABEL_KEY=$RUN_ID
 RUN printf registry-marker >/registry-marker
 EOF
-    docker build -q -t "$source_image" "$CASE_DIR"
+    docker buildx build --load -q -t "$source_image" "$CASE_DIR"
     docker run -d --name "$registry" --label "$(label_args)" -p 127.0.0.1::5000 registry:2
     port=$(docker port "$registry" 5000/tcp | sed 's/.*://')
     deadline=$(( $(date +%s) + 60 ))
@@ -834,6 +884,7 @@ run_case image.pull-tag-inspect required test_pull_tag_inspect
 run_case image.archive required test_image_archive
 run_case container.lifecycle required test_container_lifecycle
 run_case container.operations required test_container_operations
+run_case container.wait-diff-commit required test_container_wait_diff_commit
 run_case container.streams-exit required test_streams_exit
 run_case container.exec-copy required test_exec_copy
 run_case container.logs-events required test_logs_events

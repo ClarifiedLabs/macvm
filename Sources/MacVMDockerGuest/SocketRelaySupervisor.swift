@@ -1,4 +1,5 @@
 import Foundation
+import MacVMDockerGuestCore
 
 /// Maintains remote OpenSSH stream-local forwards from sidecar socket paths to
 /// Unix sockets in the macOS guest. A separate SSH connection per source keeps
@@ -15,6 +16,11 @@ final class SocketRelaySupervisor: @unchecked Sendable {
     private let privateLinuxAddress: String
     private let brokerKeyURL: URL
     private let brokerKnownHostsURL: URL
+    private let setupUsername: String
+    private let helperExecutablePath: String
+    private let relayIdentityRootURL: URL
+    private let setupUID: uid_t
+    private let setupGID: gid_t
     private let queue = DispatchQueue(label: "dev.macvm.docker-guest.socket-relays")
     private var relays: [String: RelayState] = [:]
     private var stopping = false
@@ -22,11 +28,23 @@ final class SocketRelaySupervisor: @unchecked Sendable {
     init(
         privateLinuxAddress: String,
         brokerKeyURL: URL,
-        brokerKnownHostsURL: URL
-    ) {
+        brokerKnownHostsURL: URL,
+        setupUsername: String,
+        helperExecutablePath: String = CommandLine.arguments[0]
+    ) throws {
         self.privateLinuxAddress = privateLinuxAddress
         self.brokerKeyURL = brokerKeyURL
         self.brokerKnownHostsURL = brokerKnownHostsURL
+        self.setupUsername = setupUsername
+        self.helperExecutablePath = helperExecutablePath
+        guard let account = getpwnam(setupUsername) else {
+            throw GuestHelperError("Couldn't find setup account '\(setupUsername)'.")
+        }
+        self.setupUID = account.pointee.pw_uid
+        self.setupGID = account.pointee.pw_gid
+        self.relayIdentityRootURL = brokerKnownHostsURL.deletingLastPathComponent()
+            .appendingPathComponent("RelayIdentities", isDirectory: true)
+        try DockerTransientIdentityFile.pruneRootDirectory(relayIdentityRootURL)
     }
 
     func ensureRelay(filesystemID: String, macOSSocketPath: String) throws -> String {
@@ -64,7 +82,7 @@ final class SocketRelaySupervisor: @unchecked Sendable {
                 }
                 relay.stderrMonitor?.stop()
             }
-            try? runBrokerCommand("remove-socket \(filesystemID)", timeout: 15)
+            try? runBrokerCommand(.removeSocket(filesystemID: filesystemID), timeout: 15)
             DockerGuestLog.info("socket-relay removed filesystemID=\(filesystemID)")
         }
     }
@@ -90,11 +108,23 @@ final class SocketRelaySupervisor: @unchecked Sendable {
 
     private func launchRelay(filesystemID: String) throws {
         guard var relay = relays[filesystemID] else { return }
-        try runBrokerCommand("prepare-socket \(filesystemID)", timeout: 15)
+        try runBrokerCommand(.prepareSocket(filesystemID: filesystemID), timeout: 15)
 
+        let identity = try DockerTransientIdentityFile(
+            privateKey: Data(contentsOf: brokerKeyURL),
+            rootDirectory: relayIdentityRootURL,
+            ownerUID: setupUID,
+            ownerGID: setupGID
+        )
+        defer { try? identity.remove() }
+        guard chmod(brokerKnownHostsURL.path, 0o644) == 0 else {
+            throw GuestHelperError("Unable to make the pinned Docker host key readable by the setup account.")
+        }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.executableURL = URL(fileURLWithPath: helperExecutablePath)
         process.arguments = [
+            "--execute-as-user", setupUsername, "--",
+            "/usr/bin/ssh",
             "-N", "-T",
             "-o", "BatchMode=yes",
             "-o", "IdentitiesOnly=yes",
@@ -104,7 +134,7 @@ final class SocketRelaySupervisor: @unchecked Sendable {
             "-o", "StrictHostKeyChecking=yes",
             "-o", sshKnownHostsOption(brokerKnownHostsURL),
             "-o", "StreamLocalBindUnlink=yes",
-            "-i", brokerKeyURL.path,
+            "-i", identity.url.path,
             "-R", "\(DockerGuestFileUtilities.socketRelayPath(filesystemID: filesystemID)):\(relay.macOSSocketPath)",
             "macvm-mount@\(privateLinuxAddress)",
         ]
@@ -123,6 +153,7 @@ final class SocketRelaySupervisor: @unchecked Sendable {
             try process.run()
         } catch {
             stderrMonitor.stop()
+            if process.isRunning { process.terminate() }
             throw error
         }
         relay.process = process
@@ -130,7 +161,7 @@ final class SocketRelaySupervisor: @unchecked Sendable {
         relays[filesystemID] = relay
 
         do {
-            try runBrokerCommand("wait-socket \(filesystemID)", timeout: 15)
+            try runBrokerCommand(.waitSocket(filesystemID: filesystemID), timeout: 15)
         } catch {
             process.terminationHandler = nil
             if process.isRunning {
@@ -144,6 +175,21 @@ final class SocketRelaySupervisor: @unchecked Sendable {
             throw GuestHelperError(
                 "Unable to establish Docker socket relay for \(relay.macOSSocketPath): \(error.localizedDescription)"
             )
+        }
+
+        do {
+            try identity.remove()
+        } catch {
+            process.terminationHandler = nil
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+            relay.process = nil
+            relay.stderrMonitor = nil
+            stderrMonitor.stop()
+            relays[filesystemID] = relay
+            throw GuestHelperError("Unable to revoke the transient Docker socket relay key.")
         }
 
         relay.restartAttempt = 0
@@ -196,7 +242,7 @@ final class SocketRelaySupervisor: @unchecked Sendable {
         }
     }
 
-    private func runBrokerCommand(_ command: String, timeout: TimeInterval) throws {
+    private func runBrokerCommand(_ command: DockerMountBrokerCommand, timeout: TimeInterval) throws {
         let result = try DockerGuestProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/ssh"),
             arguments: [
@@ -209,7 +255,7 @@ final class SocketRelaySupervisor: @unchecked Sendable {
                 "-o", "ServerAliveCountMax=3",
                 "-i", brokerKeyURL.path,
                 "macvm-mount@\(privateLinuxAddress)",
-                command,
+                command.rendered,
             ],
             standardOutput: .discard,
             timeout: timeout

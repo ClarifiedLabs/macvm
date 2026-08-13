@@ -31,7 +31,13 @@ extension MacVMService {
         let bundle = VMBundle(url: vm.bundleURL)
         let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "provision Docker guest integration")
         defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(bundleURL: vm.bundleURL, metadata: try bundle.readMetadata())
+        let rawMetadata = try bundle.readMetadata()
+        guard rawMetadata.id == vm.metadata.id else {
+            throw MacVMError.message(
+                "The VM at \(vm.bundleURL.path) changed before Docker guest integration could be provisioned. Refresh and retry."
+            )
+        }
+        let currentVM = ManagedVM(bundleURL: vm.bundleURL, metadata: rawMetadata)
         guard var settings = currentVM.metadata.dockerSidecar, settings.enabled else { return currentVM }
         guard settings.guestProvisioningState != .ready
                 || settings.guestProvisioningVersion < DockerSidecarSettings.currentGuestProvisioningVersion else {
@@ -208,7 +214,15 @@ extension MacVMService {
                   [.pendingGuestProvisioning, .ready].contains(descriptor.state) else {
                 throw MacVMError.message("The Docker sidecar became unavailable while guest integration was being installed.")
             }
+            guard try bundle.readMetadata().id == vm.metadata.id else {
+                throw MacVMError.message(
+                    "The VM at \(vm.bundleURL.path) changed while Docker guest integration was being installed. Refresh and retry."
+                )
+            }
             let metadata = try bundle.updateMetadata { metadata in
+                guard metadata.id == vm.metadata.id else {
+                    throw MacVMError.message("The VM changed before Docker provisioning metadata could be saved.")
+                }
                 guard var currentSettings = metadata.dockerSidecar,
                       currentSettings.enabled,
                       sameDockerSidecarIdentity(currentSettings, settings) else {
@@ -304,48 +318,27 @@ extension MacVMService {
         identityFile: URL,
         knownHostsFile: URL
     ) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
-        process.arguments = [
-            "-q",
-            "-o", "StrictHostKeyChecking=yes",
-            "-o", "UserKnownHostsFile=\(knownHostsFile.path)",
-            "-o", "BatchMode=yes",
-            "-o", "IdentitiesOnly=yes",
-            "-o", "ConnectTimeout=10",
-            "-i", identityFile.path,
-            source.path,
-            "\(user)@\(host):\(remotePath)",
-        ]
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        let status = try await waitForProvisioningProcess(process, timeout: 2 * 60)
-        guard status == 0 else {
+        let result = try await AsyncProcessSupervisor.run(.init(
+            executableURL: URL(fileURLWithPath: "/usr/bin/scp"),
+            arguments: [
+                "-q",
+                "-o", "StrictHostKeyChecking=yes",
+                "-o", "UserKnownHostsFile=\(knownHostsFile.path)",
+                "-o", "BatchMode=yes",
+                "-o", "IdentitiesOnly=yes",
+                "-o", "ConnectTimeout=10",
+                "-i", identityFile.path,
+                source.path,
+                "\(user)@\(host):\(remotePath)",
+            ],
+            standardOutput: .null,
+            standardError: .null,
+            timeout: 2 * 60,
+            terminationGracePeriod: 2,
+            timeoutDescription: "Guest file copy"
+        ))
+        guard result.terminationStatus == 0 else {
             throw MacVMError.message("Couldn't copy \(source.lastPathComponent) into the macOS guest.")
-        }
-    }
-
-    private func waitForProvisioningProcess(
-        _ process: Process,
-        timeout: TimeInterval
-    ) async throws -> Int32 {
-        let deadline = Date().addingTimeInterval(timeout)
-        return try await withTaskCancellationHandler {
-            while process.isRunning {
-                try Task.checkCancellation()
-                if Date() >= deadline {
-                    process.terminate()
-                    throw MacVMError.message("Guest file copy timed out after \(Int(timeout)) seconds.")
-                }
-                try await Task.sleep(for: .milliseconds(100))
-            }
-            return process.terminationStatus
-        } onCancel: {
-            if process.isRunning {
-                process.terminate()
-            }
         }
     }
 

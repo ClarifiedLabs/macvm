@@ -292,6 +292,8 @@ struct DockerSectionView: View {
     let vm: ManagedVM
     let vmStatus: VMStatus
     @Binding var editedResources: VMResourceFormValues?
+    @State private var showingReset = false
+    @State private var resetDiskGiB = 0
 
     var body: some View {
         let name = vm.metadata.name
@@ -369,6 +371,45 @@ struct DockerSectionView: View {
                 .padding(14)
             }
         }
+        .sheet(isPresented: $showingReset) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Reset Docker for \(vm.metadata.name)?")
+                    .font(.headline)
+                Text(
+                    "All Docker images, containers, and volumes will be permanently destroyed. "
+                        + "The macOS VM is not affected."
+                )
+                HStack {
+                    Text("Fresh data disk")
+                    TextField("GiB", value: $resetDiskGiB, format: .number)
+                        .frame(width: 72)
+                    Text("GiB")
+                }
+                let oldGiB = VMResourceFormValues.roundedUpGiB(
+                    vm.metadata.dockerSidecar?.dataDiskSizeBytes ?? 0
+                )
+                Text("Data disk: \(oldGiB) GiB → \(resetDiskGiB) GiB")
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { showingReset = false }
+                    Button("Reset", role: .destructive) {
+                        guard let bytes = VMResourceFormValues.byteCount(forGiB: resetDiskGiB) else {
+                            store.alertMessage = "Docker reset disk size must be a positive whole GiB value."
+                            return
+                        }
+                        showingReset = false
+                        store.resetDocker(
+                            for: vm,
+                            resourcePatch: DockerSidecarResourcePatch(dataDiskSizeBytes: bytes)
+                        )
+                    }
+                    .disabled(resetDiskGiB <= 0)
+                }
+            }
+            .padding(24)
+            .frame(width: 460)
+        }
     }
 
     @ViewBuilder
@@ -384,7 +425,12 @@ struct DockerSectionView: View {
             }
             if vm.metadata.dockerSidecar != nil {
                 Button("Update") { store.updateDocker(for: vm) }
-                Button("Reset…") { store.resetDocker(for: vm) }
+                Button("Reset…") {
+                    resetDiskGiB = VMResourceFormValues.roundedUpGiB(
+                        vm.metadata.dockerSidecar?.dataDiskSizeBytes ?? 0
+                    )
+                    showingReset = true
+                }
             }
         }
         .buttonStyle(.bordered)

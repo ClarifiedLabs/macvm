@@ -116,23 +116,24 @@ struct GuestSSH {
         remoteCommand: [String],
         timeout: TimeInterval = 60
     ) async throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = Self.arguments(
-            host: host,
-            user: user,
-            identityFile: identityFile,
-            remoteCommand: remoteCommand,
-            batchMode: true,
-            connectTimeout: 10,
-            knownHostsFile: knownHostsFile,
-            requirePinnedHostKey: requirePinnedHostKey
-        )
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        return try await Self.waitForTermination(process, timeout: timeout)
+        let result = try await AsyncProcessSupervisor.run(.init(
+            executableURL: URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments: Self.arguments(
+                host: host,
+                user: user,
+                identityFile: identityFile,
+                remoteCommand: remoteCommand,
+                batchMode: true,
+                connectTimeout: 10,
+                knownHostsFile: knownHostsFile,
+                requirePinnedHostKey: requirePinnedHostKey
+            ),
+            standardOutput: .null,
+            standardError: .null,
+            timeout: timeout,
+            timeoutDescription: "SSH command"
+        ))
+        return result.terminationStatus
     }
 
     /// Run a remote command and write combined stdout/stderr to a host-side log.
@@ -193,23 +194,24 @@ struct GuestSSH {
         try logHandle.seekToEnd()
         defer { try? logHandle.close() }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = Self.arguments(
-            host: host,
-            user: user,
-            identityFile: identityFile,
-            remoteCommand: remoteCommand,
-            batchMode: true,
-            connectTimeout: 10,
-            knownHostsFile: knownHostsFile,
-            requirePinnedHostKey: requirePinnedHostKey
-        )
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = logHandle
-        process.standardError = logHandle
-        try process.run()
-        return try await Self.waitForTermination(process, timeout: timeout)
+        let result = try await AsyncProcessSupervisor.run(.init(
+            executableURL: URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments: Self.arguments(
+                host: host,
+                user: user,
+                identityFile: identityFile,
+                remoteCommand: remoteCommand,
+                batchMode: true,
+                connectTimeout: 10,
+                knownHostsFile: knownHostsFile,
+                requirePinnedHostKey: requirePinnedHostKey
+            ),
+            standardOutput: .fileHandle(logHandle),
+            standardError: .fileHandle(logHandle),
+            timeout: timeout,
+            timeoutDescription: "SSH command"
+        ))
+        return result.terminationStatus
     }
 
     /// Poll until a non-interactive SSH connection succeeds or the timeout elapses.
@@ -223,28 +225,6 @@ struct GuestSSH {
             Thread.sleep(forTimeInterval: pollInterval)
         }
         return probe()
-    }
-
-    private static func waitForTermination(
-        _ process: Process,
-        timeout: TimeInterval
-    ) async throws -> Int32 {
-        let deadline = Date().addingTimeInterval(timeout)
-        return try await withTaskCancellationHandler {
-            while process.isRunning {
-                try Task.checkCancellation()
-                if Date() >= deadline {
-                    process.terminate()
-                    throw MacVMError.message("SSH command timed out after \(Int(timeout)) seconds.")
-                }
-                try await Task.sleep(for: .milliseconds(100))
-            }
-            return process.terminationStatus
-        } onCancel: {
-            if process.isRunning {
-                process.terminate()
-            }
-        }
     }
 
     private func probe() -> Bool {

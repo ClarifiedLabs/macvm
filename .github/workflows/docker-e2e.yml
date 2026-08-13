@@ -1,0 +1,311 @@
+name: docker-e2e
+
+on:
+  push:
+    branches:
+      - main
+      - release-ci
+    tags:
+      - v*.*.*
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Docker compatibility suite
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - full
+
+permissions:
+  contents: read
+
+# One stopped seed may be cloned by only one workflow run at a time.
+concurrency:
+  group: docker-e2e-seed-${{ vars.MACVM_DOCKER_E2E_SEED || 'unconfigured' }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize trusted revision
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      environment: ${{ steps.mode.outputs.environment }}
+      sha: ${{ steps.revision.outputs.sha }}
+      suite: ${{ steps.mode.outputs.suite }}
+
+    steps:
+      - name: Reject untrusted repository or ref
+        env:
+          CANONICAL_REPOSITORY: ClarifiedLabs/macvm
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REPOSITORY" != "$CANONICAL_REPOSITORY" ]]; then
+            echo "Self-hosted Docker E2E is restricted to $CANONICAL_REPOSITORY." >&2
+            exit 1
+          fi
+          case "$GITHUB_REF" in
+            refs/heads/main|refs/heads/release-ci) ;;
+            refs/tags/v*)
+              [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+                echo "Tag $GITHUB_REF is not a release tag." >&2
+                exit 1
+              }
+              ;;
+            *)
+              echo "Ref $GITHUB_REF is not trusted for self-hosted execution." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout trusted ref on hosted runner
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate trusted revision
+        id: revision
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor "$sha" origin/main
+          else
+            branch="${GITHUB_REF#refs/heads/}"
+            git fetch --no-tags origin "$branch"
+            [[ "$sha" == "$(git rev-parse "origin/$branch^{commit}")" ]]
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve E2E mode
+        id: mode
+        env:
+          INPUT_SUITE: ${{ inputs.suite }}
+        run: |
+          set -euo pipefail
+          environment=docker-e2e
+          case "$GITHUB_EVENT_NAME:$GITHUB_REF" in
+            schedule:*) suite=full ;;
+            push:refs/heads/release-ci)
+              suite=full
+              environment=release-ci
+              ;;
+            workflow_dispatch:refs/heads/release-ci)
+              suite="${INPUT_SUITE:-smoke}"
+              environment=release-ci
+              ;;
+            workflow_dispatch:*) suite="${INPUT_SUITE:-smoke}" ;;
+            push:refs/heads/main|push:refs/tags/v*) suite=smoke ;;
+            *)
+              echo "Unsupported trusted E2E mode for $GITHUB_EVENT_NAME on $GITHUB_REF." >&2
+              exit 1
+              ;;
+          esac
+          case "$suite" in
+            smoke|full) ;;
+            *) echo "E2E suite must be smoke or full, got '$suite'." >&2; exit 2 ;;
+          esac
+          echo "environment=$environment" >> "$GITHUB_OUTPUT"
+          echo "suite=$suite" >> "$GITHUB_OUTPUT"
+
+  docker-e2e:
+    name: Docker real-guest E2E (${{ needs.authorize.outputs.suite }})
+    needs: authorize
+    environment: ${{ needs.authorize.outputs.environment }}
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
+      - macvm-docker-e2e
+    timeout-minutes: 240
+
+    env:
+      MACVM_DOCKER_E2E_SEED: ${{ vars.MACVM_DOCKER_E2E_SEED }}
+      MACVM_DOCKER_E2E_SUITE: ${{ needs.authorize.outputs.suite }}
+      MACVM_DOCKER_E2E_KEEP_VM: "0"
+      MACVM_E2E_ROOT: ${{ vars.MACVM_DOCKER_E2E_ROOT }}
+
+    steps:
+      - name: Create disposable exact-SHA checkout
+        env:
+          AUTHORIZED_SHA: ${{ needs.authorize.outputs.sha }}
+          CANONICAL_REPOSITORY: ClarifiedLabs/macvm
+          MACVM_E2E_RUN_ROOT: ${{ runner.temp }}/macvm-docker-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          MACVM_E2E_CHECKOUT: ${{ runner.temp }}/macvm-docker-e2e-${{ github.run_id }}-${{ github.run_attempt }}/source
+          MACVM_DOCKER_E2E_ARTIFACTS: ${{ runner.temp }}/macvm-docker-e2e-${{ github.run_id }}-${{ github.run_attempt }}/artifacts
+        run: |
+          set -euo pipefail
+          {
+            echo "MACVM_E2E_RUN_ROOT=$MACVM_E2E_RUN_ROOT"
+            echo "MACVM_E2E_CHECKOUT=$MACVM_E2E_CHECKOUT"
+            echo "MACVM_DOCKER_E2E_ARTIFACTS=$MACVM_DOCKER_E2E_ARTIFACTS"
+          } >> "$GITHUB_ENV"
+          rm -rf "$MACVM_E2E_RUN_ROOT"
+          mkdir -p "$MACVM_E2E_CHECKOUT" "$MACVM_DOCKER_E2E_ARTIFACTS"
+          git -c init.defaultBranch=detached init "$MACVM_E2E_CHECKOUT"
+          git -C "$MACVM_E2E_CHECKOUT" config core.hooksPath /dev/null
+          git -C "$MACVM_E2E_CHECKOUT" fetch \
+            --no-tags --depth=1 \
+            "https://github.com/${CANONICAL_REPOSITORY}.git" \
+            "$AUTHORIZED_SHA"
+          git -C "$MACVM_E2E_CHECKOUT" checkout --detach FETCH_HEAD
+          [[ "$(git -C "$MACVM_E2E_CHECKOUT" rev-parse 'HEAD^{commit}')" == "$AUTHORIZED_SHA" ]]
+          git -C "$MACVM_E2E_CHECKOUT" status --short --untracked-files=no
+
+      - name: Require Xcode 26 and immutable seed
+        working-directory: ${{ runner.temp }}/macvm-docker-e2e-${{ github.run_id }}-${{ github.run_attempt }}/source
+        run: |
+          set -euo pipefail
+          version="$(xcodebuild -version | awk '/^Xcode / { print $2 }')"
+          case "$version" in
+            26|26.*) ;;
+            *) echo "Xcode 26 is required; found ${version:-unknown}" >&2; exit 1 ;;
+          esac
+          [[ -n "$MACVM_DOCKER_E2E_SEED" ]] || {
+            echo "Repository variable MACVM_DOCKER_E2E_SEED is required." >&2
+            exit 1
+          }
+          vm_root="${MACVM_E2E_ROOT:-$HOME/VirtualMachines/MacVMHost}"
+          case "$MACVM_DOCKER_E2E_SEED" in
+            */*|*.macvm) seed_bundle="$MACVM_DOCKER_E2E_SEED" ;;
+            *) seed_bundle="$vm_root/$MACVM_DOCKER_E2E_SEED.macvm" ;;
+          esac
+          [[ -d "$seed_bundle" ]] || {
+            echo "Docker E2E seed bundle is missing: $seed_bundle" >&2
+            exit 1
+          }
+          {
+            echo "MACVM_E2E_RESOLVED_ROOT=$vm_root"
+            echo "MACVM_E2E_SEED_BUNDLE=$seed_bundle"
+          } >> "$GITHUB_ENV"
+
+      - name: Snapshot immutable seed
+        working-directory: ${{ runner.temp }}/macvm-docker-e2e-${{ github.run_id }}-${{ github.run_attempt }}/source
+        run: |
+          set -euo pipefail
+          python3 - "$MACVM_E2E_SEED_BUNDLE" "$MACVM_DOCKER_E2E_ARTIFACTS/seed-before.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import stat
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          manifest = {}
+          for directory, names, files in os.walk(root, followlinks=False):
+              for name in sorted(names + files):
+                  path = pathlib.Path(directory, name)
+                  metadata = path.lstat()
+                  relative = str(path.relative_to(root))
+                  manifest[relative] = {
+                      "mode": stat.S_IMODE(metadata.st_mode),
+                      "mtime_ns": metadata.st_mtime_ns,
+                      "size": metadata.st_size,
+                      "type": stat.S_IFMT(metadata.st_mode),
+                      "target": os.readlink(path) if path.is_symlink() else None,
+                  }
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(manifest, sort_keys=True) + "\n")
+          PY
+
+      - name: Run Docker compatibility E2E
+        working-directory: ${{ runner.temp }}/macvm-docker-e2e-${{ github.run_id }}-${{ github.run_attempt }}/source
+        run: |
+          set -euo pipefail
+          make test-docker-e2e 2>&1 | tee "$MACVM_DOCKER_E2E_ARTIFACTS/workflow.log"
+
+      - name: Verify seed remained immutable
+        if: always()
+        run: |
+          set -euo pipefail
+          before="$MACVM_DOCKER_E2E_ARTIFACTS/seed-before.json"
+          [[ -f "$before" ]] || exit 0
+          python3 - "$MACVM_E2E_SEED_BUNDLE" "$before" "$MACVM_DOCKER_E2E_ARTIFACTS/seed-after.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import stat
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          manifest = {}
+          for directory, names, files in os.walk(root, followlinks=False):
+              for name in sorted(names + files):
+                  path = pathlib.Path(directory, name)
+                  metadata = path.lstat()
+                  relative = str(path.relative_to(root))
+                  manifest[relative] = {
+                      "mode": stat.S_IMODE(metadata.st_mode),
+                      "mtime_ns": metadata.st_mtime_ns,
+                      "size": metadata.st_size,
+                      "type": stat.S_IFMT(metadata.st_mode),
+                      "target": os.readlink(path) if path.is_symlink() else None,
+                  }
+          after_path = pathlib.Path(sys.argv[3])
+          after_path.write_text(json.dumps(manifest, sort_keys=True) + "\n")
+          before = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          if before != manifest:
+              changed = sorted(set(before) | set(manifest))
+              changed = [path for path in changed if before.get(path) != manifest.get(path)]
+              raise SystemExit("immutable Docker E2E seed changed: " + ", ".join(changed[:20]))
+          PY
+
+      - name: Collect runner and clone diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          diagnostics="$MACVM_DOCKER_E2E_ARTIFACTS/runner"
+          mkdir -p "$diagnostics"
+          sw_vers > "$diagnostics/sw-vers.txt" 2>&1 || true
+          xcodebuild -version > "$diagnostics/xcode-version.txt" 2>&1 || true
+          df -h > "$diagnostics/disk-free.txt" 2>&1 || true
+          ps -axo pid,ppid,state,etime,command > "$diagnostics/processes.txt" 2>&1 || true
+          git -C "$MACVM_E2E_CHECKOUT" status --short > "$diagnostics/git-status.txt" 2>&1 || true
+          find /private/tmp -maxdepth 1 -type d -name 'mvm-dc.*' -user "$(id -un)" -print \
+            > "$diagnostics/temporary-mounts.txt" 2>&1 || true
+          if [[ -f "$MACVM_DOCKER_E2E_ARTIFACTS/run.json" ]]; then
+            run_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$MACVM_DOCKER_E2E_ARTIFACTS/run.json")"
+            for bundle in "$MACVM_E2E_RESOLVED_ROOT/macvm-compat-$run_id-primary.macvm" "$MACVM_E2E_RESOLVED_ROOT/macvm-compat-$run_id-secondary.macvm"; do
+              [[ -d "$bundle" ]] || continue
+              name="$(basename "$bundle")"
+              mkdir -p "$diagnostics/clones/$name"
+              find "$bundle" -type f \( -name 'Metadata.json' -o -name '*.log' \) -size -10M -print \
+                > "$diagnostics/clones/$name/files.txt" 2>&1 || true
+              while IFS= read -r file; do
+                relative="${file#"$bundle"/}"
+                mkdir -p "$diagnostics/clones/$name/$(dirname "$relative")"
+                cp -p "$file" "$diagnostics/clones/$name/$relative" || true
+              done < "$diagnostics/clones/$name/files.txt"
+            done
+          fi
+
+      - name: Upload Docker compatibility diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-e2e-${{ needs.authorize.outputs.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/macvm-docker-e2e-${{ github.run_id }}-${{ github.run_attempt }}/artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Remove disposable clones and checkout
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f "$MACVM_DOCKER_E2E_ARTIFACTS/run.json" ]]; then
+            run_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$MACVM_DOCKER_E2E_ARTIFACTS/run.json")"
+            cli="$MACVM_E2E_CHECKOUT/.build/xcode-derived/Build/Products/Debug/macvm"
+            if [[ -x "$cli" ]]; then
+              for suffix in secondary primary; do
+                name="macvm-compat-$run_id-$suffix"
+                "$cli" stop --root "$MACVM_E2E_RESOLVED_ROOT" "$name" >/dev/null 2>&1 || true
+                "$cli" rm --root "$MACVM_E2E_RESOLVED_ROOT" --force "$name" >/dev/null 2>&1 || true
+              done
+            fi
+          fi
+          find /private/tmp -maxdepth 1 -type d -name 'mvm-dc.*' -user "$(id -un)" -exec rm -rf {} + 2>/dev/null || true
+          rm -rf "$MACVM_E2E_RUN_ROOT"

@@ -3,6 +3,42 @@ import Darwin
 import Foundation
 import Virtualization
 
+enum DockerDiskGrowthTransaction {
+    static func perform<Result>(
+        targetSizeBytes: UInt64,
+        readActualSize: () throws -> UInt64,
+        grow: (UInt64) throws -> Void,
+        persist: () throws -> Result,
+        rollback: (UInt64) throws -> Void
+    ) throws -> Result {
+        let actualSize = try readActualSize()
+        guard targetSizeBytes >= actualSize else {
+            throw MacVMError.message(
+                "Docker data disk cannot be shrunk from \(VMText.gibLabel(for: actualSize)) "
+                    + "to \(VMText.gibLabel(for: targetSizeBytes)); use `macvm docker reset --force` for a smaller fresh disk."
+            )
+        }
+
+        let extended = targetSizeBytes > actualSize
+        try grow(targetSizeBytes)
+        do {
+            return try persist()
+        } catch {
+            let persistenceError = error
+            guard extended else { throw persistenceError }
+            do {
+                try rollback(actualSize)
+            } catch let rollbackError {
+                throw MacVMError.message(
+                    "Couldn't save Docker resource settings (\(persistenceError.localizedDescription)); "
+                        + "the data-disk extension also couldn't be rolled back (\(rollbackError.localizedDescription))."
+                )
+            }
+            throw persistenceError
+        }
+    }
+}
+
 struct DockerSidecarBundle {
     static let dataDiskBlockIdentifier = "macvm-docker-data"
 

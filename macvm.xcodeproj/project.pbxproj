@@ -46,6 +46,9 @@
 		A00000000000000000000112 /* libMacVMClipboardProtocol.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A000000000000000000000F0 /* libMacVMClipboardProtocol.a */; };
 		A00000000000000000000113 /* libMacVMClipboardProtocol.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A000000000000000000000F0 /* libMacVMClipboardProtocol.a */; };
 		A00000000000000000000114 /* libMacVMClipboardProtocol.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A000000000000000000000F0 /* libMacVMClipboardProtocol.a */; };
+		A00000000000000000000300 /* libMacVMDockerGuestCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000301 /* libMacVMDockerGuestCore.a */; };
+		A00000000000000000000302 /* libMacVMDockerGuestCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000301 /* libMacVMDockerGuestCore.a */; };
+		A00000000000000000000320 /* libMacVMDockerGuestCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000301 /* libMacVMDockerGuestCore.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -210,6 +213,27 @@
 			remoteGlobalIDString = A000000000000000000000F4;
 			remoteInfo = MacVMClipboardProtocol;
 		};
+		A00000000000000000000303 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000304;
+			remoteInfo = MacVMDockerGuestCore;
+		};
+		A00000000000000000000305 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000304;
+			remoteInfo = MacVMDockerGuestCore;
+		};
+		A00000000000000000000321 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000304;
+			remoteInfo = MacVMDockerGuestCore;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -240,6 +264,7 @@
 		A00000000000000000000122 /* DockerGuestProcessRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/MacVMHostKit/Docker/DockerGuestProcessRunner.swift; sourceTree = "<group>"; };
 		A000000000000000000000F0 /* libMacVMClipboardProtocol.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libMacVMClipboardProtocol.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		A000000000000000000000F1 /* macvm-clipboard-guest */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "macvm-clipboard-guest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000301 /* libMacVMDockerGuestCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libMacVMDockerGuestCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000082 /* Makefile */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.make; path = Makefile; sourceTree = "<group>"; };
 		A00000000000000000000083 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		A00000000000000000000084 /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
@@ -304,6 +329,11 @@
 			path = Sources/MacVMClipboardGuest;
 			sourceTree = "<group>";
 		};
+		A00000000000000000000306 /* Sources/MacVMDockerGuestCore */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/MacVMDockerGuestCore;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -318,6 +348,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A00000000000000000000320 /* libMacVMDockerGuestCore.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -349,6 +380,7 @@
 				A000000000000000000000B4 /* libMacVMHostKit.a in Frameworks */,
 				A000000000000000000000B5 /* libMacVMPrivateVZ.a in Frameworks */,
 				A00000000000000000000112 /* libMacVMClipboardProtocol.a in Frameworks */,
+				A00000000000000000000302 /* libMacVMDockerGuestCore.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -367,6 +399,7 @@
 				A000000000000000000000D0 /* NIOCore in Frameworks */,
 				A000000000000000000000D1 /* NIOPosix in Frameworks */,
 				A000000000000000000000D2 /* NIOHTTP1 in Frameworks */,
+				A00000000000000000000300 /* libMacVMDockerGuestCore.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -382,6 +415,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000114 /* libMacVMClipboardProtocol.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000307 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -421,6 +461,7 @@
 				A000000000000000000000D3 /* macvm-docker-guest */,
 				A000000000000000000000F0 /* libMacVMClipboardProtocol.a */,
 				A000000000000000000000F1 /* macvm-clipboard-guest */,
+				A00000000000000000000301 /* libMacVMDockerGuestCore.a */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -435,6 +476,7 @@
 				A000000000000000000000D8 /* Sources/MacVMDockerGuest */,
 				A000000000000000000000F2 /* Sources/MacVMClipboardProtocol */,
 				A000000000000000000000F3 /* Sources/MacVMClipboardGuest */,
+				A00000000000000000000306 /* Sources/MacVMDockerGuestCore */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -482,6 +524,7 @@
 			dependencies = (
 				A00000000000000000000062 /* PBXTargetDependency */,
 				A00000000000000000000103 /* PBXTargetDependency */,
+				A00000000000000000000322 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A00000000000000000000011 /* Sources/MacVMHostKit */,
@@ -559,6 +602,7 @@
 				A00000000000000000000072 /* PBXTargetDependency */,
 				A00000000000000000000074 /* PBXTargetDependency */,
 				A0000000000000000000010B /* PBXTargetDependency */,
+				A00000000000000000000309 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A00000000000000000000015 /* Tests/MacVMHostKitTests */,
@@ -630,6 +674,25 @@
 			productReference = A000000000000000000000F1 /* macvm-clipboard-guest */;
 			productType = "com.apple.product-type.tool";
 		};
+		A00000000000000000000304 /* MacVMDockerGuestCore */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A0000000000000000000030C /* Build configuration list for PBXNativeTarget "MacVMDockerGuestCore" */;
+			buildPhases = (
+				A0000000000000000000030A /* Sources */,
+				A00000000000000000000307 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A00000000000000000000306 /* Sources/MacVMDockerGuestCore */,
+			);
+			name = MacVMDockerGuestCore;
+			productName = MacVMDockerGuestCore;
+			productReference = A00000000000000000000301 /* libMacVMDockerGuestCore.a */;
+			productType = "com.apple.product-type.library.static";
+		};
 		A000000000000000000000D7 /* MacVMDockerGuest */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A00000000000000000000137 /* Build configuration list for PBXNativeTarget "MacVMDockerGuest" */;
@@ -640,6 +703,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				A00000000000000000000308 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A000000000000000000000D8 /* Sources/MacVMDockerGuest */,
@@ -694,6 +758,9 @@
 					A000000000000000000000F5 = {
 						CreatedOnToolsVersion = 26.2;
 					};
+					A00000000000000000000304 = {
+						CreatedOnToolsVersion = 26.2;
+					};
 				};
 			};
 			buildConfigurationList = A000000000000000000001A1 /* Build configuration list for PBXProject "macvm" */;
@@ -722,6 +789,7 @@
 				A00000000000000000000035 /* MacVMHostKitTests */,
 				A00000000000000000000036 /* MacVMTests */,
 				A000000000000000000000D7 /* MacVMDockerGuest */,
+				A00000000000000000000304 /* MacVMDockerGuestCore */,
 				A000000000000000000000F4 /* MacVMClipboardProtocol */,
 				A000000000000000000000F5 /* MacVMClipboardGuest */,
 			);
@@ -843,6 +911,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A000000000000000000000F8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A0000000000000000000030A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1000,6 +1075,24 @@
 			name = MacVMClipboardProtocol;
 			target = A000000000000000000000F4 /* MacVMClipboardProtocol */;
 			targetProxy = A0000000000000000000010C /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000308 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMDockerGuestCore;
+			target = A00000000000000000000304 /* MacVMDockerGuestCore */;
+			targetProxy = A00000000000000000000303 /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000309 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMDockerGuestCore;
+			target = A00000000000000000000304 /* MacVMDockerGuestCore */;
+			targetProxy = A00000000000000000000305 /* PBXContainerItemProxy */;
+		};
+		A00000000000000000000322 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacVMDockerGuestCore;
+			target = A00000000000000000000304 /* MacVMDockerGuestCore */;
+			targetProxy = A00000000000000000000321 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1388,6 +1481,28 @@
 			};
 			name = Release;
 		};
+		A0000000000000000000030D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEFINES_MODULE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_MODULE_NAME = MacVMDockerGuestCore;
+				PRODUCT_NAME = MacVMDockerGuestCore;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		A0000000000000000000030E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEFINES_MODULE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_MODULE_NAME = MacVMDockerGuestCore;
+				PRODUCT_NAME = MacVMDockerGuestCore;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
 		A0000000000000000000021E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1513,6 +1628,15 @@
 			buildConfigurations = (
 				A000000000000000000000FE /* Debug */,
 				A000000000000000000000FF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A0000000000000000000030C /* Build configuration list for PBXNativeTarget "MacVMDockerGuestCore" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0000000000000000000030D /* Debug */,
+				A0000000000000000000030E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

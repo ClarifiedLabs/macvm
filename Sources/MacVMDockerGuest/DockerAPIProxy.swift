@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import MacVMDockerGuestCore
 import NIOCore
 import NIOPosix
 
@@ -40,6 +41,14 @@ final class DockerAPIProxy: @unchecked Sendable {
             .serverChannelOption(ChannelOptions.backlog, value: 128)
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+            .childChannelOption(ChannelOptions.autoRead, value: false)
+            .childChannelOption(
+                ChannelOptions.writeBufferWaterMark,
+                value: WriteBufferWaterMark(
+                    low: DockerRawProxyPolicy.writeBufferLowWaterMark,
+                    high: DockerRawProxyPolicy.writeBufferHighWaterMark
+                )
+            )
             .childChannelInitializer { channel in
                 channel.pipeline.addHandler(RawDockerProxyHandler(
                     mapper: mapper,
@@ -74,7 +83,7 @@ private struct HTTPMessageHead {
     }
 
     var firstLine: String
-    var headerLines: [(name: String, value: String)]
+    var headerLines: [DockerHTTPHeaderField]
     var encodedLength: Int
     var bodyMode: BodyMode
 
@@ -109,12 +118,18 @@ private struct HTTPMessageHead {
 private struct ProxyRequestContext {
     var method: String
     var uri: String
-    var upgradeRequested: Bool
+    var requestedUpgrade: String?
 }
 
 private final class ResponseContextQueue {
     private var values: [ProxyRequestContext] = []
-    func append(_ value: ProxyRequestContext) { values.append(value) }
+
+    func append(_ value: ProxyRequestContext) -> Bool {
+        guard values.count < DockerRawProxyPolicy.maximumInFlightRequests else { return false }
+        values.append(value)
+        return true
+    }
+
     func removeFirst() -> ProxyRequestContext? { values.isEmpty ? nil : values.removeFirst() }
 }
 
@@ -123,7 +138,7 @@ private enum HTTPBodyStreamState {
     case chunkSize
     case chunkData(Int)
     case chunkDataTerminator
-    case chunkTrailers
+    case chunkTrailers(Int)
 
     static func make(for mode: HTTPMessageHead.BodyMode) -> HTTPBodyStreamState? {
         switch mode {
@@ -145,22 +160,15 @@ private enum HTTPBodyStreamState {
                 return HTTPBodyConsumption(data: consumed, status: .incomplete)
 
             case .chunkSize:
-                guard let lineEnd = input.range(of: Data("\r\n".utf8)) else {
+                switch DockerRawProxyPolicy.inspectChunkSizeLine(input) {
+                case .incomplete:
                     return HTTPBodyConsumption(data: consumed, status: .incomplete)
+                case .complete(let size, let encodedLength):
+                    consumed.append(takePrefix(encodedLength, from: &input))
+                    self = size == 0 ? .chunkTrailers(0) : .chunkData(size)
+                case .rejected(let reason):
+                    return HTTPBodyConsumption(data: consumed, status: .malformed(reason))
                 }
-                let lineData = Data(input[..<lineEnd.lowerBound])
-                guard let line = String(data: lineData, encoding: .ascii) else {
-                    return HTTPBodyConsumption(data: consumed, status: .malformed("Invalid chunk-size line."))
-                }
-                guard let rawSize = line.split(separator: ";", maxSplits: 1).first?
-                    .trimmingCharacters(in: .whitespaces),
-                    !rawSize.isEmpty,
-                    let size = Int(rawSize, radix: 16) else {
-                    return HTTPBodyConsumption(data: consumed, status: .malformed("Invalid chunk size."))
-                }
-                let lineLength = input.distance(from: input.startIndex, to: lineEnd.upperBound)
-                consumed.append(takePrefix(lineLength, from: &input))
-                self = size == 0 ? .chunkTrailers : .chunkData(size)
 
             case .chunkData(let remaining):
                 let count = min(remaining, input.count)
@@ -181,14 +189,21 @@ private enum HTTPBodyStreamState {
                 consumed.append(takePrefix(2, from: &input))
                 self = .chunkSize
 
-            case .chunkTrailers:
+            case .chunkTrailers(let consumedTrailerBytes):
                 guard let lineEnd = input.range(of: Data("\r\n".utf8)) else {
+                    if consumedTrailerBytes + input.count > DockerRawProxyPolicy.maximumTrailerBytes {
+                        return HTTPBodyConsumption(data: consumed, status: .malformed("Chunk trailers are too large."))
+                    }
                     return HTTPBodyConsumption(data: consumed, status: .incomplete)
                 }
                 let lineLength = input.distance(from: input.startIndex, to: lineEnd.upperBound)
+                guard consumedTrailerBytes + lineLength <= DockerRawProxyPolicy.maximumTrailerBytes else {
+                    return HTTPBodyConsumption(data: consumed, status: .malformed("Chunk trailers are too large."))
+                }
                 let isFinalLine = lineLength == 2
                 consumed.append(takePrefix(lineLength, from: &input))
                 if isFinalLine { return HTTPBodyConsumption(data: consumed, status: .complete) }
+                self = .chunkTrailers(consumedTrailerBytes + lineLength)
             }
         }
     }
@@ -248,7 +263,7 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
     typealias InboundIn = ByteBuffer
 
     fileprivate static let maximumMappedBodyBytes = 16 * 1024 * 1024
-    fileprivate static let maximumHeadBytes = 64 * 1024
+    fileprivate static let maximumHeadBytes = DockerRawProxyPolicy.maximumHeadBytes
 
     private let mapper: GuestFilesystemMapper
     private let privateSocketPath: String
@@ -262,6 +277,7 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
     private var tunnelMode = false
     private var rewriteInProgress = false
     private var inputClosed = false
+    private var connectQueueOverflowed = false
 
     init(
         mapper: GuestFilesystemMapper,
@@ -279,6 +295,14 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
         let client = context.channel
         ClientBootstrap(group: context.eventLoop)
             .channelOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+            .channelOption(ChannelOptions.autoRead, value: false)
+            .channelOption(
+                ChannelOptions.writeBufferWaterMark,
+                value: WriteBufferWaterMark(
+                    low: DockerRawProxyPolicy.writeBufferLowWaterMark,
+                    high: DockerRawProxyPolicy.writeBufferHighWaterMark
+                )
+            )
             .channelInitializer { channel in
                 channel.pipeline.addHandler(RawDockerBackendHandler(
                     client: client,
@@ -293,11 +317,21 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
                 switch result {
                 case .success(let channel):
                     self.backend = channel
+                    guard !self.connectQueueOverflowed else {
+                        channel.close(promise: nil)
+                        client.close(promise: nil)
+                        return
+                    }
                     self.pendingWrites.forEach { channel.write($0, promise: nil) }
                     self.pendingWrites.removeAll()
                     channel.flush()
+                    channel.setOption(ChannelOptions.autoRead, value: client.isWritable).whenFailure { _ in
+                        client.close(promise: nil)
+                    }
                     if self.inputClosed {
                         channel.close(mode: .output, promise: nil)
+                    } else {
+                        self.updateClientAutoRead(client)
                     }
                 case .failure(let error):
                     self.sendError(error.localizedDescription, status: "502 Bad Gateway", channel: client)
@@ -313,6 +347,7 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
         }
         input.append(contentsOf: buffer.readBytes(length: buffer.readableBytes) ?? [])
         processInput(channel: context.channel)
+        if connectQueueOverflowed { context.close(promise: nil) }
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
@@ -328,6 +363,13 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
         context.fireChannelInactive()
     }
 
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        backend?.setOption(ChannelOptions.autoRead, value: context.channel.isWritable).whenFailure { _ in
+            context.close(promise: nil)
+        }
+        context.fireChannelWritabilityChanged()
+    }
+
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         backend?.close(promise: nil)
         context.close(promise: nil)
@@ -338,10 +380,21 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
         while !input.isEmpty {
             switch processingState {
             case .head:
+                switch DockerRawProxyPolicy.inspectHead(input) {
+                case .incomplete:
+                    return
+                case .rejected:
+                    sendError("Docker API request headers exceed 64 KiB.", status: "431 Request Header Fields Too Large", channel: channel)
+                    return
+                case .complete:
+                    break
+                }
                 guard let head = Self.parseRequestHead(from: input) else {
-                    if input.count > Self.maximumHeadBytes {
-                        sendError("Docker API request headers exceed 64 KiB.", status: "431 Request Header Fields Too Large", channel: channel)
-                    }
+                    sendError("Malformed Docker API request headers.", status: "400 Bad Request", channel: channel)
+                    return
+                }
+                if head.encodedLength > Self.maximumHeadBytes {
+                    sendError("Docker API request headers exceed 64 KiB.", status: "431 Request Header Fields Too Large", channel: channel)
                     return
                 }
                 if case .invalid(let reason) = head.bodyMode {
@@ -355,13 +408,24 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
                 }
                 let method = methodAndURI[0]
                 let uri = methodAndURI[1]
-                let upgrade = head.headerContainsToken("connection", token: "upgrade")
-                    || head.headers["upgrade"] != nil
-                let request = ProxyRequestContext(method: method, uri: uri, upgradeRequested: upgrade)
+                let requestedUpgrade: String?
+                switch DockerRawProxyPolicy.requestUpgrade(method: method, uri: uri, headers: head.headerLines) {
+                case .none:
+                    requestedUpgrade = nil
+                case .requested(let value):
+                    requestedUpgrade = value
+                case .rejected(let reason):
+                    sendError(reason, status: "400 Bad Request", channel: channel)
+                    return
+                }
+                let request = ProxyRequestContext(method: method, uri: uri, requestedUpgrade: requestedUpgrade)
                 let encodedHead = takePrefix(head.encodedLength, from: &input)
 
-                if upgrade {
-                    responseQueue.append(request)
+                if requestedUpgrade != nil {
+                    guard responseQueue.append(request) else {
+                        sendError("Too many pipelined Docker API requests.", status: "429 Too Many Requests", channel: channel)
+                        return
+                    }
                     forward(encodedHead, allocator: channel.allocator)
                     if !input.isEmpty {
                         forward(input, allocator: channel.allocator)
@@ -372,7 +436,10 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
                 }
 
                 guard DockerAPIPathRewriter.rewritesRequest(method: method, uri: uri) else {
-                    responseQueue.append(request)
+                    guard responseQueue.append(request) else {
+                        sendError("Too many pipelined Docker API requests.", status: "429 Too Many Requests", channel: channel)
+                        return
+                    }
                     forward(encodedHead, allocator: channel.allocator)
                     switch head.bodyMode {
                     case .none:
@@ -505,7 +572,11 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
         }.whenComplete { result in
             switch result {
             case .success(let rewritten):
-                self.responseQueue.append(request.context)
+                guard self.responseQueue.append(request.context) else {
+                    self.sendError("Too many pipelined Docker API requests.", status: "429 Too Many Requests", channel: channel)
+                    self.rewriteInProgress = false
+                    return
+                }
                 self.forward(
                     request.head.replacingBody(with: rewritten, removingExpect: true),
                     allocator: channel.allocator
@@ -514,9 +585,8 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
                 self.sendError(error.localizedDescription, status: "400 Bad Request", channel: channel)
             }
             self.rewriteInProgress = false
-            channel.setOption(ChannelOptions.autoRead, value: true).whenComplete { _ in
-                self.processInput(channel: channel)
-            }
+            self.updateClientAutoRead(channel)
+            self.processInput(channel: channel)
         }
     }
 
@@ -528,6 +598,13 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
 
     private func forward(_ source: inout ByteBuffer) {
         guard let backend else {
+            let pendingBytes = pendingWrites.reduce(0) { $0 + $1.readableBytes }
+            guard source.readableBytes <= DockerRawProxyPolicy.maximumPendingBackendBytes,
+                  pendingBytes <= DockerRawProxyPolicy.maximumPendingBackendBytes - source.readableBytes else {
+                pendingWrites.removeAll()
+                connectQueueOverflowed = true
+                return
+            }
             pendingWrites.append(source)
             return
         }
@@ -538,6 +615,14 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
         var buffer = allocator.buffer(capacity: data.count)
         buffer.writeBytes(data)
         forward(&buffer)
+    }
+
+    private func updateClientAutoRead(_ channel: Channel?) {
+        guard let channel else { return }
+        channel.setOption(
+            ChannelOptions.autoRead,
+            value: backend?.isWritable == true && !rewriteInProgress && !inputClosed
+        ).whenFailure { _ in channel.close(promise: nil) }
     }
 
     private func sendError(_ message: String, status: String, channel: Channel) {
@@ -567,64 +652,34 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
         let lines = text.components(separatedBy: "\r\n")
         guard let firstLine = lines.first else { return nil }
         var malformedHeader = false
-        let headerLines = lines.dropFirst().compactMap { line -> (String, String)? in
+        let headerLines = lines.dropFirst().compactMap { line -> DockerHTTPHeaderField? in
             guard let colon = line.firstIndex(of: ":"), colon != line.startIndex else {
                 malformedHeader = true
                 return nil
             }
-            return (
-                String(line[..<colon]),
-                String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            return DockerHTTPHeaderField(
+                name: String(line[..<colon]),
+                value: String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
             )
         }
         let statusFields = firstLine.split(separator: " ")
         let status = !request && statusFields.count > 1 ? Int(statusFields[1]) : nil
-        let responseHasNoBody = !request && (
-            requestMethod?.uppercased() == "HEAD"
-                || status == 204
-                || status == 304
-                || status.map { 100...199 ~= $0 } == true
-        )
-        let transferCodings = headerLines
-            .filter { $0.0.caseInsensitiveCompare("transfer-encoding") == .orderedSame }
-            .flatMap { $0.1.split(separator: ",") }
-            .map {
-                $0.split(separator: ";", maxSplits: 1)[0]
-                    .trimmingCharacters(in: .whitespaces)
-                    .lowercased()
-            }
-        let rawContentLengths = headerLines
-            .filter { $0.0.caseInsensitiveCompare("content-length") == .orderedSame }
-            .flatMap { $0.1.split(separator: ",") }
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        let contentLengths = rawContentLengths.compactMap(Int.init)
         let bodyMode: HTTPMessageHead.BodyMode
         if malformedHeader {
             bodyMode = .invalid("Malformed HTTP header line.")
-        } else if responseHasNoBody {
-            bodyMode = .none
-        } else if !transferCodings.isEmpty {
-            if transferCodings.last == "chunked" {
-                bodyMode = .chunked
-            } else if request {
-                bodyMode = .invalid("Unsupported request Transfer-Encoding framing.")
-            } else {
-                bodyMode = .untilClose
-            }
-        } else if !rawContentLengths.isEmpty {
-            if contentLengths.count != rawContentLengths.count
-                || contentLengths.contains(where: { $0 < 0 })
-                || Set(contentLengths).count != 1 {
-                bodyMode = .invalid("Invalid or conflicting Content-Length headers.")
-            } else if contentLengths[0] == 0 {
-                bodyMode = .none
-            } else {
-                bodyMode = .fixed(contentLengths[0])
-            }
-        } else if request {
-            bodyMode = .none
         } else {
-            bodyMode = .untilClose
+            switch DockerRawProxyPolicy.framing(
+                isRequest: request,
+                requestMethod: requestMethod,
+                responseStatus: status,
+                headers: headerLines
+            ) {
+            case .accepted(.none): bodyMode = .none
+            case .accepted(.fixed(let length)): bodyMode = .fixed(length)
+            case .accepted(.chunked): bodyMode = .chunked
+            case .accepted(.untilClose): bodyMode = .untilClose
+            case .rejected(let reason): bodyMode = .invalid(reason)
+            }
         }
         return HTTPMessageHead(
             firstLine: firstLine,
@@ -672,15 +727,11 @@ private final class RawDockerProxyHandler: ChannelInboundHandler, @unchecked Sen
         var result = Data()
         var input = data
         while true {
-            guard let lineEnd = input.range(of: Data("\r\n".utf8)),
-                  let line = String(data: input[..<lineEnd.lowerBound], encoding: .ascii),
-                  let rawSize = line.split(separator: ";", maxSplits: 1).first?.trimmingCharacters(in: .whitespaces),
-                  !rawSize.isEmpty,
-                  let size = Int(rawSize, radix: 16) else { return nil }
-            let lineLength = input.distance(from: input.startIndex, to: lineEnd.upperBound)
-            input.removeFirst(lineLength)
+            guard case .complete(let size, let encodedLength) =
+                DockerRawProxyPolicy.inspectChunkSizeLine(input) else { return nil }
+            input.removeFirst(encodedLength)
             if size == 0 {
-                var trailerState = HTTPBodyStreamState.chunkTrailers
+                var trailerState = HTTPBodyStreamState.chunkTrailers(0)
                 let trailers = trailerState.consume(from: &input)
                 guard case .complete = trailers.status else { return nil }
                 return result
@@ -729,7 +780,7 @@ private final class RawDockerBackendHandler: ChannelInboundHandler, @unchecked S
             return
         }
         input.append(contentsOf: buffer.readBytes(length: buffer.readableBytes) ?? [])
-        processInput()
+        processInput(channel: context.channel)
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
@@ -744,25 +795,43 @@ private final class RawDockerBackendHandler: ChannelInboundHandler, @unchecked S
         context.fireChannelInactive()
     }
 
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        client.setOption(ChannelOptions.autoRead, value: context.channel.isWritable).whenFailure { _ in
+            context.close(promise: nil)
+        }
+        context.fireChannelWritabilityChanged()
+    }
+
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         client.close(promise: nil)
         context.close(promise: nil)
     }
 
-    private func processInput() {
+    private func processInput(channel: Channel) {
         guard !reconciliationInProgress else { return }
         while !input.isEmpty {
             switch processingState {
             case .head:
                 if currentRequest == nil { currentRequest = responseQueue.removeFirst() }
                 guard let request = currentRequest else { return }
+                switch DockerRawProxyPolicy.inspectHead(input) {
+                case .incomplete:
+                    return
+                case .rejected:
+                    client.close(promise: nil)
+                    return
+                case .complete:
+                    break
+                }
                 guard let head = RawDockerProxyHandler.parseResponseHead(
                     from: input,
                     requestMethod: request.method
                 ) else {
-                    if input.count > RawDockerProxyHandler.maximumHeadBytes {
-                        client.close(promise: nil)
-                    }
+                    client.close(promise: nil)
+                    return
+                }
+                if head.encodedLength > RawDockerProxyHandler.maximumHeadBytes {
+                    client.close(promise: nil)
                     return
                 }
                 if case .invalid = head.bodyMode {
@@ -781,11 +850,18 @@ private final class RawDockerBackendHandler: ChannelInboundHandler, @unchecked S
                     continue
                 }
 
-                let successfulConnect = request.method.uppercased() == "CONNECT"
-                    && (200...299).contains(status)
-                let successfulRequestedUpgrade = request.upgradeRequested
-                    && (200...299).contains(status)
-                if status == 101 || successfulConnect || successfulRequestedUpgrade {
+                let tunnelDecision = DockerRawProxyPolicy.tunnelDecision(
+                    requestMethod: request.method,
+                    requestURI: request.uri,
+                    requestedUpgrade: request.requestedUpgrade,
+                    responseStatus: status,
+                    responseHeaders: head.headerLines
+                )
+                if tunnelDecision == .reject {
+                    client.close(promise: nil)
+                    return
+                }
+                if tunnelDecision == .tunnel {
                     forward(encodedHead)
                     if !input.isEmpty {
                         forward(input)
@@ -801,7 +877,7 @@ private final class RawDockerBackendHandler: ChannelInboundHandler, @unchecked S
                     uri: request.uri,
                     status: status
                 ) {
-                    reconcilePublishedPorts(beforeForwarding: encodedHead, head: head)
+                    reconcilePublishedPorts(beforeForwarding: encodedHead, head: head, channel: channel)
                     return
                 }
 
@@ -923,34 +999,49 @@ private final class RawDockerBackendHandler: ChannelInboundHandler, @unchecked S
         }
     }
 
-    private func reconcilePublishedPorts(beforeForwarding encodedHead: Data, head: HTTPMessageHead) {
+    private func reconcilePublishedPorts(
+        beforeForwarding encodedHead: Data,
+        head: HTTPMessageHead,
+        channel: Channel
+    ) {
         reconciliationInProgress = true
+        channel.setOption(ChannelOptions.autoRead, value: false).whenFailure { _ in
+            channel.close(promise: nil)
+        }
         threadPool.runIfActive(eventLoop: client.eventLoop) {
             try self.publishedPortsDidChange()
         }.whenComplete { result in
-            self.reconciliationInProgress = false
-            guard case .success = result else {
-                self.client.close(promise: nil)
-                return
-            }
-            self.forward(encodedHead)
-            switch head.bodyMode {
-            case .none:
-                self.currentRequest = nil
-                self.processingState = .head
-            case .fixed, .chunked:
-                guard let bodyState = HTTPBodyStreamState.make(for: head.bodyMode) else {
-                    self.client.close(promise: nil)
-                    return
+            DockerPublishedPortPolicy.forwardResponseAfterReconciliation(
+                result,
+                onFailure: { error in
+                    DockerGuestLog.error(
+                        "Published-port reconciliation failed after Docker accepted the request: \(error.localizedDescription)"
+                    )
+                },
+                forwardResponse: {
+                    self.reconciliationInProgress = false
+                    self.forward(encodedHead)
+                    switch head.bodyMode {
+                    case .none:
+                        self.currentRequest = nil
+                        self.processingState = .head
+                    case .fixed, .chunked:
+                        guard let bodyState = HTTPBodyStreamState.make(for: head.bodyMode) else {
+                            self.client.close(promise: nil)
+                            return
+                        }
+                        self.processingState = .rawBody(bodyState)
+                    case .untilClose:
+                        self.processingState = .rawUntilClose
+                    case .invalid:
+                        self.client.close(promise: nil)
+                        return
+                    }
+                    channel.setOption(ChannelOptions.autoRead, value: self.client.isWritable).whenComplete { _ in
+                        self.processInput(channel: channel)
+                    }
                 }
-                self.processingState = .rawBody(bodyState)
-            case .untilClose:
-                self.processingState = .rawUntilClose
-            case .invalid:
-                self.client.close(promise: nil)
-                return
-            }
-            self.processInput()
+            )
         }
     }
 

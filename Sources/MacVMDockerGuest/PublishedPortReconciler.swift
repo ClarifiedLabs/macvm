@@ -1,26 +1,11 @@
 import Foundation
+import MacVMDockerGuestCore
 import NIOCore
 import NIOPosix
 
-private struct DockerPublishedPort: Hashable {
-    enum ProtocolKind: String, Hashable {
-        case tcp
-        case udp
-    }
+private typealias DockerPublishedPort = DockerPublishedPortBinding
 
-    var hostIP: String
-    var hostPort: Int
-    var guestPort: Int
-    var kind: ProtocolKind
-
-    var normalizedHostIP: String {
-        switch hostIP {
-        case "", "0.0.0.0": return "0.0.0.0"
-        case "::": return "::"
-        default: return hostIP
-        }
-    }
-
+private extension DockerPublishedPortBinding {
     var sidecarPort: SidecarPublishedPort {
         SidecarPublishedPort(port: hostPort, kind: kind)
     }
@@ -28,7 +13,7 @@ private struct DockerPublishedPort: Hashable {
 
 private struct SidecarPublishedPort: Hashable {
     var port: Int
-    var kind: DockerPublishedPort.ProtocolKind
+    var kind: DockerPublishedPortBinding.ProtocolKind
 }
 
 final class PublishedPortReconciler: @unchecked Sendable {
@@ -156,14 +141,20 @@ final class PublishedPortReconciler: @unchecked Sendable {
             }
             return true
         }
-        let grouped = Dictionary(grouping: ipv4, by: \.sidecarPort)
-        let ambiguous = Set(grouped.compactMap { port, bindings in
-            Set(bindings.map(\.normalizedHostIP)).count > 1 ? port : nil
-        })
-        for port in ambiguous {
-            reportUnsupported("multiple IPv4 bindings for \(port.port)/\(port.kind.rawValue)")
+        do {
+            try DockerPublishedPortPolicy.validateRuntimeBindings(ipv4)
+        } catch {
+            reportUnsupported(error.localizedDescription)
+            recordReconciliation(
+                requestedCount: requested.count,
+                wanted: lastWantedBindings ?? [],
+                succeeded: false,
+                details: [error.localizedDescription],
+                startedAt: startedAt
+            )
+            return false
         }
-        let wanted = Set(ipv4.filter { !ambiguous.contains($0.sidecarPort) })
+        let wanted = Set(ipv4)
         let wantedSidecarPorts = Set(wanted.map(\.sidecarPort))
 
         for binding in Array(listeners.keys) where !wanted.contains(binding) {
@@ -217,25 +208,14 @@ final class PublishedPortReconciler: @unchecked Sendable {
     }
 
     private func fetchPublishedPorts() throws -> [DockerPublishedPort] {
-        let data = try dockerClient.get(path: "/containers/json")
-        let object = try JSONSerialization.jsonObject(with: data)
-        guard let containers = object as? [[String: Any]] else { return [] }
-        return containers.flatMap { container -> [DockerPublishedPort] in
-            guard let ports = container["Ports"] as? [[String: Any]] else { return [] }
-            return ports.compactMap { port in
-                guard let privatePort = port["PrivatePort"] as? Int,
-                      let publicPort = port["PublicPort"] as? Int,
-                      (1...65535).contains(publicPort),
-                      let rawKind = port["Type"] as? String,
-                      let kind = DockerPublishedPort.ProtocolKind(rawValue: rawKind) else { return nil }
-                return DockerPublishedPort(
-                    hostIP: (port["IP"] as? String) ?? "0.0.0.0",
-                    hostPort: publicPort,
-                    guestPort: privatePort,
-                    kind: kind
-                )
-            }
+        let containerData = try dockerClient.get(path: "/containers/json")
+        var bindings = try DockerPublishedPortPolicy.containerBindings(from: containerData)
+        let infoData = try dockerClient.get(path: "/info")
+        if try DockerPublishedPortPolicy.swarmManagerIsActive(in: infoData) {
+            let serviceData = try dockerClient.get(path: "/services")
+            bindings.append(contentsOf: try DockerPublishedPortPolicy.serviceBindings(from: serviceData))
         }
+        return bindings
     }
 
     private func resetSidecarPorts() throws {

@@ -12,10 +12,12 @@ XCODE_SOURCE_PACKAGES ?= .build/xcode-source-packages
 XCODE_DESTINATION ?= platform=macOS,arch=arm64
 XCODE_RESULT_BUNDLE ?=
 MACVM_TEST_APP_BUNDLE_IDENTIFIER ?= dev.macvm.macvm.test-host
+VERIFY_MODE ?= unsigned
+PACKAGE_OUTPUT_DIR ?= dist
 XCODE_COMMON_FLAGS = -clonedSourcePackagesDirPath "$(XCODE_SOURCE_PACKAGES)" -skipPackagePluginValidation -skipMacroValidation
 XCODE_RESULT_BUNDLE_FLAGS = $(if $(XCODE_RESULT_BUNDLE),-resultBundlePath "$(XCODE_RESULT_BUNDLE)",)
 
-.PHONY: all build build-cli build-app test test-provisioning test-provisioning-e2e test-setup-e2e test-docker-compat-tools test-docker-e2e dist dist-cli dist-app package release release-list test-release clean help
+.PHONY: all build build-cli build-app test test-provisioning test-provisioning-e2e test-setup-e2e test-docker-compat-tools test-docker-e2e dist dist-cli dist-app package verify-package release release-list test-release clean help
 
 all: dist
 
@@ -34,7 +36,8 @@ help:
 		'make dist          Run tests and build the signed CLI and app in dist/' \
 		'make dist-cli      Run tests and build the signed dist/macvm binary' \
 		'make dist-app      Run tests and build the signed "dist/MacVM.app"' \
-		'make package       Build local unsigned DMG and PKG release artifacts' \
+		'make package       Build and verify local unsigned DMG and PKG release artifacts' \
+		'make verify-package VERSION=X.Y.Z [VERIFY_MODE=unsigned|signed]  Verify existing release artifacts' \
 		'make release       Create a GitHub release tag (VERSION=patch|minor|major|X.Y.Z)' \
 		'make release-list  List the current release tag' \
 		'make test-release  Run release tooling regression checks' \
@@ -78,6 +81,17 @@ dist-app: test
 
 package:
 	XCODE_DERIVED_DATA="$(XCODE_DERIVED_DATA)" XCODE_SOURCE_PACKAGES="$(XCODE_SOURCE_PACKAGES)" ./scripts/package-release.sh
+
+verify-package:
+	@version="$(VERSION)"; \
+	if [ -z "$$version" ]; then \
+		version="$$(awk -F ' = |;' '/MARKETING_VERSION = [0-9]+[.][0-9]+[.][0-9]+;/ { print $$2; exit }' "$(XCODE_PROJECT)/project.pbxproj")"; \
+	fi; \
+	./scripts/verify-release-artifacts.sh \
+		--mode "$(VERIFY_MODE)" \
+		--version "$$version" \
+		--dmg "$(PACKAGE_OUTPUT_DIR)/MacVM-$$version.dmg" \
+		--pkg "$(PACKAGE_OUTPUT_DIR)/MacVM-$$version.pkg"
 
 release-list:
 	@$(RELEASE) list

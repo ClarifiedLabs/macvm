@@ -42,6 +42,57 @@ public struct DockerSidecarResourceConfiguration: Equatable, Sendable {
     }
 }
 
+private struct LockedDockerSidecarMutation {
+    let bundle: VMBundle
+    let diskLock: VMDiskLifecycleLock
+    let dockerLock: DockerSidecarOperationLock
+    let vm: ManagedVM
+}
+
+public struct DockerSidecarResourcePatch: Equatable, Sendable {
+    public var cpuCount: Int?
+    public var memorySizeBytes: UInt64?
+    public var dataDiskSizeBytes: UInt64?
+    public var amd64Enabled: Bool?
+
+    public init(
+        cpuCount: Int? = nil,
+        memorySizeBytes: UInt64? = nil,
+        dataDiskSizeBytes: UInt64? = nil,
+        amd64Enabled: Bool? = nil
+    ) {
+        self.cpuCount = cpuCount
+        self.memorySizeBytes = memorySizeBytes
+        self.dataDiskSizeBytes = dataDiskSizeBytes
+        self.amd64Enabled = amd64Enabled
+    }
+
+    public init(_ configuration: DockerSidecarResourceConfiguration) {
+        self.init(
+            cpuCount: configuration.cpuCount,
+            memorySizeBytes: configuration.memorySizeBytes,
+            dataDiskSizeBytes: configuration.dataDiskSizeBytes,
+            amd64Enabled: configuration.amd64Enabled
+        )
+    }
+
+    public func resolve(
+        existing: DockerSidecarSettings?,
+        actualDataDiskSizeBytes: UInt64? = nil
+    ) -> DockerSidecarResourceConfiguration {
+        let defaults = DockerSidecarResourceConfiguration()
+        return DockerSidecarResourceConfiguration(
+            cpuCount: cpuCount ?? existing?.cpuCount ?? defaults.cpuCount,
+            memorySizeBytes: memorySizeBytes ?? existing?.memorySizeBytes ?? defaults.memorySizeBytes,
+            dataDiskSizeBytes: dataDiskSizeBytes
+                ?? actualDataDiskSizeBytes
+                ?? existing?.dataDiskSizeBytes
+                ?? defaults.dataDiskSizeBytes,
+            amd64Enabled: amd64Enabled ?? existing?.amd64Enabled ?? defaults.amd64Enabled
+        )
+    }
+}
+
 extension MacVMService {
     public func cachedDockerImage() throws -> FedoraCoreOSCachedImage? {
         try FedoraCoreOSImageProvider(
@@ -60,17 +111,15 @@ extension MacVMService {
 
     public func dockerStatus(for vm: ManagedVM) -> DockerSidecarStatus {
         let bundle = VMBundle(url: vm.bundleURL)
-        if bundle.hasDockerSidecarReplacementJournal {
-            do {
-                let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "recover Docker")
-                defer { withExtendedLifetime(operationLock) {} }
-                let recoveredMetadata = try bundle.recoverDockerSidecarReplacementIfNeeded()
-                return dockerStatus(for: ManagedVM(bundleURL: vm.bundleURL, metadata: recoveredMetadata))
-            } catch {
-                return DockerSidecarStatus(state: .corrupt, lastError: error.localizedDescription)
+        let currentMetadata = (try? bundle.readMetadata()) ?? vm.metadata
+        let replacementRecoveryPending = bundle.hasDockerSidecarReplacementJournal
+        guard let settings = currentMetadata.dockerSidecar else {
+            if replacementRecoveryPending {
+                return DockerSidecarStatus(
+                    state: .degraded,
+                    lastError: "Docker replacement recovery is pending; stop/start the VM or run a Docker mutation."
+                )
             }
-        }
-        guard let settings = vm.metadata.dockerSidecar else {
             return DockerSidecarStatus(
                 state: bundle.dockerSidecarBundle.isPresent ? .corrupt : .disabled,
                 lastError: bundle.dockerSidecarBundle.isPresent
@@ -94,6 +143,12 @@ extension MacVMService {
             )
         }
 
+        if replacementRecoveryPending {
+            return base(
+                .degraded,
+                "Docker replacement recovery is pending; stop/start the VM or run a Docker mutation."
+            )
+        }
         guard settings.schemaVersion == DockerSidecarSettings.currentSchemaVersion else {
             return base(.corrupt, "Docker settings version \(settings.schemaVersion) is unsupported.")
         }
@@ -122,40 +177,59 @@ extension MacVMService {
 
     public func enableDockerSidecar(
         for vm: ManagedVM,
-        configuration: DockerSidecarResourceConfiguration = DockerSidecarResourceConfiguration(),
+        configuration: DockerSidecarResourceConfiguration,
         progress: VMOperationHandler? = nil
     ) async throws -> ManagedVM {
-        let ownerBundle = VMBundle(url: vm.bundleURL)
-        let operationLock = try ownerBundle.acquireDockerSidecarOperationLock(operation: "enable Docker")
-        defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(
-            bundleURL: vm.bundleURL,
-            metadata: try ownerBundle.recoverDockerSidecarReplacementIfNeeded()
+        try await enableDockerSidecar(
+            for: vm,
+            resourcePatch: DockerSidecarResourcePatch(configuration),
+            progress: progress
         )
-        try requireStopped(currentVM, operation: "enable Docker")
-        try requireDockerSetup(currentVM)
-        try validateDockerResources(configuration, owner: currentVM.metadata)
+    }
 
+    public func enableDockerSidecar(
+        for vm: ManagedVM,
+        resourcePatch: DockerSidecarResourcePatch = DockerSidecarResourcePatch(),
+        progress: VMOperationHandler? = nil
+    ) async throws -> ManagedVM {
+        let mutation = try acquireStoppedDockerMutation(for: vm, operation: "enable Docker")
+        defer { withExtendedLifetime(mutation) {} }
+        let ownerBundle = mutation.bundle
+        let currentVM = mutation.vm
+        try requireDockerSetup(currentVM)
         if var existing = currentVM.metadata.dockerSidecar {
-            guard ownerBundle.dockerSidecarBundle.isPresent else {
+            let sidecar = ownerBundle.dockerSidecarBundle
+            guard sidecar.isPresent else {
                 throw MacVMError.message("Docker settings exist but the sidecar appliance is missing. Run `macvm docker reset \(currentVM.metadata.name) --force`.")
             }
-            _ = try ownerBundle.dockerSidecarBundle.validateIntegrity()
-            if configuration.dataDiskSizeBytes < existing.dataDiskSizeBytes {
-                throw MacVMError.message("Docker data disk shrinking requires `macvm docker reset --force`.")
-            }
-            try ownerBundle.dockerSidecarBundle.growDataDisk(to: configuration.dataDiskSizeBytes)
+            _ = try sidecar.validateIntegrity()
+            let actualSize = try requireDockerDataDiskSize(sidecar)
+            let configuration = resourcePatch.resolve(
+                existing: existing,
+                actualDataDiskSizeBytes: actualSize
+            )
+            try validateDockerResources(configuration, owner: currentVM.metadata)
             existing.enabled = true
             existing.cpuCount = configuration.cpuCount
             existing.memorySizeBytes = configuration.memorySizeBytes
             existing.dataDiskSizeBytes = configuration.dataDiskSizeBytes
             existing.amd64Enabled = configuration.amd64Enabled
-            let metadata = try ownerBundle.updateMetadata { metadata in
-                metadata.dockerSidecar = existing
-            }
+            let metadata = try DockerDiskGrowthTransaction.perform(
+                targetSizeBytes: configuration.dataDiskSizeBytes,
+                readActualSize: { actualSize },
+                grow: sidecar.growDataDisk,
+                persist: {
+                    try ownerBundle.updateMetadata { metadata in
+                        metadata.dockerSidecar = existing
+                    }
+                },
+                rollback: sidecar.restoreDataDiskSizeAfterFailedGrowth
+            )
             ownerBundle.clearDockerSidecarRuntimeDescriptor()
             return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
         }
+        let configuration = resourcePatch.resolve(existing: nil)
+        try validateDockerResources(configuration, owner: currentVM.metadata)
         guard !ownerBundle.dockerSidecarBundle.isPresent else {
             throw MacVMError.message("A partial Docker sidecar already exists. Run `macvm docker reset \(currentVM.metadata.name) --force`.")
         }
@@ -184,27 +258,16 @@ extension MacVMService {
         memorySizeBytes: UInt64,
         dockerConfiguration: DockerSidecarResourceConfiguration? = nil
     ) throws -> ManagedVM {
-        let bundle = VMBundle(url: vm.bundleURL)
-        let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "configure resources")
-        defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(
-            bundleURL: vm.bundleURL,
-            metadata: try bundle.recoverDockerSidecarReplacementIfNeeded()
-        )
-        guard currentVM.metadata.id == vm.metadata.id else {
-            throw MacVMError.message(
-                "The VM at \(vm.bundleURL.path) no longer matches the resource configuration request. Refresh and try again."
-            )
-        }
-        try requireStopped(currentVM, operation: "configure resources")
+        let mutation = try acquireStoppedDockerMutation(for: vm, operation: "configure resources")
+        defer { withExtendedLifetime(mutation) {} }
+        let bundle = mutation.bundle
+        let currentVM = mutation.vm
         try validateVirtualMachineResources(
             cpuCount: cpuCount,
             memorySizeBytes: memorySizeBytes,
             metadata: currentVM.metadata
         )
 
-        var updatedDockerSettings: DockerSidecarSettings?
-        var originalDockerDataDiskSize: UInt64?
         if let dockerConfiguration {
             guard var settings = currentVM.metadata.dockerSidecar else {
                 throw MacVMError.message("Docker is not enabled for '\(currentVM.metadata.name)'.")
@@ -213,56 +276,46 @@ extension MacVMService {
                 dockerConfiguration,
                 ownerMemorySizeBytes: memorySizeBytes
             )
-            _ = try bundle.dockerSidecarBundle.validateIntegrity()
-            if dockerConfiguration.dataDiskSizeBytes < settings.dataDiskSizeBytes {
-                throw MacVMError.message("Docker data disk shrinking requires `macvm docker reset --force`.")
-            }
-            originalDockerDataDiskSize = bundle.dockerSidecarBundle.logicalDataDiskSize()
-            try bundle.dockerSidecarBundle.growDataDisk(to: dockerConfiguration.dataDiskSizeBytes)
+            let sidecar = bundle.dockerSidecarBundle
+            _ = try sidecar.validateIntegrity()
+            let actualSize = try requireDockerDataDiskSize(sidecar)
             settings.cpuCount = dockerConfiguration.cpuCount
             settings.memorySizeBytes = dockerConfiguration.memorySizeBytes
             settings.dataDiskSizeBytes = dockerConfiguration.dataDiskSizeBytes
             settings.amd64Enabled = dockerConfiguration.amd64Enabled
-            updatedDockerSettings = settings
-        } else if let settings = currentVM.metadata.dockerSidecar {
+            let metadata = try DockerDiskGrowthTransaction.perform(
+                targetSizeBytes: dockerConfiguration.dataDiskSizeBytes,
+                readActualSize: { actualSize },
+                grow: sidecar.growDataDisk,
+                persist: {
+                    try bundle.updateMetadata { metadata in
+                        metadata.cpuCount = cpuCount
+                        metadata.memorySizeBytes = memorySizeBytes
+                        metadata.dockerSidecar = settings
+                    }
+                },
+                rollback: sidecar.restoreDataDiskSizeAfterFailedGrowth
+            )
+            return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
+        }
+
+        if let settings = currentVM.metadata.dockerSidecar {
             try validateDockerResources(
                 DockerSidecarResourceConfiguration(
                     cpuCount: settings.cpuCount,
                     memorySizeBytes: settings.memorySizeBytes,
-                    dataDiskSizeBytes: settings.dataDiskSizeBytes,
+                    dataDiskSizeBytes: bundle.dockerSidecarBundle.logicalDataDiskSize()
+                        ?? settings.dataDiskSizeBytes,
                     amd64Enabled: settings.amd64Enabled
                 ),
                 ownerMemorySizeBytes: memorySizeBytes
             )
         }
-
-        do {
-            let metadata = try bundle.updateMetadata { metadata in
-                metadata.cpuCount = cpuCount
-                metadata.memorySizeBytes = memorySizeBytes
-                if let updatedDockerSettings {
-                    metadata.dockerSidecar = updatedDockerSettings
-                }
-            }
-            return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
-        } catch {
-            let persistenceError = error
-            if let originalDockerDataDiskSize,
-               let dockerConfiguration,
-               dockerConfiguration.dataDiskSizeBytes > originalDockerDataDiskSize {
-                do {
-                    try bundle.dockerSidecarBundle.restoreDataDiskSizeAfterFailedGrowth(
-                        to: originalDockerDataDiskSize
-                    )
-                } catch let rollbackError {
-                    throw MacVMError.message(
-                        "Couldn't save resource settings (\(persistenceError.localizedDescription)); "
-                            + "the Docker data disk also couldn't be restored (\(rollbackError.localizedDescription))."
-                    )
-                }
-            }
-            throw persistenceError
+        let metadata = try bundle.updateMetadata { metadata in
+            metadata.cpuCount = cpuCount
+            metadata.memorySizeBytes = memorySizeBytes
         }
+        return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
     }
 
     public func configureDockerSidecar(
@@ -272,48 +325,59 @@ extension MacVMService {
         dataDiskSizeBytes: UInt64? = nil,
         amd64Enabled: Bool? = nil
     ) throws -> ManagedVM {
-        let bundle = VMBundle(url: vm.bundleURL)
-        let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "configure Docker")
-        defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(
-            bundleURL: vm.bundleURL,
-            metadata: try bundle.recoverDockerSidecarReplacementIfNeeded()
+        try configureDockerSidecar(
+            for: vm,
+            resourcePatch: DockerSidecarResourcePatch(
+                cpuCount: cpuCount,
+                memorySizeBytes: memorySizeBytes,
+                dataDiskSizeBytes: dataDiskSizeBytes,
+                amd64Enabled: amd64Enabled
+            )
         )
-        try requireStopped(currentVM, operation: "configure Docker")
+    }
+
+    public func configureDockerSidecar(
+        for vm: ManagedVM,
+        resourcePatch: DockerSidecarResourcePatch
+    ) throws -> ManagedVM {
+        let mutation = try acquireStoppedDockerMutation(for: vm, operation: "configure Docker")
+        defer { withExtendedLifetime(mutation) {} }
+        let bundle = mutation.bundle
+        let currentVM = mutation.vm
         guard var settings = currentVM.metadata.dockerSidecar else {
             throw MacVMError.message("Docker is not enabled for '\(currentVM.metadata.name)'.")
         }
-        let requested = DockerSidecarResourceConfiguration(
-            cpuCount: cpuCount ?? settings.cpuCount,
-            memorySizeBytes: memorySizeBytes ?? settings.memorySizeBytes,
-            dataDiskSizeBytes: dataDiskSizeBytes ?? settings.dataDiskSizeBytes,
-            amd64Enabled: amd64Enabled ?? settings.amd64Enabled
+        let sidecar = bundle.dockerSidecarBundle
+        _ = try sidecar.validateIntegrity()
+        let actualSize = try requireDockerDataDiskSize(sidecar)
+        let requested = resourcePatch.resolve(
+            existing: settings,
+            actualDataDiskSizeBytes: actualSize
         )
         try validateDockerResources(requested, owner: currentVM.metadata)
-        _ = try bundle.dockerSidecarBundle.validateIntegrity()
-        if requested.dataDiskSizeBytes < settings.dataDiskSizeBytes {
-            throw MacVMError.message("Docker data disk shrinking requires `macvm docker reset --force`.")
-        }
-        try bundle.dockerSidecarBundle.growDataDisk(to: requested.dataDiskSizeBytes)
         settings.cpuCount = requested.cpuCount
         settings.memorySizeBytes = requested.memorySizeBytes
         settings.dataDiskSizeBytes = requested.dataDiskSizeBytes
         settings.amd64Enabled = requested.amd64Enabled
-        let metadata = try bundle.updateMetadata { metadata in
-            metadata.dockerSidecar = settings
-        }
+        let metadata = try DockerDiskGrowthTransaction.perform(
+            targetSizeBytes: requested.dataDiskSizeBytes,
+            readActualSize: { actualSize },
+            grow: sidecar.growDataDisk,
+            persist: {
+                try bundle.updateMetadata { metadata in
+                    metadata.dockerSidecar = settings
+                }
+            },
+            rollback: sidecar.restoreDataDiskSizeAfterFailedGrowth
+        )
         return ManagedVM(bundleURL: currentVM.bundleURL, metadata: metadata)
     }
 
     public func disableDockerSidecar(for vm: ManagedVM) throws -> ManagedVM {
-        let bundle = VMBundle(url: vm.bundleURL)
-        let operationLock = try bundle.acquireDockerSidecarOperationLock(operation: "disable Docker")
-        defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(
-            bundleURL: vm.bundleURL,
-            metadata: try bundle.recoverDockerSidecarReplacementIfNeeded()
-        )
-        try requireStopped(currentVM, operation: "disable Docker")
+        let mutation = try acquireStoppedDockerMutation(for: vm, operation: "disable Docker")
+        defer { withExtendedLifetime(mutation) {} }
+        let bundle = mutation.bundle
+        let currentVM = mutation.vm
         guard var settings = currentVM.metadata.dockerSidecar else { return currentVM }
         settings.enabled = false
         let metadata = try bundle.updateMetadata { metadata in
@@ -325,16 +389,13 @@ extension MacVMService {
 
     public func resetDockerSidecar(
         for vm: ManagedVM,
+        resourcePatch: DockerSidecarResourcePatch = DockerSidecarResourcePatch(),
         progress: VMOperationHandler? = nil
     ) async throws -> ManagedVM {
-        let ownerBundle = VMBundle(url: vm.bundleURL)
-        let operationLock = try ownerBundle.acquireDockerSidecarOperationLock(operation: "reset Docker")
-        defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(
-            bundleURL: vm.bundleURL,
-            metadata: try ownerBundle.recoverDockerSidecarReplacementIfNeeded()
-        )
-        try requireStopped(currentVM, operation: "reset Docker")
+        let mutation = try acquireStoppedDockerMutation(for: vm, operation: "reset Docker")
+        defer { withExtendedLifetime(mutation) {} }
+        let ownerBundle = mutation.bundle
+        let currentVM = mutation.vm
         try requireDockerSetup(currentVM)
         let existingSidecar = ownerBundle.dockerSidecarBundle
         var settings = currentVM.metadata.dockerSidecar ?? DockerSidecarSettings(
@@ -342,7 +403,13 @@ extension MacVMService {
             linuxPrivateMACAddress: VZMACAddress.randomLocallyAdministered().string,
             linuxNATMACAddress: VZMACAddress.randomLocallyAdministered().string
         )
+        let configuration = resourcePatch.resolve(existing: currentVM.metadata.dockerSidecar)
+        try validateDockerResources(configuration, owner: currentVM.metadata)
         settings.enabled = true
+        settings.cpuCount = configuration.cpuCount
+        settings.memorySizeBytes = configuration.memorySizeBytes
+        settings.dataDiskSizeBytes = configuration.dataDiskSizeBytes
+        settings.amd64Enabled = configuration.amd64Enabled
         settings.guestProvisioningState = currentVM.metadata.dockerSidecar?.guestProvisioningState ?? .pending
         settings.mobyVersion = nil
         return try await materializeDockerSidecar(
@@ -357,14 +424,10 @@ extension MacVMService {
         for vm: ManagedVM,
         progress: VMOperationHandler? = nil
     ) async throws -> ManagedVM {
-        let ownerBundle = VMBundle(url: vm.bundleURL)
-        let operationLock = try ownerBundle.acquireDockerSidecarOperationLock(operation: "update Docker")
-        defer { withExtendedLifetime(operationLock) {} }
-        let currentVM = ManagedVM(
-            bundleURL: vm.bundleURL,
-            metadata: try ownerBundle.recoverDockerSidecarReplacementIfNeeded()
-        )
-        try requireStopped(currentVM, operation: "update Docker")
+        let mutation = try acquireStoppedDockerMutation(for: vm, operation: "update Docker")
+        defer { withExtendedLifetime(mutation) {} }
+        let ownerBundle = mutation.bundle
+        let currentVM = mutation.vm
         try requireDockerSetup(currentVM)
         guard var settings = currentVM.metadata.dockerSidecar else {
             throw MacVMError.message("Docker is not enabled for '\(currentVM.metadata.name)'.")
@@ -596,19 +659,57 @@ extension MacVMService {
         try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private func acquireStoppedDockerMutation(
+        for requestedVM: ManagedVM,
+        operation: String
+    ) throws -> LockedDockerSidecarMutation {
+        let bundle = VMBundle(url: requestedVM.bundleURL)
+        let diskLock = try bundle.acquireDiskLifecycleLock(operation: operation)
+        let dockerLock = try bundle.acquireDockerSidecarOperationLock(operation: operation)
+
+        let rawMetadata = try bundle.readMetadata()
+        guard rawMetadata.id == requestedVM.metadata.id else {
+            throw staleVMError(for: requestedVM, operation: operation)
+        }
+        _ = try bundle.recoverDiskResizeWhileHoldingLifecycleLock()
+        _ = try bundle.recoverDockerSidecarReplacementIfNeeded()
+        let recoveredMetadata = try bundle.readMetadata()
+        guard recoveredMetadata.id == requestedVM.metadata.id else {
+            throw staleVMError(for: requestedVM, operation: operation)
+        }
+        let recoveredVM = ManagedVM(bundleURL: requestedVM.bundleURL, metadata: recoveredMetadata)
+        guard !hasLiveRuntime(for: recoveredVM) else {
+            throw MacVMError.message(
+                "Stop '\(recoveredMetadata.name)' before attempting to \(operation)."
+            )
+        }
+        return LockedDockerSidecarMutation(
+            bundle: bundle,
+            diskLock: diskLock,
+            dockerLock: dockerLock,
+            vm: recoveredVM
+        )
+    }
+
+    private func staleVMError(for vm: ManagedVM, operation: String) -> MacVMError {
+        MacVMError.message(
+            "The VM at \(vm.bundleURL.path) changed before MacVM could \(operation). Refresh and retry."
+        )
+    }
+
+    private func requireDockerDataDiskSize(_ sidecar: DockerSidecarBundle) throws -> UInt64 {
+        guard let size = sidecar.logicalDataDiskSize() else {
+            throw MacVMError.message("Couldn't read the Docker data disk size at \(sidecar.dataDiskURL.path).")
+        }
+        return size
+    }
+
     private func requireDockerSetup(_ vm: ManagedVM) throws {
         let setupKey = VMBundle(url: vm.bundleURL).setupPrivateKeyURL
         guard vm.metadata.setupCompletedAt != nil,
               vm.metadata.setupUsername != nil,
               FileManager.default.fileExists(atPath: setupKey.path) else {
             throw MacVMError.message("Docker requires a completed SSH-ready macOS setup. Run `macvm setup \(vm.metadata.name)` first.")
-        }
-    }
-
-    private func requireStopped(_ vm: ManagedVM, operation: String) throws {
-        guard !hasLiveRuntime(for: vm),
-              VMBundle(url: vm.bundleURL).liveDockerSidecarRuntimeDescriptor() == nil else {
-            throw MacVMError.message("Stop '\(vm.metadata.name)' before attempting to \(operation).")
         }
     }
 

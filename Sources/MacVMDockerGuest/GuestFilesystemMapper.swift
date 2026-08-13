@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import MacVMDockerGuestCore
 
 struct GuestFilesystemMapping: Codable, Equatable {
     enum Transport: String, Codable {
@@ -40,6 +41,7 @@ final class GuestFilesystemMapper: @unchecked Sendable {
     private let brokerKeyURL: URL
     private let brokerKnownHostsURL: URL
     private let socketRelaySupervisor: SocketRelaySupervisor
+    private let exportManager: GuestExportManager
     private let lock = NSLock()
     private let mountOperationLock = NSLock()
     private var mappings: [GuestFilesystemMapping]
@@ -51,8 +53,9 @@ final class GuestFilesystemMapper: @unchecked Sendable {
         setupUsername: String,
         brokerKeyURL: URL,
         brokerKnownHostsURL: URL,
-        socketRelaySupervisor: SocketRelaySupervisor
-    ) {
+        socketRelaySupervisor: SocketRelaySupervisor,
+        configurationPath: String
+    ) throws {
         self.stateURL = stateURL
         self.privateLinuxAddress = privateLinuxAddress
         self.setupUsername = setupUsername
@@ -79,6 +82,12 @@ final class GuestFilesystemMapper: @unchecked Sendable {
             // volatile statfs identifier. Restore only one relay per source.
             return restoredSocketPaths.insert(mapping.macOSMountRoot).inserted
         }
+        self.exportManager = try GuestExportManager(
+            stateDirectory: stateURL.deletingLastPathComponent(),
+            configurationPath: configurationPath,
+            setupUsername: setupUsername,
+            retainingFilesystemIDs: Set(self.mappings.filter { $0.transport == .sshfs }.map(\.filesystemID))
+        )
     }
 
     func mapMacOSPath(_ source: String) throws -> String {
@@ -129,25 +138,59 @@ final class GuestFilesystemMapper: @unchecked Sendable {
                 }
             }
 
-            let transport = try makeSidecarMount(
+            let mount = try makeSidecarMount(
                 filesystemID: filesystemID,
-                exportRoot: exportPlan.remoteExportRoot,
-                followsRemoteSymlinks: exportPlan.followsRemoteSymlinks
+                sourcePath: resolved,
+                kind: sourceKind == .directory ? .directory : .regularFile
             )
             let persisted = GuestFilesystemMapping(
                 filesystemID: filesystemID,
                 macOSMountRoot: resolved,
                 linuxMountRoot: "/run/macvm-macos/\(filesystemID)",
-                transport: transport,
+                transport: mount.transport,
                 remoteExportRoot: exportPlan.remoteExportRoot == resolved ? nil : exportPlan.remoteExportRoot,
                 linuxRelativePath: exportPlan.linuxRelativePath.isEmpty ? nil : exportPlan.linuxRelativePath,
                 followsRemoteSymlinks: exportPlan.followsRemoteSymlinks ? true : nil
             )
-            return try lock.withLock {
-                mappings.append(persisted)
-                remountedFilesystemIDs.insert(filesystemID)
-                try persistMappings()
-                return persisted
+            do {
+                return try lock.withLock {
+                    mappings.append(persisted)
+                    do {
+                        try persistMappings()
+                    } catch {
+                        mappings.removeAll { $0.filesystemID == filesystemID }
+                        throw error
+                    }
+                    remountedFilesystemIDs.insert(filesystemID)
+                    return persisted
+                }
+            } catch {
+                let persistenceError = error
+                var rollbackErrors: [String] = []
+                do {
+                    try exportManager.restore(mount.installation)
+                } catch {
+                    rollbackErrors.append(error.localizedDescription)
+                }
+                if !mount.installation.replacedExistingCapability {
+                    do {
+                        try requestSidecarMount(.removeExport(filesystemID: filesystemID))
+                    } catch {
+                        rollbackErrors.append("remove sidecar export: \(error.localizedDescription)")
+                    }
+                    if exportPlan.remoteExportRoot != resolved {
+                        do {
+                            try FileManager.default.removeItem(atPath: exportPlan.remoteExportRoot)
+                        } catch {
+                            rollbackErrors.append("remove exact-file export: \(error.localizedDescription)")
+                        }
+                    }
+                }
+                guard !rollbackErrors.isEmpty else { throw persistenceError }
+                throw GuestHelperError(
+                    "Couldn't persist Docker bind mapping (\(persistenceError.localizedDescription)); "
+                        + "rollback also failed: \(rollbackErrors.joined(separator: "; "))"
+                )
             }
         }
         return Self.join(
@@ -283,8 +326,12 @@ final class GuestFilesystemMapper: @unchecked Sendable {
         for mapping in result.removed {
             if mapping.transport == .streamSocket {
                 socketRelaySupervisor.removeRelay(filesystemID: mapping.filesystemID)
-            } else if mapping.remoteExportRoot != nil {
-                try? FileManager.default.removeItem(atPath: mapping.effectiveRemoteExportRoot)
+            } else {
+                try? exportManager.remove(filesystemID: mapping.filesystemID)
+                try? requestSidecarMount(.removeExport(filesystemID: mapping.filesystemID))
+                if mapping.remoteExportRoot != nil {
+                    try? FileManager.default.removeItem(atPath: mapping.effectiveRemoteExportRoot)
+                }
             }
             DockerGuestLog.info(
                 "bind-mapping pruned source=\(mapping.macOSMountRoot) "
@@ -304,28 +351,60 @@ final class GuestFilesystemMapper: @unchecked Sendable {
         }
         try restorePersistedExportIfNeeded(mapping)
         guard !remountedFilesystemIDs.contains(mapping.filesystemID) else { return mapping }
-        try? requestSidecarMount("unmount \(mapping.filesystemID)")
-        let transport = try makeSidecarMount(
+        try? requestSidecarMount(.unmount(filesystemID: mapping.filesystemID))
+        let mount = try makeSidecarMount(
             filesystemID: mapping.filesystemID,
-            exportRoot: mapping.effectiveRemoteExportRoot,
-            followsRemoteSymlinks: mapping.shouldFollowRemoteSymlinks
+            sourcePath: mapping.macOSMountRoot,
+            kind: mapping.shouldFollowRemoteSymlinks ? .regularFile : .directory
         )
         remountedFilesystemIDs.insert(mapping.filesystemID)
         var updated = mapping
-        updated.transport = transport
+        updated.transport = mount.transport
         return updated
     }
 
     private func makeSidecarMount(
         filesystemID: String,
-        exportRoot: String,
-        followsRemoteSymlinks: Bool
-    ) throws -> GuestFilesystemMapping.Transport {
-        let action = followsRemoteSymlinks ? "mount-sshfs-file" : "mount-sshfs"
-        try requestSidecarMount(
-            "\(action) \(filesystemID) \(setupUsername) \(exportRoot)"
+        sourcePath: String,
+        kind: DockerExportKind
+    ) throws -> (
+        transport: GuestFilesystemMapping.Transport,
+        installation: GuestExportInstallationRollback
+    ) {
+        let publicKey = try requestSidecarMount(.exportKey(filesystemID: filesystemID))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let installation = try exportManager.install(
+            filesystemID: filesystemID,
+            sourcePath: sourcePath,
+            kind: kind,
+            publicKey: publicKey
         )
-        return .sshfs
+        do {
+            _ = try requestSidecarMount(
+                .mountExport(filesystemID: filesystemID, remoteUser: setupUsername)
+            )
+        } catch {
+            let mountError = error
+            var rollbackErrors: [String] = []
+            do {
+                try exportManager.restore(installation)
+            } catch {
+                rollbackErrors.append(error.localizedDescription)
+            }
+            if !installation.replacedExistingCapability {
+                do {
+                    try requestSidecarMount(.removeExport(filesystemID: filesystemID))
+                } catch {
+                    rollbackErrors.append("remove sidecar export: \(error.localizedDescription)")
+                }
+            }
+            guard !rollbackErrors.isEmpty else { throw mountError }
+            throw GuestHelperError(
+                "Couldn't mount Docker export (\(mountError.localizedDescription)); "
+                    + "rollback also failed: \(rollbackErrors.joined(separator: "; "))"
+            )
+        }
+        return (.sshfs, installation)
     }
 
     private func restorePersistedExportIfNeeded(_ mapping: GuestFilesystemMapping) throws {
@@ -360,10 +439,11 @@ final class GuestFilesystemMapper: @unchecked Sendable {
         try FileManager.default.createSymbolicLink(atPath: linkURL.path, withDestinationPath: sourcePath)
     }
 
-    private func requestSidecarMount(_ command: String) throws {
+    @discardableResult
+    private func requestSidecarMount(_ command: DockerMountBrokerCommand) throws -> String {
         let directory = brokerKnownHostsURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Self.run("/usr/bin/ssh", [
+        return try Self.run("/usr/bin/ssh", [
             "-o", "BatchMode=yes",
             "-o", "IdentitiesOnly=yes",
             "-o", "StrictHostKeyChecking=yes",
@@ -373,7 +453,7 @@ final class GuestFilesystemMapper: @unchecked Sendable {
             "-o", "ServerAliveCountMax=3",
             "-i", brokerKeyURL.path,
             "macvm-mount@\(privateLinuxAddress)",
-            command,
+            command.rendered,
         ])
     }
 
@@ -413,11 +493,11 @@ final class GuestFilesystemMapper: @unchecked Sendable {
         return "\(prefix)-\(digest)"
     }
 
-    private static func run(_ executable: String, _ arguments: [String]) throws {
+    private static func run(_ executable: String, _ arguments: [String]) throws -> String {
         let result = try DockerGuestProcessRunner.run(
             executableURL: URL(fileURLWithPath: executable),
             arguments: arguments,
-            standardOutput: .discard,
+            standardOutput: .capture,
             timeout: 45
         )
         guard !result.didTimeOut else {
@@ -432,6 +512,7 @@ final class GuestFilesystemMapper: @unchecked Sendable {
                 "\(executable) failed (\(result.terminationStatus)): \(detail ?? "unknown error")"
             )
         }
+        return String(data: result.standardOutput?.data ?? Data(), encoding: .utf8) ?? ""
     }
 
     private static func relativePath(_ path: String, under root: String) -> String {

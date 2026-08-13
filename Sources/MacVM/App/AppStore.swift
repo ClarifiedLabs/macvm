@@ -853,13 +853,13 @@ final class AppStore {
 
     func enableDocker(
         for vm: ManagedVM,
-        configuration: DockerSidecarResourceConfiguration = DockerSidecarResourceConfiguration()
+        resourcePatch: DockerSidecarResourcePatch = DockerSidecarResourcePatch()
     ) {
         let name = vm.metadata.name
         dockerOperationMessages[name] = "Preparing Fedora CoreOS…"
         Task { @MainActor in
             do {
-                _ = try await service.enableDockerSidecar(for: vm, configuration: configuration) { [weak self] event in
+                _ = try await service.enableDockerSidecar(for: vm, resourcePatch: resourcePatch) { [weak self] event in
                     guard case .status(let message) = event else { return }
                     DispatchQueue.main.async { self?.dockerOperationMessages[name] = message }
                 }
@@ -1064,19 +1064,18 @@ final class AppStore {
         }
     }
 
-    func resetDocker(for vm: ManagedVM) {
-        let alert = NSAlert()
-        alert.messageText = "Reset Docker for \(vm.metadata.name)?"
-        alert.informativeText = "All Docker images, containers, and volumes will be destroyed. The macOS VM is not affected."
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Reset")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+    func resetDocker(
+        for vm: ManagedVM,
+        resourcePatch: DockerSidecarResourcePatch = DockerSidecarResourcePatch()
+    ) {
         let name = vm.metadata.name
         dockerOperationMessages[name] = "Resetting Docker appliance…"
         Task { @MainActor in
             do {
-                _ = try await service.resetDockerSidecar(for: vm) { [weak self] event in
+                _ = try await service.resetDockerSidecar(
+                    for: vm,
+                    resourcePatch: resourcePatch
+                ) { [weak self] event in
                     guard case .status(let message) = event else { return }
                     DispatchQueue.main.async { self?.dockerOperationMessages[name] = message }
                 }

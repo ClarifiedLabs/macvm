@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import MacVMDockerGuestCore
 
 func sshKnownHostsOption(_ url: URL) -> String {
     let escapedPath = url.path
@@ -213,69 +214,70 @@ private func pinSidecarHostKey(_ configuration: GuestHelperConfiguration) throws
     for name in ["sidecar_known_hosts", "mount_broker_known_hosts"] {
         let url = stateDirectory.appendingPathComponent(name)
         try entry.write(to: url, atomically: true, encoding: .utf8)
-        chmod(url.path, 0o600)
+        chmod(url.path, name == "mount_broker_known_hosts" ? 0o644 : 0o600)
     }
 }
 
-private func installSidecarFilesystemKey(_ configuration: GuestHelperConfiguration) throws {
-    let stateDirectory = URL(fileURLWithPath: configuration.stateDirectoryPath, isDirectory: true)
-    try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
-    let publicKey = try run("/usr/bin/ssh", [
-        "-o", "BatchMode=yes",
-        "-o", "IdentitiesOnly=yes",
-        "-o", "StrictHostKeyChecking=yes",
-        "-o", sshKnownHostsOption(stateDirectory.appendingPathComponent("mount_broker_known_hosts")),
-        "-i", configuration.mountBrokerKeyPath,
-        "macvm-mount@\(configuration.privateLinuxAddress)",
-        "public-key",
-    ]).trimmingCharacters(in: .whitespacesAndNewlines)
-    guard publicKey.hasPrefix("ssh-ed25519 "),
-          publicKey.contains(DockerGuestFileUtilities.filesystemKeyMarker) else {
-        throw GuestHelperError("The Docker sidecar returned an invalid filesystem public key.")
+private func configurationPath() -> String {
+    if let index = CommandLine.arguments.firstIndex(of: "--config"),
+       CommandLine.arguments.indices.contains(index + 1) {
+        return CommandLine.arguments[index + 1]
     }
-    guard let account = getpwnam(configuration.setupUsername) else {
-        throw GuestHelperError("Couldn't find setup account '\(configuration.setupUsername)'.")
-    }
-    let home = String(cString: account.pointee.pw_dir)
-    let sshDirectory = URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent(".ssh", isDirectory: true)
-    let authorizedKeys = sshDirectory.appendingPathComponent("authorized_keys")
-    try FileManager.default.createDirectory(at: sshDirectory, withIntermediateDirectories: true)
-    let existing = (try? String(contentsOf: authorizedKeys, encoding: .utf8)) ?? ""
-    let contents = DockerGuestFileUtilities.replacingFilesystemAuthorizedKey(
-        in: existing,
-        with: publicKey
-    )
-    try contents.write(to: authorizedKeys, atomically: true, encoding: .utf8)
-
-    let mountKnownHosts = stateDirectory.appendingPathComponent("mount_broker_known_hosts")
-    let sidecarKnownHosts = stateDirectory.appendingPathComponent("sidecar_known_hosts")
-    try Data(contentsOf: mountKnownHosts).write(to: sidecarKnownHosts, options: .atomic)
-    chmod(mountKnownHosts.path, 0o600)
-    chmod(sidecarKnownHosts.path, 0o600)
-    chmod(sshDirectory.path, 0o700)
-    chmod(authorizedKeys.path, 0o600)
-    chown(sshDirectory.path, account.pointee.pw_uid, account.pointee.pw_gid)
-    chown(authorizedKeys.path, account.pointee.pw_uid, account.pointee.pw_gid)
+    return "/Library/Application Support/MacVM/docker-guest.json"
 }
 
 private func loadConfiguration() throws -> GuestHelperConfiguration {
-    let path: String
-    if let index = CommandLine.arguments.firstIndex(of: "--config"),
-       CommandLine.arguments.indices.contains(index + 1) {
-        path = CommandLine.arguments[index + 1]
-    } else {
-        path = "/Library/Application Support/MacVM/docker-guest.json"
-    }
-    return try JSONDecoder().decode(
+    try JSONDecoder().decode(
         GuestHelperConfiguration.self,
-        from: Data(contentsOf: URL(fileURLWithPath: path))
+        from: Data(contentsOf: URL(fileURLWithPath: configurationPath()))
     )
 }
 
+private func runCredentialDroppedCommandIfRequested() throws {
+    guard let mode = CommandLine.arguments.firstIndex(of: "--execute-as-user") else { return }
+    guard CommandLine.arguments.indices.contains(mode + 1),
+          let separator = CommandLine.arguments[(mode + 2)...].firstIndex(of: "--"),
+          CommandLine.arguments.indices.contains(separator + 1) else {
+        throw GuestHelperError("Invalid credential-dropped command arguments.")
+    }
+    let username = CommandLine.arguments[mode + 1]
+    let executable = CommandLine.arguments[separator + 1]
+    let arguments = Array(CommandLine.arguments.dropFirst(separator + 2))
+    try DockerCredentialDrop.executeAsUser(
+        username: username,
+        executablePath: executable,
+        arguments: arguments
+    )
+}
+
+private func runExportServerIfRequested() throws -> Bool {
+    guard let mode = CommandLine.arguments.firstIndex(of: "--serve-export") else { return false }
+    guard CommandLine.arguments.indices.contains(mode + 1) else {
+        throw GuestHelperError("Missing Docker export filesystem ID.")
+    }
+    let configuration = try loadConfiguration()
+    let stateDirectory = URL(fileURLWithPath: configuration.stateDirectoryPath, isDirectory: true)
+    let capability = try GuestExportManager.loadCapability(
+        filesystemID: CommandLine.arguments[mode + 1],
+        stateDirectory: stateDirectory
+    )
+    try DockerSFTPServer(capability: capability).run()
+    return true
+}
+
 private func main() throws {
+    try runCredentialDroppedCommandIfRequested()
+    if try runExportServerIfRequested() { return }
     guard geteuid() == 0 else {
         throw GuestHelperError("macvm-docker-guest must run as root from its launch daemon.")
     }
+    let termination = DockerGuestTerminationCoordinator()
+    signal(SIGTERM, SIG_IGN)
+    let signalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+    signalSource.setEventHandler { termination.requestTermination() }
+    signalSource.resume()
+    defer { signalSource.cancel() }
+
     let configuration = try loadConfiguration()
     DockerGuestLog.info(
         "runtime-starting pid=\(getpid()) macOSAddress=\(configuration.privateMacOSAddress) "
@@ -283,30 +285,37 @@ private func main() throws {
     )
     try configurePrivateInterface(configuration)
     try pinSidecarHostKey(configuration)
-    try installSidecarFilesystemKey(configuration)
     DockerGuestLog.info("runtime-bootstrap-complete")
+    guard !termination.isTerminationRequested else { return }
     let stateDirectory = URL(fileURLWithPath: configuration.stateDirectoryPath, isDirectory: true)
     let supervisor = SSHForwardSupervisor(configuration: configuration)
-    try supervisor.start()
+    termination.registerCleanup { supervisor.stop() }
     defer { supervisor.stop() }
+    guard !termination.isTerminationRequested else { return }
+    try supervisor.start()
+    guard !termination.isTerminationRequested else { return }
 
     let brokerKeyURL = URL(fileURLWithPath: configuration.mountBrokerKeyPath)
     let brokerKnownHostsURL = stateDirectory.appendingPathComponent("mount_broker_known_hosts")
-    let socketRelaySupervisor = SocketRelaySupervisor(
+    let socketRelaySupervisor = try SocketRelaySupervisor(
         privateLinuxAddress: configuration.privateLinuxAddress,
         brokerKeyURL: brokerKeyURL,
-        brokerKnownHostsURL: brokerKnownHostsURL
+        brokerKnownHostsURL: brokerKnownHostsURL,
+        setupUsername: configuration.setupUsername
     )
     defer { socketRelaySupervisor.stop() }
-    let mapper = GuestFilesystemMapper(
+    guard !termination.isTerminationRequested else { return }
+    let mapper = try GuestFilesystemMapper(
         stateURL: stateDirectory.appendingPathComponent("mounts.json"),
         privateLinuxAddress: configuration.privateLinuxAddress,
         setupUsername: configuration.setupUsername,
         brokerKeyURL: brokerKeyURL,
         brokerKnownHostsURL: brokerKnownHostsURL,
-        socketRelaySupervisor: socketRelaySupervisor
+        socketRelaySupervisor: socketRelaySupervisor,
+        configurationPath: configurationPath()
     )
     mapper.reconcileSidecarMounts()
+    guard !termination.isTerminationRequested else { return }
     let portReconciler = PublishedPortReconciler(
         dockerSocketPath: "/var/run/macvm-docker-forward.sock",
         linuxAddress: configuration.privateLinuxAddress,
@@ -326,10 +335,8 @@ private func main() throws {
         mapper.reconcileSidecarMounts()
         portReconciler.sidecarDidReconnect()
     }
-    signal(SIGTERM, SIG_IGN)
-    let signalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
-    signalSource.setEventHandler { proxy.shutdown() }
-    signalSource.resume()
+    termination.registerCleanup { proxy.shutdown() }
+    guard !termination.isTerminationRequested else { return }
     DockerGuestLog.info("runtime-ready")
     try proxy.run()
     DockerGuestLog.info("runtime-stopping reason=proxy-returned")

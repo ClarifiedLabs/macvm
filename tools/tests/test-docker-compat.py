@@ -177,6 +177,51 @@ class DockerCompatibilityHarnessRegressionTests(unittest.TestCase):
         self.assertIn("mktemp -d /private/tmp/mvm-dc.XXXXXX", socket_case)
         self.assertNotIn("socket_path=\"$CASE_DIR", socket_case)
 
+    def test_background_fixtures_are_recorded_for_exit_cleanup(self) -> None:
+        source = SUITE_PATH.read_text(encoding="utf-8")
+        self.assertIn('stop_recorded_process "$WORK_ROOT/http-server-pid"', source)
+        self.assertIn('stop_recorded_process "$WORK_ROOT/stream-server-pid"', source)
+        self.assertIn('>"$WORK_ROOT/http-server-pid"', source)
+        self.assertIn('>"$WORK_ROOT/stream-server-pid"', source)
+
+    def test_wait_diff_commit_case_is_required(self) -> None:
+        source = SUITE_PATH.read_text(encoding="utf-8")
+        start = source.index("test_container_wait_diff_commit() {")
+        case = source[start : source.index("\n}\n", start)]
+        self.assertIn("docker image inspect", case)
+        self.assertNotIn("docker history", case)
+        self.assertIn(
+            "run_case container.wait-diff-commit required test_container_wait_diff_commit",
+            source,
+        )
+
+    def test_apfs_detach_retries_without_hiding_a_leaked_mount(self) -> None:
+        source = SUITE_PATH.read_text(encoding="utf-8")
+        self.assertIn("detach_apfs_device() {", source)
+        self.assertIn('while [ "$attempt" -le 10 ]; do', source)
+        start = source.index("test_bind_apfs_volume() {")
+        case = source[start : source.index("\n}\n", start)]
+        self.assertIn('if detach_apfs_device "$device"; then', case)
+        self.assertIn('rm -f "$WORK_ROOT/apfs-device"', case)
+
+    def test_local_registry_build_loads_the_source_image(self) -> None:
+        source = SUITE_PATH.read_text(encoding="utf-8")
+        start = source.index("test_local_registry() {")
+        case = source[start : source.index("\n}\n", start)]
+        self.assertIn("docker buildx build --load", case)
+        self.assertNotIn("docker build -q", case)
+
+    def test_degraded_recovery_restores_homebrew_from_exit_trap(self) -> None:
+        source = HARNESS_PATH.read_text(encoding="utf-8")
+        self.assertIn("restore_secondary_homebrew() {", source)
+        restore_start = source.index("restore_secondary_homebrew() {")
+        restore = source[restore_start : source.index("\n}\n", restore_start)]
+        self.assertIn("/bin/sync", restore)
+        start = source.index("lifecycle_degraded_recovery() {")
+        case = source[start : source.index("\n}\n", start)]
+        self.assertIn("trap finish_degraded_recovery EXIT", case)
+        self.assertIn("restore_secondary_homebrew", case)
+
 
 if __name__ == "__main__":
     unittest.main()

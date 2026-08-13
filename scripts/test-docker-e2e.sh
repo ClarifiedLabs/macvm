@@ -411,8 +411,36 @@ PY
     echo "disable/enable preserved data, disk grew, and forced update preserved data"
 }
 
+restore_secondary_homebrew() {
+    deadline=$(( $(date +%s) + 120 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if guest "$secondary" \
+            "if [ -e /opt/homebrew/bin/brew.macvm-compat ]; then sudo -n mv -f /opt/homebrew/bin/brew.macvm-compat /opt/homebrew/bin/brew; fi; test -x /opt/homebrew/bin/brew && /bin/sync" \
+            >/dev/null 2>&1; then
+            return 0
+        fi
+        "$macvm" run --root "$vm_root" --headless "$secondary" >/dev/null 2>&1 || true
+        sleep 2
+    done
+    echo "could not restore Homebrew after degraded-recovery sabotage" >&2
+    return 1
+}
+
+finish_degraded_recovery() {
+    degraded_status=$?
+    trap - EXIT INT TERM
+    if ! restore_secondary_homebrew; then
+        [ "$degraded_status" -ne 0 ] || degraded_status=1
+    fi
+    exit "$degraded_status"
+}
+
 lifecycle_degraded_recovery() {
-    guest "$secondary" "sudo -n mv /opt/homebrew/bin/brew /opt/homebrew/bin/brew.macvm-compat"
+    trap finish_degraded_recovery EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    guest "$secondary" \
+        "test -x /opt/homebrew/bin/brew && test ! -e /opt/homebrew/bin/brew.macvm-compat && sudo -n mv /opt/homebrew/bin/brew /opt/homebrew/bin/brew.macvm-compat"
     "$macvm" shutdown --root "$vm_root" --wait --timeout 180 "$secondary"
     python3 - "$secondary_bundle/Metadata.json" <<'PY'
 import json
@@ -430,7 +458,7 @@ PY
     "$macvm" run --root "$vm_root" --headless "$secondary"
     set -e
     wait_for_state "$secondary" degraded 300
-    guest "$secondary" "sudo -n mv /opt/homebrew/bin/brew.macvm-compat /opt/homebrew/bin/brew"
+    restore_secondary_homebrew
     "$macvm" stop --root "$vm_root" "$secondary"
     "$macvm" run --root "$vm_root" --headless "$secondary"
     wait_for_docker "$secondary"

@@ -76,7 +76,7 @@ func provisioningCatalogLoadsRootProfilesAndRejectsDuplicateIDs() throws {
 }
 
 @Test
-func ansibleProvisionerUsesExecutableAndPersistsSuccessfulState() throws {
+func ansibleProvisionerUsesExecutableAndPersistsSuccessfulState() async throws {
     let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let bundleURL = root.appendingPathComponent("test.macvm")
@@ -119,7 +119,7 @@ func ansibleProvisionerUsesExecutableAndPersistsSuccessfulState() throws {
         title: "Provisioning: Test",
         anchor: "ansible-playbook test-profile"
     )
-    try AnsibleProvisioner(
+    try await AnsibleProvisioner(
         vm: vm,
         host: "127.0.0.1",
         user: "admin",

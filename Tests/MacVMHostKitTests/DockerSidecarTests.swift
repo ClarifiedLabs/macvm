@@ -237,8 +237,8 @@ func dockerGuestUpgradeReusesKeysInstalledByInitialProvisioning() throws {
 }
 
 @Test
-func dockerGuestProvisioningVersionUpgradesFiniteProcessRunner() {
-    #expect(DockerSidecarSettings.currentGuestProvisioningVersion >= 15)
+func dockerGuestProvisioningVersionUpgradesNonTruncatingDockerRelay() {
+    #expect(DockerSidecarSettings.currentGuestProvisioningVersion >= 17)
 }
 
 @Test
@@ -863,17 +863,18 @@ func ignitionPinsPrivateNetworkingRestrictedSSHDataDiskAndRosetta() throws {
     #expect(!rendered.contains("${jump[@]}"))
     #expect(rendered.contains("nmcli -g GENERAL.DEVICES connection show macvm-private"))
     #expect(!rendered.contains("nmcli -g GENERAL.DEVICE connection show macvm-private"))
-    #expect(rendered.contains("public-key)\n    ensure_filesystem_key"))
-    #expect(rendered.contains("/usr/bin/mktemp -d /tmp/macvm-filesystem-key.XXXXXX"))
+    #expect(rendered.contains("export-key)\n    [[ ${#fields[@]} -eq 2 ]]"))
+    #expect(rendered.contains("export_directory=/var/lib/macvm/exports"))
     #expect(rendered.contains("/usr/bin/ssh-keygen -q -t ed25519"))
-    #expect(rendered.contains("/usr/bin/install -m 0600 \"$temporary/macos_fs_ed25519\""))
+    #expect(rendered.contains("macvm-export:$filesystem_id"))
     #expect(rendered.contains(
-        "Requires=docker.service sshd.service macvm-resolver.service macvm-filesystem-key.service"
+        "Requires=docker.service sshd.service macvm-resolver.service macvm-export-migration.service"
     ))
     #expect(!rendered.contains("firewall-cmd"))
     #expect(rendered.contains("/var/lib/docker/engine-id"))
-    #expect(rendered.contains("mount-sshfs|mount-sshfs-file"))
-    #expect(rendered.contains("follow=(-o follow_symlinks)"))
+    #expect(rendered.contains("mount-export)"))
+    #expect(rendered.contains("remove-export)"))
+    #expect(!rendered.contains("follow=(-o follow_symlinks)"))
     #expect(rendered.contains("AllowTcpForwarding remote"))
     #expect(rendered.contains("AllowStreamLocalForwarding remote"))
     #expect(rendered.contains("StreamLocalBindUnlink yes"))
@@ -882,7 +883,8 @@ func ignitionPinsPrivateNetworkingRestrictedSSHDataDiskAndRosetta() throws {
     #expect(rendered.contains(#"[[ -S "$socket" ]]"#))
     #expect(!rendered.contains("mount-nfs"))
     #expect(!rendered.contains("nfs-utils"))
-    #expect(rendered.contains("sshfs \"$remote_user@127.0.0.1:$remote_path\" \"$target\" -p 2222"))
+    #expect(rendered.contains("sshfs \"$remote_user@127.0.0.1:/\" \"$target\" -p 2222"))
+    #expect(rendered.contains("/usr/bin/rm -f \"$(export_key \"$filesystem_id\")\""))
     #expect(rendered.contains("/usr/bin/umount --lazy \"$target\""))
     #expect(rendered.contains("reset-ports|publish-port|unpublish-port"))
     #expect(rendered.contains("MACVM_DOCKER_NAT"))
@@ -984,6 +986,14 @@ func dockerReadinessRequiresStandaloneSerialMarker() {
     #expect(DockerSidecarRuntime.containsReadinessMarker(
         "boot output\r\nMACVM_DOCKER_READY\r\n"
     ))
+}
+
+@Test
+func dockerReadinessToleratesUTF8SequenceSplitAtScanBoundary() {
+    var serialTail = Data([0x80])
+    serialTail.append(Data(" status\r\nMACVM_DOCKER_READY\r\n".utf8))
+
+    #expect(DockerSidecarRuntime.containsReadinessMarker(in: serialTail))
 }
 
 @Test

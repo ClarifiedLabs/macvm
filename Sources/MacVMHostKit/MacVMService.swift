@@ -304,9 +304,7 @@ public final class MacVMService: Sendable {
             progress: progress,
             profilePhases: profilePhases
         )
-        try await Task.detached(priority: .userInitiated) {
-            try provisioner.run()
-        }.value
+        try await provisioner.run()
     }
 
     public func installXcode(

@@ -40,7 +40,9 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
         let serialLogHandle = try FileHandle(forWritingTo: ownerBundle.dockerSidecarSerialLogURL)
         try serialLogHandle.truncate(atOffset: 0)
         self.serialLogHandle = serialLogHandle
-        self.ignitionServer = DockerIgnitionServer(ignitionData: try Data(contentsOf: sidecarBundle.initialIgnitionURL))
+        self.ignitionServer = try DockerIgnitionServer(
+            ignitionData: Data(contentsOf: sidecarBundle.initialIgnitionURL)
+        )
         super.init()
     }
 
@@ -215,9 +217,9 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
         guard !finished else { return }
         if !readinessObserved,
            let data = try? Data(contentsOf: ownerBundle.dockerSidecarSerialLogURL),
-           let output = String(data: data.suffix(128 * 1024), encoding: .utf8),
-           Self.containsReadinessMarker(output) {
+           Self.containsReadinessMarker(in: Data(data.suffix(128 * 1024))) {
             readinessObserved = true
+            ignitionServer.seal()
             let state = (try? ownerBundle.readMetadata().dockerSidecar?.guestProvisioningState) ?? settings.guestProvisioningState
             publish(state: state == .ready ? .ready : .pendingGuestProvisioning)
             return
@@ -290,6 +292,10 @@ final class DockerSidecarRuntime: NSObject, VZVirtualMachineDelegate {
                 + "state=\(currentState.rawValue) error=\(currentError ?? "none")"
         )
         onStop?()
+    }
+
+    nonisolated static func containsReadinessMarker(in data: Data) -> Bool {
+        containsReadinessMarker(String(decoding: data, as: UTF8.self))
     }
 
     nonisolated static func containsReadinessMarker(_ output: String) -> Bool {

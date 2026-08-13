@@ -17,9 +17,11 @@ CLI_NAME="macvm"
 BASE_BUNDLE_IDENTIFIER="dev.macvm.macvm"
 CLI_BUNDLE_IDENTIFIER="$BASE_BUNDLE_IDENTIFIER.cli"
 CLIPBOARD_GUEST_HELPER_IDENTIFIER="dev.macvm.clipboard-guest"
+DMG_IDENTIFIER="$BASE_BUNDLE_IDENTIFIER.dmg"
 PKG_IDENTIFIER="$BASE_BUNDLE_IDENTIFIER.pkg"
 ENTITLEMENTS_PATH="$ROOT_DIR/Support/macvm.entitlements"
 COMPONENT_PLIST_PATH="$ROOT_DIR/Support/macvm-component.plist"
+ARTIFACT_VERIFIER_PATH="$ROOT_DIR/scripts/verify-release-artifacts.sh"
 
 export COPYFILE_DISABLE=1
 
@@ -82,6 +84,10 @@ NOTARIZE_RELEASE="${MACVM_NOTARIZE:-0}"
 
 if enabled "$NOTARIZE_RELEASE"; then
   SIGN_RELEASE=1
+fi
+if enabled "$SIGN_RELEASE" && ! enabled "$NOTARIZE_RELEASE"; then
+  echo "Signed release artifacts must be notarized; set MACVM_NOTARIZE=1." >&2
+  exit 2
 fi
 
 if [[ ! "$VERSION" =~ '^[0-9]+[.][0-9]+[.][0-9]+$' ]]; then
@@ -210,6 +216,7 @@ build_disk_image() {
     require_nonempty "$developer_id_application" "MACVM_DEVELOPER_ID_APPLICATION"
     codesign --force \
       --timestamp \
+      --identifier "$DMG_IDENTIFIER" \
       --sign "$developer_id_application" \
       "$DMG_PATH"
     codesign --verify --strict --verbose=2 "$DMG_PATH"
@@ -304,6 +311,16 @@ if enabled "$NOTARIZE_RELEASE"; then
   notarize_disk_image
   notarize_installer_package
 fi
+
+verification_mode=unsigned
+if enabled "$SIGN_RELEASE"; then
+  verification_mode=signed
+fi
+"$ARTIFACT_VERIFIER_PATH" \
+  --mode "$verification_mode" \
+  --version "$VERSION" \
+  --dmg "$DMG_PATH" \
+  --pkg "$PKG_PATH"
 
 echo "Built $DMG_PATH"
 echo "Built $PKG_PATH"
