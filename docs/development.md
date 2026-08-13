@@ -190,11 +190,7 @@ Required coverage includes:
 
 ### Docker compatibility suite
 
-The trusted `.github/workflows/docker-e2e.yml` path runs only upstream `main`, `release-ci`, schedules/manual dispatches on allowed refs, or validated main-ancestry release tags. Main/tag pushes default to `smoke`; nightly and prerelease pushes run `full`; manual runs default to `smoke` and may select `full`. A GitHub-hosted authorization job resolves the exact SHA before a labeled self-hosted macOS/arm64 runner creates a detached checkout under `runner.temp`; pull requests, including forks, never enter that runner. One seed-level concurrency group prevents overlapping clones. The stopped seed is metadata-snapshotted before and after, current-run clones/checkouts are always disposed after diagnostics upload, and every outcome uploads reports plus runner/clone diagnostics. Release packaging independently requires a successful Docker E2E run with the exact release `head_sha`.
-
-The prerelease branch is a deliberate exception to main ancestry. Repository administrators must create a protected `release-ci` GitHub Environment with required reviewers, prevent self-review, and restrict it to that branch. The self-hosted job targets this Environment for every `release-ci` push/manual run; review the exact authorized SHA before approval. Keep `main` branch-protected, restrict manual workflow dispatch to maintainers, and never weaken the hosted authorization job merely to test fork or feature-branch code.
-
-Run the same real-guest contract locally against a stopped, SSH-ready, Docker-ready seed:
+The real-guest Docker compatibility suite is a manual development check; it is not part of GitHub Actions or release packaging. Run it locally against a stopped, SSH-ready, Docker-ready seed:
 
 ```bash
 make test-docker-e2e MACVM_DOCKER_E2E_SEED=docker-seed
