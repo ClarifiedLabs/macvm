@@ -31,4 +31,12 @@ public enum VMListFormatter {
 
         return value + String(repeating: " ", count: width - value.count)
     }
+
+    public static func ownedRuntimeTable(for runtimes: [MacVMOwnedRuntimeDescriptor]) -> String {
+        let header = pad("NAME", 24) + pad("MODE", 12) + "BUNDLE PATH"
+        let rows = runtimes.map { runtime in
+            pad(runtime.name, 24) + pad(runtime.headless ? "headless" : "windowed", 12) + runtime.bundlePath
+        }
+        return ([header] + rows).joined(separator: "\n")
+    }
 }

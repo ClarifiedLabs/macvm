@@ -44,8 +44,8 @@ struct ManagerWindow: View {
         }
         .sheet(
             isPresented: Binding(
-                get: { store.provisionSheetVMName != nil },
-                set: { if !$0 { store.provisionSheetVMName = nil } }
+                get: { store.provisionSheetVMPath != nil },
+                set: { if !$0 { store.provisionSheetVMPath = nil } }
             )
         ) {
             ProvisionVMSheet()
@@ -154,7 +154,7 @@ struct ManagerWindow: View {
 
     private var contextTitle: String {
         switch store.selection {
-        case .vm(let name): name
+        case .vm(let reference): store.name(for: reference)
         case .images: "Restore Images"
         case .xcode: "Xcode"
         case nil: "MacVM"
@@ -164,8 +164,8 @@ struct ManagerWindow: View {
     @ViewBuilder
     private var detailContent: some View {
         switch store.selection {
-        case .vm(let name):
-            VMDetailView(name: name)
+        case .vm(let reference):
+            VMDetailView(reference: reference)
         case .images:
             RestoreImagesView()
         case .xcode:

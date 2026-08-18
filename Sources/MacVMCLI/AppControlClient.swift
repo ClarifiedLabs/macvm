@@ -23,10 +23,32 @@ struct AppControlClient {
 
     func send(operation: MacVMAppControlOperation, for vm: ManagedVM) async throws -> MacVMAppControlResponse {
         let request = MacVMAppControlRequest(operation: operation, bundleURL: vm.bundleURL)
+        return try await send(request, launchIfNeeded: true)
+    }
+
+    func ownedRuntimesIfAppIsRunning() async throws -> [MacVMOwnedRuntimeDescriptor] {
+        let isRunning = await MainActor.run {
+            !NSRunningApplication.runningApplications(
+                withBundleIdentifier: Self.appBundleIdentifier
+            ).isEmpty
+        }
+        guard isRunning else { return [] }
+
+        let request = MacVMAppControlRequest(operation: .listOwnedRuntimes)
+        let response = try await send(request, launchIfNeeded: false)
+        return response.ownedRuntimes ?? []
+    }
+
+    private func send(
+        _ request: MacVMAppControlRequest,
+        launchIfNeeded: Bool
+    ) async throws -> MacVMAppControlResponse {
         try queue.submit(request)
 
         do {
-            try await launchAppIfNeeded()
+            if launchIfNeeded {
+                try await launchAppIfNeeded()
+            }
             let response = try await waitForResponse(to: request)
             try? queue.removeResponse(for: request.id)
             guard response.protocolVersion == MacVMAppControlRequest.currentProtocolVersion else {

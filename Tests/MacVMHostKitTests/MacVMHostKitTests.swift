@@ -1275,6 +1275,22 @@ func listFormatterPrintsFullBundlePath() {
 }
 
 @Test
+func ownedRuntimeFormatterPrintsModeAndFullBundlePath() {
+    let runtime = MacVMOwnedRuntimeDescriptor(
+        name: "macos-runner-1",
+        bundlePath: "/Volumes/data/MacVMHost/MacOSRunnerWorkers/macos-runner-1.macvm",
+        headless: true,
+        vncURL: nil
+    )
+
+    let lines = VMListFormatter.ownedRuntimeTable(for: [runtime]).split(separator: "\n")
+
+    #expect(lines.first?.contains("MODE") == true)
+    #expect(lines.last?.contains("headless") == true)
+    #expect(lines.last?.hasSuffix(runtime.bundlePath) == true)
+}
+
+@Test
 func metadataRoundTripsNetworkAndSetupFields() throws {
     let metadata = VMMetadata(
         name: "dev-02",

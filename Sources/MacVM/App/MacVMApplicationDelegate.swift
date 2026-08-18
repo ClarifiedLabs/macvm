@@ -49,9 +49,12 @@ final class MacVMApplicationDelegate: NSObject, NSApplicationDelegate {
         sender.activate(ignoringOtherApps: true)
 
         let count = store.ownedRuntimeCount
+        let runtimeList = store.ownedRuntimeDescriptors.map { runtime in
+            "• \(runtime.name) — \(CLIEquivalent.abbreviatePath(runtime.bundlePath))"
+        }.joined(separator: "\n")
         let alert = NSAlert()
         alert.messageText = "Quit MacVM and stop running VMs?"
-        alert.informativeText = "MacVM currently owns \(count) running VM\(count == 1 ? "" : "s"). Quitting the app will force-stop \(count == 1 ? "it" : "all of them")."
+        alert.informativeText = "MacVM currently owns \(count) running VM\(count == 1 ? "" : "s"). Quitting the app will force-stop \(count == 1 ? "it" : "all of them").\n\n\(runtimeList)"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Quit and Stop VMs")
         alert.addButton(withTitle: "Cancel")

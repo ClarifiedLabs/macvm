@@ -5,10 +5,15 @@ import MacVMHostKit
 import Observation
 import Virtualization
 
-/// Sidebar selection: a VM (by its unique name, stable across install → setup →
-/// run) or the restore-image library.
+enum VMReference: Hashable {
+    case bundle(String)
+    case pending(String)
+}
+
+/// Sidebar selection: a path-identified bundle, an install that has not created
+/// its bundle yet, or one of the library views.
 enum SidebarItem: Hashable {
-    case vm(String)
+    case vm(VMReference)
     case images
     case xcode
 }
@@ -64,6 +69,7 @@ enum VMPowerActionKind: Equatable {
 struct PendingPowerAction: Equatable {
     var kind: VMPowerActionKind
     var name: String
+    var bundlePath: String
 }
 
 enum VMAttachmentRoute: Equatable {
@@ -108,7 +114,10 @@ final class AppStore {
     var selectedXcodeXIPURL: URL?
     var selectedProfileIDs: Set<String> = []
     var profileInputValues: [String: [String: String]] = [:]
-    var provisionSheetVMName: String?
+    var provisionSheetVMPath: String?
+    var provisionSheetVMName: String? {
+        provisionSheetVMPath.flatMap { try? service.resolveVM(identifier: $0).metadata.name }
+    }
     var provisionProfileIDs: Set<String> = []
     var provisionInputValues: [String: [String: String]] = [:]
     var cloneSheetSourceName: String?
@@ -154,6 +163,7 @@ final class AppStore {
 
     private var runtimes: [String: VMViewerController] = [:]
     private var headlessRunners: [String: HeadlessRunner] = [:]
+    private(set) var ownedVMsByPath: [String: ManagedVM] = [:]
     private let controlQueue: MacVMAppControlQueue?
     private var controlConsumerLease: MacVMAppControlConsumerLease?
     private var lastControlLeaseError: String?
@@ -195,7 +205,7 @@ final class AppStore {
         self.profileCatalog = service.provisioningCatalog()
         setenv("MACVM_MANAGER_PROCESS", "1", 1)
         refresh()
-        selection = vms.first.map { .vm($0.metadata.name) } ?? .images
+        selection = vms.first.map { .vm(reference(for: $0)) } ?? .images
         updateCommandForSelection()
         startRefreshTimer()
         if controlQueue != nil {
@@ -227,8 +237,62 @@ final class AppStore {
         vms.first { $0.metadata.name == name }
     }
 
+    func vm(for reference: VMReference) -> ManagedVM? {
+        switch reference {
+        case .bundle(let path):
+            return vms.first { runtimeKey(for: $0) == path } ?? ownedVMsByPath[path]
+        case .pending:
+            return nil
+        }
+    }
+
+    func name(for reference: VMReference) -> String {
+        switch reference {
+        case .bundle:
+            return vm(for: reference)?.metadata.name ?? "Unknown VM"
+        case .pending(let name):
+            return name
+        }
+    }
+
+    func reference(for vm: ManagedVM) -> VMReference {
+        .bundle(runtimeKey(for: vm))
+    }
+
+    func commandIdentifier(for vm: ManagedVM) -> String {
+        let parent = vm.bundleURL.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path
+        return parent == service.rootDirectory.standardizedFileURL.resolvingSymlinksInPath().path
+            ? vm.metadata.name
+            : runtimeKey(for: vm)
+    }
+
+    func setupProgress(for vm: ManagedVM) -> SetupProgress? {
+        guard self.vm(named: vm.metadata.name).map({ runtimeKey(for: $0) == runtimeKey(for: vm) }) == true else {
+            return nil
+        }
+        return setups[vm.metadata.name]
+    }
+
+    func guestIP(for vm: ManagedVM) -> String? {
+        if self.vm(named: vm.metadata.name).map({ runtimeKey(for: $0) == runtimeKey(for: vm) }) == true {
+            return guestIPs[vm.metadata.name]
+        }
+        return try? service.resolveGuestIP(vm)
+    }
+
+    func liveDisplay(for vm: ManagedVM) -> VMDisplayRuntimeState? {
+        service.liveDisplayRuntimeState(for: vm)
+    }
+
+    func liveSession(for vm: ManagedVM) -> VNCSession? {
+        service.liveVNCSession(for: vm)
+    }
+
     func status(forName name: String) -> VMStatus {
-        VMStatus.derive(
+        if let vm = vm(named: name) {
+            return status(for: vm)
+        }
+        return VMStatus.derive(
             resizingDisk: diskResizes[name] != nil,
             cloning: clones[name] != nil,
             installing: installs[name] != nil,
@@ -241,19 +305,54 @@ final class AppStore {
         )
     }
 
-    /// Names shown in the sidebar: every bundle on disk plus in-flight installs
-    /// whose bundle metadata hasn't been written yet.
-    var sidebarVMNames: [String] {
-        var names = vms.map(\.metadata.name)
-        for name in installs.keys.sorted() where !names.contains(name) {
-            names.append(name)
-        }
-        return names
+    func status(for vm: ManagedVM) -> VMStatus {
+        let name = vm.metadata.name
+        let isLibraryVM = self.vm(named: name).map { runtimeKey(for: $0) == runtimeKey(for: vm) } == true
+        return VMStatus.derive(
+            resizingDisk: isLibraryVM && diskResizes[name] != nil,
+            cloning: isLibraryVM && clones[name] != nil,
+            installing: isLibraryVM && installs[name] != nil,
+            settingUp: isLibraryVM && setups[name] != nil,
+            setupOperationActive: isLibraryVM && setups[name]?.operationActive == true,
+            viewerActive: runtimeController(for: vm) != nil,
+            liveProcess: service.liveVMProcessRuntimeState(for: vm),
+            liveDisplay: service.liveDisplayRuntimeState(for: vm),
+            liveSession: service.liveVNCSession(for: vm)
+        )
     }
 
-    func sidebarSubtitle(forName name: String) -> String {
-        let status = status(forName: name)
-        guard let vm = vm(named: name) else {
+    func status(for reference: VMReference) -> VMStatus {
+        if let vm = vm(for: reference) {
+            return status(for: vm)
+        }
+        return status(forName: name(for: reference))
+    }
+
+    /// Names shown in the sidebar: every bundle on disk plus in-flight installs
+    /// whose bundle metadata hasn't been written yet.
+    var sidebarLibraryVMReferences: [VMReference] {
+        var references = vms.map(reference(for:))
+        let names = Set(vms.map(\.metadata.name))
+        for name in installs.keys.sorted() where !names.contains(name) {
+            references.append(.pending(name))
+        }
+        return references
+    }
+
+    var sidebarExternalVMReferences: [VMReference] {
+        let libraryPaths = Set(vms.map(runtimeKey(for:)))
+        return ownedVMsByPath
+            .filter { !libraryPaths.contains($0.key) }
+            .sorted { lhs, rhs in
+                let comparison = lhs.value.metadata.name.localizedCaseInsensitiveCompare(rhs.value.metadata.name)
+                return comparison == .orderedSame ? lhs.key < rhs.key : comparison == .orderedAscending
+            }
+            .map { .bundle($0.key) }
+    }
+
+    func sidebarSubtitle(for reference: VMReference) -> String {
+        let status = status(for: reference)
+        guard let vm = vm(for: reference) else {
             return status.sidebarLabel
         }
         let metadata = vm.metadata
@@ -272,8 +371,20 @@ final class AppStore {
         runtimeController(forName: name)?.hasWindow == true
     }
 
-    private func runtimeKey(for vm: ManagedVM) -> String {
+    func runtimeKey(for vm: ManagedVM) -> String {
         vm.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    func registerOwnedVM(_ vm: ManagedVM) {
+        ownedVMsByPath[runtimeKey(for: vm)] = vm
+    }
+
+    func unregisterOwnedVM(atPath path: String) {
+        ownedVMsByPath[path] = nil
+        guard selection == .vm(.bundle(path)),
+              !vms.contains(where: { runtimeKey(for: $0) == path }) else { return }
+        selection = vms.first.map { .vm(reference(for: $0)) } ?? .images
+        updateCommandForSelection()
     }
 
     private func runtimeController(for vm: ManagedVM) -> VMViewerController? {
@@ -286,6 +397,32 @@ final class AppStore {
 
     var ownedRuntimeCount: Int {
         runtimes.count + headlessRunners.count
+    }
+
+    var ownedRuntimeDescriptors: [MacVMOwnedRuntimeDescriptor] {
+        var descriptors = runtimes.compactMap { path, controller -> MacVMOwnedRuntimeDescriptor? in
+            guard let vm = ownedVMsByPath[path] else { return nil }
+            return MacVMOwnedRuntimeDescriptor(
+                name: vm.metadata.name,
+                bundlePath: path,
+                headless: !controller.hasWindow,
+                vncURL: controller.publishedVNCSession?.vncURLString
+            )
+        }
+        descriptors += headlessRunners.compactMap { name, runner -> MacVMOwnedRuntimeDescriptor? in
+            let path = runner.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
+            guard let vm = ownedVMsByPath[path] else { return nil }
+            return MacVMOwnedRuntimeDescriptor(
+                name: name,
+                bundlePath: path,
+                headless: true,
+                vncURL: service.liveVNCSession(for: vm)?.vncURLString
+            )
+        }
+        return descriptors.sorted {
+            let comparison = $0.name.localizedCaseInsensitiveCompare($1.name)
+            return comparison == .orderedSame ? $0.bundlePath < $1.bundlePath : comparison == .orderedAscending
+        }
     }
 
     func prepareForTermination() {
@@ -316,6 +453,7 @@ final class AppStore {
         }
         runtimes.removeAll()
         headlessRunners.removeAll()
+        ownedVMsByPath.removeAll()
         setups.removeAll()
         refresh()
     }
@@ -420,7 +558,20 @@ final class AppStore {
         }
 
         do {
-            let resolved = try service.resolveVM(identifier: request.bundlePath)
+            if case .listOwnedRuntimes = request.operation {
+                return MacVMAppControlResponse(
+                    requestID: request.id,
+                    succeeded: true,
+                    message: "Listed MacVM-owned runtimes.",
+                    ownerPID: getpid(),
+                    ownedRuntimes: ownedRuntimeDescriptors
+                )
+            }
+
+            guard let bundlePath = request.bundlePath else {
+                throw AppRuntimeError(message: "This operation requires a VM bundle path.")
+            }
+            let resolved = try service.resolveVM(identifier: bundlePath)
             switch request.operation {
             case .run(let headless, let recovery, let vncPort):
                 let vm = headless ? try service.ensureNetworkIdentity(resolved) : resolved
@@ -507,6 +658,8 @@ final class AppStore {
                     vmName: resolved.metadata.name,
                     ownerPID: getpid()
                 )
+            case .listOwnedRuntimes:
+                preconditionFailure("Handled before resolving a VM bundle")
             }
         } catch {
             return controlFailure(request, error.localizedDescription)
@@ -530,14 +683,22 @@ final class AppStore {
         let finishedRuntimeKeys = runtimes.compactMap { $0.value.isFinished ? $0.key : nil }
         for key in finishedRuntimeKeys {
             runtimes[key] = nil
+            unregisterOwnedVM(atPath: key)
         }
         let finishedRunnerNames = headlessRunners.compactMap { $0.value.isFinished ? $0.key : nil }
         for name in finishedRunnerNames {
+            if let runner = headlessRunners[name] {
+                let path = runner.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
+                unregisterOwnedVM(atPath: path)
+            }
             headlessRunners[name] = nil
             setups[name] = nil
         }
 
         vms = (try? service.listVMs()) ?? []
+        if case .vm(.pending(let name)) = selection, let vm = vm(named: name) {
+            selection = .vm(reference(for: vm))
+        }
 
         var processes: [String: VMProcessRuntimeState] = [:]
         var sessions: [String: VNCSession] = [:]
@@ -654,8 +815,12 @@ final class AppStore {
 
     func updateCommandForSelection() {
         switch selection {
-        case .vm(let name):
-            lastCommand = CLIEquivalent.show(name)
+        case .vm(let reference):
+            if let vm = vm(for: reference) {
+                lastCommand = CLIEquivalent.show(commandIdentifier(for: vm))
+            } else {
+                lastCommand = CLIEquivalent.show(name(for: reference))
+            }
         case .images:
             lastCommand = CLIEquivalent.listRestoreImages(rootPath: service.rootDirectory.path)
         case .xcode:
@@ -683,7 +848,8 @@ final class AppStore {
         }
     }
 
-    func openVNCURL(_ vncURL: String, name: String) {
+    func openVNCURL(_ vncURL: String, vm: ManagedVM) {
+        let name = vm.metadata.name
         guard let url = URL(string: vncURL) else {
             alertMessage = "Invalid VNC URL for \(name): \(vncURL)"
             return
@@ -694,7 +860,7 @@ final class AppStore {
             return
         }
 
-        lastCommand = CLIEquivalent.vnc(name, open: true)
+        lastCommand = CLIEquivalent.vnc(commandIdentifier(for: vm), open: true)
     }
 
     func openSetupLog(_ url: URL) {
@@ -736,7 +902,7 @@ final class AppStore {
     func attach(_ vm: ManagedVM) {
         do {
             try attachRuntime(vm)
-            lastCommand = CLIEquivalent.attach(vm.metadata.name)
+            lastCommand = CLIEquivalent.attach(commandIdentifier(for: vm))
         } catch {
             alertMessage = error.localizedDescription
         }
@@ -756,7 +922,7 @@ final class AppStore {
                     requestedVNCPort: 0
                 )
             }
-            lastCommand = CLIEquivalent.run(vm.metadata.name, recovery: recovery)
+            lastCommand = CLIEquivalent.run(commandIdentifier(for: vm), recovery: recovery)
         } catch {
             alertMessage = "Failed to start \(vm.metadata.name): \(error.localizedDescription)"
         }
@@ -764,7 +930,7 @@ final class AppStore {
 
     func openViewer(_ vm: ManagedVM) {
         attach(vm)
-        lastCommand = CLIEquivalent.run(vm.metadata.name)
+        lastCommand = CLIEquivalent.run(commandIdentifier(for: vm))
     }
 
     @discardableResult
@@ -791,18 +957,21 @@ final class AppStore {
             requestedVNCPort: requestedVNCPort,
             processRuntimeRole: .manager
         )
+        let clipboardKey = runtimeKey(for: vm)
         controller.onClipboardStatusChange = { [weak self] status in
-            self?.clipboardStatuses[vm.metadata.name] = status
+            self?.clipboardStatuses[clipboardKey] = status
         }
-        clipboardStatuses[vm.metadata.name] = controller.clipboardStatus
+        clipboardStatuses[clipboardKey] = controller.clipboardStatus
         controller.onStop = { [weak self] in
             guard let self else { return }
             self.runtimes[key]?.window?.orderOut(nil)
             self.runtimes[key] = nil
-            self.clipboardStatuses[vm.metadata.name] = nil
+            self.unregisterOwnedVM(atPath: key)
+            self.clipboardStatuses[clipboardKey] = nil
             self.refresh()
         }
         runtimes[key] = controller
+        registerOwnedVM(vm)
 
         do {
             if !headless {
@@ -816,6 +985,7 @@ final class AppStore {
             return controller
         } catch {
             runtimes[key] = nil
+            unregisterOwnedVM(atPath: key)
             controller.tearDown()
             throw error
         }
@@ -865,7 +1035,7 @@ final class AppStore {
                 }
                 dockerOperationMessages[name] = nil
                 refresh()
-                lastCommand = "macvm docker enable \(name)"
+                lastCommand = CLIEquivalent.dockerEnable(commandIdentifier(for: vm))
             } catch {
                 dockerOperationMessages[name] = nil
                 alertMessage = "Failed to enable Docker for \(name): \(error.localizedDescription)"
@@ -961,10 +1131,11 @@ final class AppStore {
         var diskOperationStarted = false
         do {
             if desiredName != originalName {
+                let originalReference = reference(for: currentVM)
                 currentVM = try service.renameVM(currentVM, to: desiredName)
                 operationName = currentVM.metadata.name
-                if selection == .vm(originalName) {
-                    selection = .vm(operationName)
+                if selection == .vm(originalReference) {
+                    selection = .vm(reference(for: currentVM))
                 }
                 refresh()
                 updateCommandForSelection()
@@ -1037,7 +1208,7 @@ final class AppStore {
     func disableDocker(for vm: ManagedVM) {
         do {
             _ = try service.disableDockerSidecar(for: vm)
-            lastCommand = "macvm docker disable \(vm.metadata.name)"
+            lastCommand = CLIEquivalent.dockerDisable(commandIdentifier(for: vm))
             refresh()
         } catch {
             alertMessage = "Failed to disable Docker for \(vm.metadata.name): \(error.localizedDescription)"
@@ -1055,7 +1226,7 @@ final class AppStore {
                 }
                 dockerOperationMessages[name] = nil
                 refresh()
-                lastCommand = "macvm docker update \(name)"
+                lastCommand = CLIEquivalent.dockerUpdate(commandIdentifier(for: vm))
             } catch {
                 dockerOperationMessages[name] = nil
                 alertMessage = "Failed to update Docker for \(name): \(error.localizedDescription)"
@@ -1080,7 +1251,7 @@ final class AppStore {
                     DispatchQueue.main.async { self?.dockerOperationMessages[name] = message }
                 }
                 dockerOperationMessages[name] = nil
-                lastCommand = "macvm docker reset \(name) --force"
+                lastCommand = CLIEquivalent.dockerReset(commandIdentifier(for: vm))
                 refresh()
             } catch {
                 dockerOperationMessages[name] = nil
@@ -1105,7 +1276,7 @@ final class AppStore {
         do {
             if let controller = runtimeController(for: vm) {
                 try controller.setAutomaticClipboardSyncEnabled(enabled)
-                clipboardStatuses[vm.metadata.name] = controller.clipboardStatus
+                clipboardStatuses[runtimeKey(for: vm)] = controller.clipboardStatus
             } else {
                 _ = try service.setAutomaticClipboardSync(enabled, for: vm)
             }
@@ -1117,7 +1288,7 @@ final class AppStore {
     }
 
     func clipboardStatus(for vm: ManagedVM) -> ClipboardRuntimeStatus {
-        clipboardStatuses[vm.metadata.name] ?? ClipboardRuntimeStatus(
+        clipboardStatuses[runtimeKey(for: vm)] ?? ClipboardRuntimeStatus(
             enabled: vm.metadata.isAutomaticClipboardSyncEnabled,
             viewerActive: false,
             helper: .disconnected
@@ -1129,7 +1300,8 @@ final class AppStore {
         do {
             try service.setLaunchOnBoot(enabled, for: vm)
             launchOnBootStatuses[name] = service.launchOnBootStatus(for: vm)
-            lastCommand = enabled ? CLIEquivalent.autostartEnable(name) : CLIEquivalent.autostartDisable(name)
+            let identifier = commandIdentifier(for: vm)
+            lastCommand = enabled ? CLIEquivalent.autostartEnable(identifier) : CLIEquivalent.autostartDisable(identifier)
         } catch {
             launchOnBootStatuses[name] = service.launchOnBootStatus(for: vm)
             alertMessage = "Failed to \(enabled ? "enable" : "disable") launch on boot for \(name): \(error.localizedDescription)"
@@ -1137,17 +1309,25 @@ final class AppStore {
     }
 
     func requestStop(_ vm: ManagedVM) {
-        pendingPowerAction = PendingPowerAction(kind: .stop, name: vm.metadata.name)
+        pendingPowerAction = PendingPowerAction(
+            kind: .stop,
+            name: vm.metadata.name,
+            bundlePath: runtimeKey(for: vm)
+        )
     }
 
     func requestShutDown(_ vm: ManagedVM) {
-        pendingPowerAction = PendingPowerAction(kind: .shutDown, name: vm.metadata.name)
+        pendingPowerAction = PendingPowerAction(
+            kind: .shutDown,
+            name: vm.metadata.name,
+            bundlePath: runtimeKey(for: vm)
+        )
     }
 
     func confirmPowerAction() {
         guard let pendingPowerAction else { return }
         self.pendingPowerAction = nil
-        guard let vm = vm(named: pendingPowerAction.name) else { return }
+        guard let vm = try? service.resolveVM(identifier: pendingPowerAction.bundlePath) else { return }
 
         switch pendingPowerAction.kind {
         case .stop:
@@ -1159,7 +1339,7 @@ final class AppStore {
 
     private func stop(_ vm: ManagedVM) {
         let name = vm.metadata.name
-        lastCommand = CLIEquivalent.stop(name)
+        lastCommand = CLIEquivalent.stop(commandIdentifier(for: vm))
 
         if let controller = runtimeController(for: vm) {
             let key = runtimeKey(for: vm)
@@ -1265,7 +1445,7 @@ final class AppStore {
 
     private func shutDown(_ vm: ManagedVM) {
         let name = vm.metadata.name
-        lastCommand = CLIEquivalent.shutDown(name)
+        lastCommand = CLIEquivalent.shutDown(commandIdentifier(for: vm))
 
         switch Self.shutdownRoute(
             hasNativeViewer: runtimeController(for: vm) != nil,
@@ -1338,14 +1518,15 @@ final class AppStore {
         guard let name = pendingRemoval else { return }
         pendingRemoval = nil
         do {
+            let removedReference = vm(named: name).map(reference(for:))
             try service.removeVM(identifier: name)
             guestIPs[name] = nil
             setups[name] = nil
             installs[name] = nil
             lastCommand = CLIEquivalent.rm(name)
             refresh()
-            if selection == .vm(name) {
-                selection = vms.first.map { .vm($0.metadata.name) } ?? .images
+            if removedReference.map({ selection == .vm($0) }) == true {
+                selection = vms.first.map { .vm(reference(for: $0)) } ?? .images
             }
         } catch {
             alertMessage = "Failed to remove \(name): \(error.localizedDescription)"
@@ -1427,7 +1608,7 @@ final class AppStore {
                 }
                 clones[sourceName] = nil
                 refresh()
-                selection = .vm(clonedVM.metadata.name)
+                selection = .vm(reference(for: clonedVM))
                 updateCommandForSelection()
                 lastCommand = command
             } catch {
@@ -1548,7 +1729,7 @@ final class AppStore {
 
         sheetPresented = false
         installs[name] = InstallProgress(status: "Preparing…", fraction: nil, command: installCommand)
-        selection = .vm(name)
+        selection = .vm(.pending(name))
         lastCommand = installCommand
 
         let runSetupAfter = shouldSetup
@@ -1662,8 +1843,8 @@ final class AppStore {
             alertRemovalCandidate = name
         } else {
             alertMessage = "Cancelled the installation of \(name)."
-            if selection == .vm(name) {
-                selection = vms.first.map { .vm($0.metadata.name) } ?? .images
+            if selection == .vm(.pending(name)) {
+                selection = vms.first.map { .vm(reference(for: $0)) } ?? .images
             }
         }
     }
@@ -1734,13 +1915,14 @@ final class AppStore {
         profileCatalog = service.provisioningCatalog(for: vm)
         provisionProfileIDs = []
         provisionInputValues = [:]
-        provisionSheetVMName = vm.metadata.name
+        provisionSheetVMPath = runtimeKey(for: vm)
     }
 
     func submitProvision() {
-        guard let name = provisionSheetVMName,
-              let vm = vm(named: name),
+        guard let path = provisionSheetVMPath,
+              let vm = try? service.resolveVM(identifier: path),
               !provisionProfileIDs.isEmpty else { return }
+        let name = vm.metadata.name
         let selection = ProvisioningSelection(
             profileIDs: Array(provisionProfileIDs),
             inputs: provisionInputValues
@@ -1751,9 +1933,9 @@ final class AppStore {
             alertMessage = error.localizedDescription
             return
         }
-        provisionSheetVMName = nil
+        provisionSheetVMPath = nil
         provisioningStatus[name] = "Preparing provisioning…"
-        lastCommand = CLIEquivalent.provision(name, profileIDs: Array(provisionProfileIDs))
+        lastCommand = CLIEquivalent.provision(commandIdentifier(for: vm), profileIDs: Array(provisionProfileIDs))
         Task { @MainActor in
             do {
                 try await service.provision(vm, selection: selection) { [weak self] event in
@@ -1797,6 +1979,7 @@ final class AppStore {
 
         runner.onStop = { [weak self] in
             guard let self else { return }
+            self.unregisterOwnedVM(atPath: self.runtimeKey(for: vm))
             self.headlessRunners[name] = nil
             self.setups[name] = nil
             self.refresh()
@@ -1805,6 +1988,7 @@ final class AppStore {
         do {
             let session = try runner.start()
             headlessRunners[name] = runner
+            registerOwnedVM(vm)
 
             setups[name] = SetupProgress(
                 operationActive: true,

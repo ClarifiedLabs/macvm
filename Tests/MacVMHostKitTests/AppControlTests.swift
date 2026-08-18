@@ -74,6 +74,40 @@ func appControlQueueRoundTripsFullBundlePathAndResponse() throws {
 }
 
 @Test
+func appControlQueueRoundTripsOwnedRuntimeInspection() throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("macvm-control-owned-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let queue = MacVMAppControlQueue(directoryURL: rootURL)
+    let request = MacVMAppControlRequest(operation: .listOwnedRuntimes)
+    try queue.submit(request)
+
+    let pending = try #require(queue.pendingRequests().first)
+    #expect(pending.operation == .listOwnedRuntimes)
+    #expect(pending.bundlePath == nil)
+
+    let runtimes = [
+        MacVMOwnedRuntimeDescriptor(
+            name: "runner-1",
+            bundlePath: "/Volumes/data/Workers/runner-1.macvm",
+            headless: true,
+            vncURL: "vnc://:secret@127.0.0.1:5901"
+        )
+    ]
+    let response = MacVMAppControlResponse(
+        requestID: request.id,
+        succeeded: true,
+        message: "Listed MacVM-owned runtimes.",
+        ownerPID: 42,
+        ownedRuntimes: runtimes
+    )
+    try queue.complete(request, with: response)
+
+    #expect(try queue.response(for: request.id)?.ownedRuntimes == runtimes)
+}
+
+@Test
 func appControlQueueKeepsConcurrentRequestsDistinct() throws {
     let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)

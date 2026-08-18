@@ -9,39 +9,39 @@ enum CLIEquivalent {
     }
 
     static func show(_ name: String) -> String {
-        "macvm show \(name)"
+        "macvm show \(argument(name))"
     }
 
     static func run(_ name: String, recovery: Bool = false) -> String {
-        recovery ? "macvm run \(name) --recovery" : "macvm run \(name)"
+        recovery ? "macvm run \(argument(name)) --recovery" : "macvm run \(argument(name))"
     }
 
     static func stop(_ name: String) -> String {
-        "macvm stop \(name)"
+        "macvm stop \(argument(name))"
     }
 
     static func attach(_ name: String) -> String {
-        "macvm attach \(name)"
+        "macvm attach \(argument(name))"
     }
 
     static func shutDown(_ name: String) -> String {
-        "macvm shutdown \(name)"
+        "macvm shutdown \(argument(name))"
     }
 
     static func ip(_ name: String) -> String {
-        "macvm ip \(name)"
+        "macvm ip \(argument(name))"
     }
 
     static func ssh(_ name: String) -> String {
-        "macvm ssh \(name)"
+        "macvm ssh \(argument(name))"
     }
 
     static func inventory(_ name: String) -> String {
-        "macvm inventory \(name)"
+        "macvm inventory \(argument(name))"
     }
 
     static func vnc(_ name: String, open: Bool = false) -> String {
-        open ? "macvm vnc \(name) --open" : "macvm vnc \(name)"
+        open ? "macvm vnc \(argument(name)) --open" : "macvm vnc \(argument(name))"
     }
 
     static func rm(_ name: String) -> String {
@@ -70,15 +70,31 @@ enum CLIEquivalent {
     }
 
     static func autostartStatus(_ name: String) -> String {
-        "macvm autostart status \(name)"
+        "macvm autostart status \(argument(name))"
     }
 
     static func autostartEnable(_ name: String) -> String {
-        "macvm autostart enable \(name)"
+        "macvm autostart enable \(argument(name))"
     }
 
     static func autostartDisable(_ name: String) -> String {
-        "macvm autostart disable \(name)"
+        "macvm autostart disable \(argument(name))"
+    }
+
+    static func dockerEnable(_ name: String) -> String {
+        "macvm docker enable \(argument(name))"
+    }
+
+    static func dockerDisable(_ name: String) -> String {
+        "macvm docker disable \(argument(name))"
+    }
+
+    static func dockerUpdate(_ name: String) -> String {
+        "macvm docker update \(argument(name))"
+    }
+
+    static func dockerReset(_ name: String) -> String {
+        "macvm docker reset \(argument(name)) --force"
     }
 
     static func listRestoreImages(rootPath: String) -> String {
@@ -163,7 +179,7 @@ enum CLIEquivalent {
     }
 
     static func provision(_ name: String, profileIDs: [String]) -> String {
-        "macvm provision \(name) " + profileIDs.sorted().map { "--profile \($0)" }.joined(separator: " ")
+        "macvm provision \(argument(name)) " + profileIDs.sorted().map { "--profile \($0)" }.joined(separator: " ")
     }
 
     /// Abbreviate the current user's home directory to `~`.
@@ -173,5 +189,13 @@ enum CLIEquivalent {
             return path
         }
         return "~" + path.dropFirst(home.count)
+    }
+
+    private static func argument(_ value: String) -> String {
+        let safe = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._/"))
+        if !value.isEmpty, value.unicodeScalars.allSatisfy(safe.contains) {
+            return value
+        }
+        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

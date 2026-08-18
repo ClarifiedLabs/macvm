@@ -19,10 +19,25 @@ public enum MacVMAppControlOperation: Codable, Equatable, Sendable {
     case attach
     case stop
     case installClipboardHelper
+    case listOwnedRuntimes
+}
+
+public struct MacVMOwnedRuntimeDescriptor: Codable, Equatable, Sendable {
+    public var name: String
+    public var bundlePath: String
+    public var headless: Bool
+    public var vncURL: String?
+
+    public init(name: String, bundlePath: String, headless: Bool, vncURL: String?) {
+        self.name = name
+        self.bundlePath = bundlePath
+        self.headless = headless
+        self.vncURL = vncURL
+    }
 }
 
 public struct MacVMAppControlRequest: Codable, Equatable, Sendable {
-    public static let currentProtocolVersion = 2
+    public static let currentProtocolVersion = 3
     /// Maximum time for MacVM.app to claim a newly submitted request.
     public static let validityInterval: TimeInterval = 90
     /// App-enforced upper bound after pickup. Individual subprocesses have tighter limits.
@@ -32,7 +47,7 @@ public struct MacVMAppControlRequest: Codable, Equatable, Sendable {
     public var id: UUID
     public var createdAt: Date
     public var operation: MacVMAppControlOperation
-    public var bundlePath: String
+    public var bundlePath: String?
 
     public init(
         id: UUID = UUID(),
@@ -46,6 +61,18 @@ public struct MacVMAppControlRequest: Codable, Equatable, Sendable {
         self.operation = operation
         self.bundlePath = bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
     }
+
+    public init(
+        id: UUID = UUID(),
+        createdAt: Date = Date(),
+        operation: MacVMAppControlOperation
+    ) {
+        self.protocolVersion = Self.currentProtocolVersion
+        self.id = id
+        self.createdAt = createdAt
+        self.operation = operation
+        self.bundlePath = nil
+    }
 }
 
 public struct MacVMAppControlResponse: Codable, Equatable, Sendable {
@@ -56,6 +83,7 @@ public struct MacVMAppControlResponse: Codable, Equatable, Sendable {
     public var vmName: String?
     public var vncURL: String?
     public var ownerPID: Int32?
+    public var ownedRuntimes: [MacVMOwnedRuntimeDescriptor]?
 
     public init(
         requestID: UUID,
@@ -63,7 +91,8 @@ public struct MacVMAppControlResponse: Codable, Equatable, Sendable {
         message: String,
         vmName: String? = nil,
         vncURL: String? = nil,
-        ownerPID: Int32? = nil
+        ownerPID: Int32? = nil,
+        ownedRuntimes: [MacVMOwnedRuntimeDescriptor]? = nil
     ) {
         self.protocolVersion = MacVMAppControlRequest.currentProtocolVersion
         self.requestID = requestID
@@ -72,6 +101,7 @@ public struct MacVMAppControlResponse: Codable, Equatable, Sendable {
         self.vmName = vmName
         self.vncURL = vncURL
         self.ownerPID = ownerPID
+        self.ownedRuntimes = ownedRuntimes
     }
 }
 

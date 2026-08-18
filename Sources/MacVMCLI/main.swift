@@ -194,6 +194,14 @@ func readStandardInputString() throws -> String {
     throw ValidationError("Standard input is not valid plain text.")
 }
 
+func shellQuotedArgument(_ value: String) -> String {
+    let safe = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._/"))
+    if !value.isEmpty, value.unicodeScalars.allSatisfy(safe.contains) {
+        return value
+    }
+    return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
 @main
 struct MacVMCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -202,6 +210,7 @@ struct MacVMCommand: AsyncParsableCommand {
         version: MacVMVersion.shortVersion(),
         subcommands: [
             List.self,
+            Running.self,
             Show.self,
             Remove.self,
             Create.self,
@@ -238,21 +247,55 @@ struct MacVMCommand: AsyncParsableCommand {
 }
 
 extension MacVMCommand {
-    struct List: ParsableCommand {
+    struct List: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "List the VM bundles stored on disk.")
 
         @OptionGroup var storage: StorageOptions
 
-        func run() throws {
+        func run() async throws {
             let service = MacVMService(rootDirectory: storage.resolvedURL)
             let virtualMachines = try service.listVMs()
 
-            guard !virtualMachines.isEmpty else {
+            if virtualMachines.isEmpty {
                 print("No VM bundles found under \(service.rootDirectory.path)")
-                return
+            } else {
+                print(VMListFormatter.table(for: virtualMachines))
             }
 
-            print(VMListFormatter.table(for: virtualMachines))
+            let listedPaths = Set(virtualMachines.map {
+                $0.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
+            })
+            let externalRuntimes: [MacVMOwnedRuntimeDescriptor]
+            do {
+                externalRuntimes = try await AppControlClient(
+                    pickupTimeout: 2,
+                    completionTimeout: 2
+                )
+                .ownedRuntimesIfAppIsRunning()
+                .filter { !listedPaths.contains($0.bundlePath) }
+            } catch {
+                externalRuntimes = []
+                fputs("Warning: unable to inspect VMs owned by MacVM.app: \(error.localizedDescription)\n", stderr)
+            }
+            if !externalRuntimes.isEmpty {
+                print("\nMacVM.app also owns \(externalRuntimes.count) running VM\(externalRuntimes.count == 1 ? "" : "s") outside this root:")
+                print(VMListFormatter.ownedRuntimeTable(for: externalRuntimes))
+            }
+        }
+    }
+
+    struct Running: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "List all running VMs currently owned by MacVM.app."
+        )
+
+        func run() async throws {
+            let runtimes = try await AppControlClient().ownedRuntimesIfAppIsRunning()
+            guard !runtimes.isEmpty else {
+                print("No VMs are currently owned by MacVM.app.")
+                return
+            }
+            print(VMListFormatter.ownedRuntimeTable(for: runtimes))
         }
     }
 
@@ -699,7 +742,7 @@ extension MacVMCommand {
             if headless, let vncURL = response.vncURL {
                 print("VNC: \(vncURL)")
             }
-            print("Stop it with: macvm stop \(vm.metadata.name)")
+            print("Stop it with: macvm stop \(shellQuotedArgument(vm.bundleURL.path))")
         }
     }
 

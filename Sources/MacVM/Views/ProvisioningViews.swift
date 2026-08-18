@@ -156,7 +156,7 @@ struct ProvisionVMSheet: View {
             .frame(maxHeight: 480)
             HStack {
                 Spacer()
-                Button("Cancel") { store.provisionSheetVMName = nil }
+                Button("Cancel") { store.provisionSheetVMPath = nil }
                     .keyboardShortcut(.cancelAction)
                 Button("Provision") { store.submitProvision() }
                     .keyboardShortcut(.defaultAction)

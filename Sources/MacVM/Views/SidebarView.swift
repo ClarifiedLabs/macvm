@@ -10,22 +10,30 @@ struct SidebarView: View {
         @Bindable var store = store
         List(selection: $store.selection) {
             Section("Virtual Machines") {
-                ForEach(store.sidebarVMNames, id: \.self) { name in
-                    VMRow(name: name)
-                        .tag(SidebarItem.vm(name))
+                ForEach(store.sidebarLibraryVMReferences, id: \.self) { reference in
+                    VMRow(reference: reference)
+                        .tag(SidebarItem.vm(reference))
                         .contextMenu {
                             Button("Clone…") {
-                                if let vm = store.vm(named: name) {
+                                if let vm = store.vm(for: reference) {
                                     store.requestClone(vm)
                                 }
                             }
-                            .disabled(store.status(forName: name) != .stopped)
+                            .disabled(store.status(for: reference) != .stopped)
 
                             Button("Remove…", role: .destructive) {
-                                store.requestRemove(name)
+                                store.requestRemove(store.name(for: reference))
                             }
-                            .disabled(store.status(forName: name) != .stopped)
+                            .disabled(store.status(for: reference) != .stopped)
                         }
+                }
+            }
+            if !store.sidebarExternalVMReferences.isEmpty {
+                Section("Running Outside Library") {
+                    ForEach(store.sidebarExternalVMReferences, id: \.self) { reference in
+                        VMRow(reference: reference, showsBundlePath: true)
+                            .tag(SidebarItem.vm(reference))
+                    }
                 }
             }
             Section("Library") {
@@ -37,8 +45,9 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .onDeleteCommand {
-            if case .vm(let name) = store.selection {
-                store.requestRemove(name)
+            if case .vm(let reference) = store.selection,
+               store.sidebarLibraryVMReferences.contains(reference) {
+                store.requestRemove(store.name(for: reference))
             }
         }
         .navigationSplitViewColumnWidth(min: 220, ideal: 236, max: 320)
@@ -59,18 +68,27 @@ struct SidebarView: View {
 
 private struct VMRow: View {
     @Environment(AppStore.self) private var store
-    let name: String
+    let reference: VMReference
+    var showsBundlePath = false
 
     var body: some View {
+        let name = store.name(for: reference)
         HStack(spacing: 8) {
-            StatusDot(status: store.status(forName: name))
+            StatusDot(status: store.status(for: reference))
             VStack(alignment: .leading, spacing: 1) {
                 Text(name)
                     .font(.system(size: 13, weight: .medium))
-                Text(store.sidebarSubtitle(forName: name))
+                Text(store.sidebarSubtitle(for: reference))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                if showsBundlePath, let vm = store.vm(for: reference) {
+                    Text(CLIEquivalent.abbreviatePath(vm.bundleURL.path))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
         }
         .padding(.vertical, 2)

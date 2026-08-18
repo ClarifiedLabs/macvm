@@ -4,13 +4,13 @@ import SwiftUI
 
 struct VMDetailView: View {
     @Environment(AppStore.self) private var store
-    let name: String
+    let reference: VMReference
     @State private var editedResources: VMResourceFormValues?
     @State private var pendingDiskGrowth: PendingDiskGrowth?
 
     var body: some View {
-        let vm = store.vm(named: name)
-        let status = store.status(forName: name)
+        let vm = store.vm(for: reference)
+        let status = store.status(for: reference)
 
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -77,6 +77,10 @@ struct VMDetailView: View {
                 )
             }
         }
+    }
+
+    private var name: String {
+        store.name(for: reference)
     }
 
     private func header(vm: ManagedVM?, status: VMStatus) -> some View {
@@ -297,7 +301,7 @@ struct DockerSectionView: View {
 
     var body: some View {
         let name = vm.metadata.name
-        let dockerStatus = store.dockerStatuses[name] ?? store.service.dockerStatus(for: vm)
+        let dockerStatus = store.service.dockerStatus(for: vm)
         let busy = store.dockerOperationMessages[name] != nil
         let resources = DockerResourceFormValues(settings: vm.metadata.dockerSidecar)
         let isEditing = editedResources != nil
@@ -678,7 +682,7 @@ struct AutomationSectionView: View {
 
     var body: some View {
         let name = vm.metadata.name
-        let enabled = store.launchOnBootStatuses[name]?.enabled ?? false
+        let enabled = store.service.launchOnBootStatus(for: vm).enabled
 
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader(title: "Automation")
@@ -687,7 +691,7 @@ struct AutomationSectionView: View {
                     Toggle(
                         "",
                         isOn: Binding(
-                            get: { store.launchOnBootStatuses[name]?.enabled ?? false },
+                            get: { store.service.launchOnBootStatus(for: vm).enabled },
                             set: { store.setLaunchOnBoot($0, for: vm) }
                         )
                     )
@@ -757,7 +761,7 @@ struct SpecCardsView: View {
                 value: Self.displayResolutionText(
                     metadata: metadata,
                     status: status,
-                    liveDisplay: store.liveDisplays[metadata.name]
+                    liveDisplay: store.liveDisplay(for: vm)
                 ),
                 unit: "points"
             )
@@ -922,16 +926,17 @@ struct AccessSectionView: View {
     @ViewBuilder
     private var accessRows: some View {
         let name = vm.metadata.name
-        let setup = store.setups[name]
+        let commandIdentifier = store.commandIdentifier(for: vm)
+        let setup = store.setupProgress(for: vm)
         let user = setup?.username ?? store.service.guestUser(for: vm, override: nil)
-        let ip = setup?.ipAddress ?? store.guestIPs[name]
+        let ip = setup?.ipAddress ?? store.guestIP(for: vm)
         let vncURL = liveVNCURL
 
         VStack(spacing: 0) {
             if capabilities.showsIP {
                 InfoRow(label: "IP address", value: ip ?? "Resolving…") {
                     if let ip {
-                        CopyButton(key: "access-ip", text: ip, command: CLIEquivalent.ip(name))
+                        CopyButton(key: "access-ip", text: ip, command: CLIEquivalent.ip(commandIdentifier))
                     }
                 }
             }
@@ -941,7 +946,7 @@ struct AccessSectionView: View {
                 }
                 InfoRow(label: "SSH", value: ip.map { "ssh \(user)@\($0)" } ?? "Waiting for IP…") {
                     if let ip {
-                        CopyButton(key: "access-ssh", text: "ssh \(user)@\(ip)", command: CLIEquivalent.ssh(name))
+                        CopyButton(key: "access-ssh", text: "ssh \(user)@\(ip)", command: CLIEquivalent.ssh(commandIdentifier))
                     }
                 }
             }
@@ -957,7 +962,7 @@ struct AccessSectionView: View {
                         CopyButton(
                             key: "access-inventory",
                             text: store.service.inventoryLine(vm, host: ip, user: user),
-                            command: CLIEquivalent.inventory(name)
+                            command: CLIEquivalent.inventory(commandIdentifier)
                         )
                     }
                 }
@@ -968,9 +973,9 @@ struct AccessSectionView: View {
                 }
                 InfoRow(label: "VNC", value: vncURL) {
                     HStack(spacing: 6) {
-                        CopyButton(key: "access-vnc", text: vncURL, command: CLIEquivalent.vnc(name))
+                        CopyButton(key: "access-vnc", text: vncURL, command: CLIEquivalent.vnc(commandIdentifier))
                         Button {
-                            store.openVNCURL(vncURL, name: name)
+                            store.openVNCURL(vncURL, vm: vm)
                         } label: {
                             Label("Open", systemImage: "arrow.up.forward.app")
                         }
@@ -986,8 +991,8 @@ struct AccessSectionView: View {
     private var capabilities: Capabilities {
         Self.capabilities(
             status: status,
-            hasIP: (store.setups[vm.metadata.name]?.ipAddress ?? store.guestIPs[vm.metadata.name]) != nil,
-            sshReady: store.setups[vm.metadata.name]?.sshReady == true,
+            hasIP: (store.setupProgress(for: vm)?.ipAddress ?? store.guestIP(for: vm)) != nil,
+            sshReady: store.setupProgress(for: vm)?.sshReady == true,
             hasVNC: liveVNCURL != nil
         )
     }
@@ -1014,10 +1019,10 @@ struct AccessSectionView: View {
     }
 
     private var liveVNCURL: String? {
-        if let liveURL = store.liveSessions[vm.metadata.name]?.vncURLString {
+        if let liveURL = store.liveSession(for: vm)?.vncURLString {
             return liveURL
         }
-        guard let setupURL = store.setups[vm.metadata.name]?.vncURL,
+        guard let setupURL = store.setupProgress(for: vm)?.vncURL,
               !setupURL.isEmpty else { return nil }
         return setupURL
     }

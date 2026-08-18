@@ -172,6 +172,14 @@ func cliEquivalentRendersFixedActionCommands() {
     #expect(CLIEquivalent.autostartStatus("dev") == "macvm autostart status dev")
     #expect(CLIEquivalent.autostartEnable("dev") == "macvm autostart enable dev")
     #expect(CLIEquivalent.autostartDisable("dev") == "macvm autostart disable dev")
+    #expect(
+        CLIEquivalent.stop("/tmp/Runner VMs/dev.macvm")
+            == "macvm stop '/tmp/Runner VMs/dev.macvm'"
+    )
+    #expect(
+        CLIEquivalent.dockerUpdate("/tmp/Runner VMs/dev.macvm")
+            == "macvm docker update '/tmp/Runner VMs/dev.macvm'"
+    )
 }
 
 @Test
@@ -709,8 +717,8 @@ func createSheetUsesBoundedProvisioningProfileSummary() {
 @Test
 func sidebarInitialFocusRequestsFocusForInitialVMSelectionOnly() {
     var policy = SidebarInitialFocusPolicy()
-    let initialVMSelection = policy.consumeFocusRequest(for: .vm("dev-01"))
-    let secondVMSelection = policy.consumeFocusRequest(for: .vm("dev-02"))
+    let initialVMSelection = policy.consumeFocusRequest(for: .vm(.pending("dev-01")))
+    let secondVMSelection = policy.consumeFocusRequest(for: .vm(.pending("dev-02")))
     let laterLibrarySelection = policy.consumeFocusRequest(for: .images)
 
     #expect(initialVMSelection)
@@ -722,10 +730,55 @@ func sidebarInitialFocusRequestsFocusForInitialVMSelectionOnly() {
 func sidebarInitialFocusDoesNotRequestFocusAfterInitialLibrarySelection() {
     var policy = SidebarInitialFocusPolicy()
     let initialLibrarySelection = policy.consumeFocusRequest(for: .images)
-    let laterVMSelection = policy.consumeFocusRequest(for: .vm("dev-01"))
+    let laterVMSelection = policy.consumeFocusRequest(for: .vm(.pending("dev-01")))
 
     #expect(!initialLibrarySelection)
     #expect(!laterVMSelection)
+}
+
+@Test
+@MainActor
+func sidebarSeparatesPathIdentifiedOwnedVMsOutsideTheLibrary() throws {
+    let baseURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("macvm-external-sidebar-\(UUID().uuidString)", isDirectory: true)
+    let libraryURL = baseURL.appendingPathComponent("Library", isDirectory: true)
+    let externalRootURL = baseURL.appendingPathComponent("Workers", isDirectory: true)
+    let libraryBundleURL = libraryURL.appendingPathComponent("runner.macvm", isDirectory: true)
+    let externalBundleURL = externalRootURL.appendingPathComponent("runner.macvm", isDirectory: true)
+    try FileManager.default.createDirectory(at: libraryBundleURL, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: externalBundleURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: baseURL) }
+
+    let libraryMetadata = VMMetadata(
+        name: "runner",
+        cpuCount: 2,
+        memorySizeBytes: 4 * oneGiB,
+        diskSizeBytes: 40 * oneGiB,
+        displayWidth: 1280,
+        displayHeight: 720,
+        bootstrapShareEnabled: false
+    )
+    var externalMetadata = libraryMetadata
+    externalMetadata.id = UUID()
+    try VMBundle(url: libraryBundleURL).writeMetadata(libraryMetadata)
+    try VMBundle(url: externalBundleURL).writeMetadata(externalMetadata)
+
+    let store = AppStore(service: MacVMService(rootDirectory: libraryURL))
+    let externalVM = ManagedVM(bundleURL: externalBundleURL, metadata: externalMetadata)
+    store.registerOwnedVM(externalVM)
+
+    let libraryReference = try #require(store.sidebarLibraryVMReferences.first)
+    let externalReference = try #require(store.sidebarExternalVMReferences.first)
+    #expect(store.name(for: libraryReference) == "runner")
+    #expect(store.name(for: externalReference) == "runner")
+    #expect(store.vm(for: libraryReference)?.bundleURL == libraryBundleURL)
+    #expect(store.vm(for: externalReference)?.bundleURL == externalBundleURL)
+    #expect(store.commandIdentifier(for: externalVM) == externalBundleURL.path)
+
+    store.selection = .vm(externalReference)
+    store.unregisterOwnedVM(atPath: externalBundleURL.path)
+    #expect(store.sidebarExternalVMReferences.isEmpty)
+    #expect(store.selection == .vm(libraryReference))
 }
 
 // MARK: - VMStatus
@@ -823,7 +876,8 @@ func managerCloneWorkflowSelectsCompletedClone() async throws {
     #expect(store.vm(named: "template-copy") != nil)
     #expect(store.vm(named: "template-copy")?.metadata.cpuCount == 4)
     #expect(store.vm(named: "template-copy")?.metadata.memorySizeBytes == 2 * oneGiB)
-    #expect(store.selection == .vm("template-copy"))
+    let cloned = try #require(store.vm(named: "template-copy"))
+    #expect(store.selection == .vm(store.reference(for: cloned)))
     #expect(store.clones["template"] == nil)
     #expect(store.lastCommand == "macvm clone template --name template-copy --cpu 4 --memory-gi-b 2")
 }
@@ -1109,7 +1163,7 @@ func managerRenameUpdatesSelectionAndMetadata() throws {
 
     let store = AppStore(service: MacVMService(rootDirectory: rootURL))
     let vm = try #require(store.vm(named: "dev"))
-    store.selection = .vm("dev")
+    store.selection = .vm(store.reference(for: vm))
 
     var values = VMResourceFormValues(metadata: metadata)
     values.name = "Renamed VM"
@@ -1122,9 +1176,9 @@ func managerRenameUpdatesSelectionAndMetadata() throws {
         .appendingPathComponent("Renamed-VM", isDirectory: true)
         .appendingPathExtension(VMStorage.bundleExtension))
     #expect(store.vm(named: "dev") == nil)
-    #expect(store.selection == .vm("Renamed VM"))
+    #expect(store.selection == .vm(store.reference(for: renamed)))
     #expect(!FileManager.default.fileExists(atPath: bundleURL.path))
-    #expect(store.lastCommand == "macvm show Renamed VM")
+    #expect(store.lastCommand == "macvm show 'Renamed VM'")
 }
 
 // MARK: - RestoreImageCatalog

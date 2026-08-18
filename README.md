@@ -81,6 +81,7 @@ Manage VMs:
 ```bash
 macvm --version
 macvm list
+macvm running
 macvm show dev-01
 macvm attach dev-01
 macvm autostart enable dev-01
@@ -91,6 +92,11 @@ macvm shutdown dev-01 --wait
 macvm stop dev-01
 macvm rm dev-01
 ```
+
+`macvm list` lists bundles in the configured storage root and reports when
+MacVM.app owns running VMs outside that root. `macvm running` lists every VM
+currently owned by the app, including full bundle paths for VMs started with a
+different `--root`.
 
 VMs are stored under `~/VirtualMachines/MacVMHost` by default. Change the shared
 app/CLI default in **MacVM > Settings** or from the CLI:
